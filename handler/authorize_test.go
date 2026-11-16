@@ -884,7 +884,7 @@ func stateLengthAuthorizeTarget(clientID, state string) string {
 		"redirect_uri":          {"https://example.com/callback"},
 		"response_type":         {"code"},
 		"scope":                 {"openid"},
-		"code_challenge":        {"test-challenge"},
+		"code_challenge":        {"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"},
 		"code_challenge_method": {"S256"},
 	}
 	if state != "" {
@@ -978,7 +978,7 @@ func TestHandler_ServeAuthorization_NoResponseType_Rejected(t *testing.T) {
 				"&redirect_uri=https://example.com/callback" +
 				"&scope=openid" +
 				"&state=" + validState +
-				"&code_challenge=test-challenge" +
+				"&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM" +
 				"&code_challenge_method=S256"
 			if tt.responseType != "" {
 				reqURL += "&response_type=" + url.QueryEscape(tt.responseType)
@@ -1036,7 +1036,7 @@ func TestHandler_ServeAuthorization_ErrorRedirectEchoesClientState(t *testing.T)
 				"&redirect_uri=https://example.com/callback" +
 				"&response_type=token" +
 				"&scope=openid" +
-				"&code_challenge=test-challenge" +
+				"&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM" +
 				"&code_challenge_method=S256"
 			if tt.state != "" {
 				reqURL += "&state=" + tt.state
@@ -1054,7 +1054,7 @@ func TestHandler_ServeAuthorization_ErrorRedirectEchoesClientState(t *testing.T)
 		reqURL := "/authorize?client_id=" + client.ClientID +
 			"&response_type=code" +
 			"&scope=openid" +
-			"&code_challenge=test-challenge" +
+			"&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM" +
 			"&code_challenge_method=S256"
 
 		req := httptest.NewRequest(http.MethodGet, reqURL, nil)
@@ -1078,7 +1078,7 @@ func TestHandler_ServeAuthorization_ErrorRedirectEchoesClientState(t *testing.T)
 			"&redirect_uri=" + url.QueryEscape("javascript:alert(1)") +
 			"&response_type=code" +
 			"&scope=openid" +
-			"&code_challenge=test-challenge" +
+			"&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM" +
 			"&code_challenge_method=S256"
 
 		req := httptest.NewRequest(http.MethodGet, reqURL, nil)
@@ -1099,7 +1099,7 @@ func TestHandler_ServeAuthorization_ErrorRedirectEchoesClientState(t *testing.T)
 			"&response_type=xxx" + // would otherwise hit the response_type branch
 			"&scope=openid" +
 			"&state=" + testutil.GenerateRandomString(43) +
-			"&code_challenge=test-challenge" +
+			"&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM" +
 			"&code_challenge_method=S256"
 
 		req := httptest.NewRequest(http.MethodGet, reqURL, nil)
@@ -1149,7 +1149,7 @@ func TestHandler_ServeAuthorization_ValidatedCustomSchemeReceivesError(t *testin
 		"&response_type=token" +
 		"&scope=openid" +
 		"&state=" + validState +
-		"&code_challenge=test-challenge" +
+		"&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM" +
 		"&code_challenge_method=S256"
 
 	req := httptest.NewRequest(http.MethodGet, reqURL, nil)

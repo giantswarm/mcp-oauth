@@ -250,6 +250,14 @@ func TestStartIdentityFlow_Refusals(t *testing.T) {
 			_, err := srv.StartIdentityFlow(t.Context(), flow.returnURL, "", flow.clientState)
 			return err
 		},
+		"malformed code challenge": func() error {
+			_, err := srv.StartIdentityFlow(t.Context(), flow.returnURL, "not-a-challenge", flow.clientState)
+			return err
+		},
+		"padded code challenge": func() error {
+			_, err := srv.StartIdentityFlow(t.Context(), flow.returnURL, flow.challenge()+"=", flow.clientState)
+			return err
+		},
 		"no state": func() error {
 			_, err := srv.StartIdentityFlow(t.Context(), flow.returnURL, flow.challenge(), "")
 			return err

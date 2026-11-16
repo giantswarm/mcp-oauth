@@ -111,7 +111,7 @@ func TestServeAuthorization_RespondAuthorizationError_PinsSpanAttributes(t *test
 	const (
 		redirectParam = "&redirect_uri=https://example.com/callback"
 		responseCode  = "&response_type=code"
-		validPKCE     = "&code_challenge=testchallenge&code_challenge_method=S256"
+		validPKCE     = "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256"
 		validState    = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	)
 

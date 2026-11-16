@@ -994,3 +994,35 @@ func TestValidateProviderStateParameter(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateCodeChallengeFormat(t *testing.T) {
+	const rfcChallenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+	for name, tt := range map[string]struct {
+		challenge string
+		method    string
+		wantErr   bool
+	}{
+		"RFC 7636 appendix B S256 challenge":     {challenge: rfcChallenge, method: PKCEMethodS256},
+		"S256 challenge too short":               {challenge: rfcChallenge[:42], method: PKCEMethodS256, wantErr: true},
+		"S256 challenge too long":                {challenge: rfcChallenge + "A", method: PKCEMethodS256, wantErr: true},
+		"S256 challenge with padding":            {challenge: rfcChallenge + "=", method: PKCEMethodS256, wantErr: true},
+		"S256 challenge in standard base64":      {challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw+cM", method: PKCEMethodS256, wantErr: true},
+		"S256 challenge with non-zero tail bits": {challenge: rfcChallenge[:42] + "N", method: PKCEMethodS256, wantErr: true},
+		"S256 challenge with a trailing newline": {challenge: rfcChallenge + "\n", method: PKCEMethodS256, wantErr: true},
+		"S256 challenge with an inner CRLF":      {challenge: rfcChallenge[:20] + "\r\n" + rfcChallenge[20:], method: PKCEMethodS256, wantErr: true},
+		"plain challenge of 43 characters":       {challenge: strings.Repeat("a", 43), method: PKCEMethodPlain},
+		"plain challenge of 128 characters":      {challenge: strings.Repeat("~", 128), method: PKCEMethodPlain},
+		"plain challenge too short":              {challenge: strings.Repeat("a", 42), method: PKCEMethodPlain, wantErr: true},
+		"plain challenge too long":               {challenge: strings.Repeat("a", 129), method: PKCEMethodPlain, wantErr: true},
+		"plain challenge with a space":           {challenge: strings.Repeat("a", 42) + " ", method: PKCEMethodPlain, wantErr: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := validateCodeChallengeFormat(tt.challenge, tt.method)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}

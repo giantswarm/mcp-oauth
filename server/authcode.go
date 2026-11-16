@@ -77,6 +77,11 @@ func (s *Server) validatePKCEForAuthFlow(ctx context.Context, clientID, codeChal
 			fmt.Errorf("unsupported code_challenge_method: %s (supported: %s)", codeChallengeMethod, supportedMethods))
 	}
 
+	if err := validateCodeChallengeFormat(codeChallenge, codeChallengeMethod); err != nil {
+		s.logAuthFailure(ctx, "", clientID, "invalid_code_challenge_format")
+		return newAuthorizationRequestError(ErrorCodeInvalidRequest, err.Error(), nil)
+	}
+
 	return nil
 }
 
