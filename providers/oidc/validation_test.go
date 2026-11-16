@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestValidateIssuerURL(t *testing.T) {
@@ -1092,4 +1094,26 @@ func TestHTTPClients_RedirectGuard(t *testing.T) {
 			t.Error("expected no redirect guard on the SSRF-safe client")
 		}
 	})
+}
+
+func TestHostScopedPrivateIPDialContext_TriesEachAddress(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	require.NoError(t, err)
+
+	dial := HostScopedPrivateIPDialContext(&net.Dialer{}, []string{"localhost"})
+	conn, err := dial(t.Context(), "tcp", net.JoinHostPort("localhost", port))
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
 }

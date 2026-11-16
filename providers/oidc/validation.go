@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -296,11 +297,22 @@ func SSRFSafeDialContext(dialer *net.Dialer) func(ctx context.Context, network, 
 			}
 		}
 
-		// All IPs are safe, connect to the first one
-		// We use the first IP since we've validated all are safe
-		safeAddr := net.JoinHostPort(ips[0].String(), port)
-		return dialer.DialContext(ctx, network, safeAddr)
+		return dialValidated(ctx, dialer, network, host, port, ips)
 	}
+}
+
+// dialValidated dials the already validated addresses in order and returns the
+// first connection, so the dial never resolves host again.
+func dialValidated(ctx context.Context, dialer *net.Dialer, network, host, port string, ips []net.IP) (net.Conn, error) {
+	dialErrs := make([]error, 0, len(ips))
+	for _, ip := range ips {
+		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		dialErrs = append(dialErrs, err)
+	}
+	return nil, fmt.Errorf("failed to connect to %s: %w", host, errors.Join(dialErrs...))
 }
 
 // dialContextFunc is the DialContext signature shared by the package's HTTP
@@ -498,8 +510,7 @@ func HostScopedPrivateIPDialContext(dialer *net.Dialer, allowedHosts []string) f
 			}
 		}
 
-		safeAddr := net.JoinHostPort(ips[0].String(), port)
-		return dialer.DialContext(ctx, network, safeAddr)
+		return dialValidated(ctx, dialer, network, host, port, ips)
 	}
 }
 

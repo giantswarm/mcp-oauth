@@ -596,32 +596,35 @@ type Config struct {
 	// Default: false (Go zero-value; set to true for native app support per RFC 8252 Section 7.3)
 	AllowLocalhostRedirectURIs bool
 
-	// AllowPrivateIPRedirectURIs allows redirect URIs that resolve to private IP addresses
-	// (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 per RFC 1918,
-	// and IPv6 unique-local fc00::/7 per RFC 4193).
-	// WARNING: Enables SSRF attacks to internal networks if not properly secured.
-	// Only enable for internal/VPN deployments where clients legitimately use private IPs.
-	// Default: false (blocked for security)
+	// AllowPrivateIPRedirectURIs accepts redirect URIs on every host that
+	// resolves to a private IPv4 (RFC 1918) or IPv6 unique-local (RFC 4193)
+	// address. This is browser-redirect policy, not SSRF protection: the server
+	// never connects to a redirect URI.
 	//
-	// Prefer AllowPrivateIPRedirectURIHosts when only known hosts are private.
+	// Deprecated: list the hosts in RedirectURIPrivateIPHosts. Setting it logs
+	// a deprecation warning and still lifts the check for every host.
+	// Default: false
 	AllowPrivateIPRedirectURIs bool
 
-	// AllowPrivateIPRedirectURIHosts lists the hostnames whose redirect URIs
-	// may resolve to private IPv4 addresses (RFC 1918) or IPv6 unique-local
-	// addresses (RFC 4193). Every other host keeps the DNS rebinding guard,
-	// at registration and, with
+	// RedirectURIPrivateIPHosts lists the hostnames whose redirect URIs may
+	// resolve to private IPv4 addresses (RFC 1918) or IPv6 unique-local
+	// addresses (RFC 4193), at registration and, with
 	// ValidateRedirectURIAtAuthorization, at authorization. Entries match the
-	// redirect URI's hostname exactly (no port, no wildcard), like
-	// AllowPrivateIPClientMetadataHosts. A literal IP redirect URI is not
-	// matched, and link-local addresses stay governed by
+	// redirect URI's hostname exactly (no port, no wildcard). A literal IP
+	// redirect URI is not matched, and link-local addresses stay governed by
 	// AllowLinkLocalRedirectURIs.
 	//
-	// Use it instead of AllowPrivateIPRedirectURIs when a known client's
-	// callback lives on a private hostname (an internal load balancer, a
-	// cluster-internal DNS rewrite). AllowPrivateIPRedirectURIs=true still lifts
-	// the guard for every host.
+	// This is browser-redirect policy, not SSRF protection: the server never
+	// connects to a redirect URI. It keeps an authorization code from being
+	// sent to an internal address the operator did not name.
 	//
-	// Default: empty (blocked for every host)
+	// Default: empty (refused for every host)
+	RedirectURIPrivateIPHosts []string
+
+	// AllowPrivateIPRedirectURIHosts is the former name of
+	// RedirectURIPrivateIPHosts; both lists are honored.
+	//
+	// Deprecated: use RedirectURIPrivateIPHosts.
 	AllowPrivateIPRedirectURIHosts []string
 
 	// AllowLinkLocalRedirectURIs allows link-local addresses (169.254.0.0/16, fe80::/10).
@@ -631,38 +634,29 @@ type Config struct {
 	// Default: false (blocked for security)
 	AllowLinkLocalRedirectURIs bool
 
-	// AllowPrivateIPClientMetadata allows CIMD (Client ID Metadata Document) metadata URLs
-	// that resolve to private IP addresses (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 per RFC 1918).
-	// This also allows loopback addresses (127.0.0.0/8, ::1) and link-local addresses.
-	// WARNING: Reduces SSRF protection. Only enable for internal/VPN deployments where
-	// MCP servers legitimately communicate over private networks.
+	// AllowPrivateIPClientMetadata lets every CIMD (Client ID Metadata
+	// Document) metadata URL resolve to private, loopback or link-local
+	// addresses. The client chooses that URL, so this lifts the SSRF guard for
+	// every client.
 	//
-	// Use cases:
-	//   - Home lab deployments
-	//   - Air-gapped environments
-	//   - Internal enterprise networks
-	//   - Any deployment where MCP servers communicate over private networks
-	//
-	// Security: When enabled, the server will fetch client metadata from URLs that resolve
-	// to private IPs. This is necessary when MCP aggregators and servers are on the same
-	// internal network. PKCE and other OAuth security measures still apply.
-	//
-	// Default: false (blocked for security)
-	//
-	// Prefer AllowPrivateIPClientMetadataHosts when only known hosts are private.
+	// Deprecated: list the hosts in ClientMetadataPrivateIPHosts. Setting it
+	// logs a deprecation warning and still lifts the guard for every host.
+	// Default: false
 	AllowPrivateIPClientMetadata bool
 
-	// AllowPrivateIPClientMetadataHosts lists the hostnames whose CIMD metadata
-	// URLs may resolve to private, loopback or link-local addresses. Every other
-	// host keeps the SSRF guard, at validation and at connection time, so DNS
-	// rebinding stays covered. Entries match the client_id URL's hostname exactly
-	// (no port, no wildcard), like TrustedIssuer.AllowPrivateIPJWKSHosts.
+	// ClientMetadataPrivateIPHosts lists the hostnames whose CIMD metadata
+	// URLs may resolve to private, loopback or link-local addresses. Every
+	// other host keeps the SSRF guard, at validation and at connection time,
+	// so DNS rebinding stays covered. Entries match the client_id URL's
+	// hostname exactly (no port, no wildcard).
 	//
-	// Use it instead of AllowPrivateIPClientMetadata when a known client lives on
-	// a private hostname (an internal load balancer, a VPN-only platform).
-	// AllowPrivateIPClientMetadata=true still lifts the guard for every host.
+	// Default: empty (refused for every host)
+	ClientMetadataPrivateIPHosts []string
+
+	// AllowPrivateIPClientMetadataHosts is the former name of
+	// ClientMetadataPrivateIPHosts; both lists are honored.
 	//
-	// Default: empty (blocked for every host)
+	// Deprecated: use ClientMetadataPrivateIPHosts.
 	AllowPrivateIPClientMetadataHosts []string
 
 	// ClientMetadataRootCAs is the CA pool used to verify the TLS certificate of
@@ -673,27 +667,23 @@ type Config struct {
 	// allowance.
 	ClientMetadataRootCAs *x509.CertPool
 
-	// AllowPrivateIPJWKS allows JWKS endpoints to resolve to private IP addresses
-	// (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 per RFC 1918) during SSO token
-	// validation (TrustedAudiences). This also allows loopback addresses (127.0.0.0/8, ::1)
-	// and link-local addresses.
+	// AllowPrivateIPJWKS lets every JWKS endpoint used to validate forwarded
+	// SSO ID tokens (TrustedAudiences) resolve to private, loopback or
+	// link-local addresses.
 	//
-	// This is necessary for private IdP deployments where Dex or another OIDC provider
-	// runs on internal networks, and SSO token forwarding is used.
-	//
-	// WARNING: Reduces SSRF protection for JWKS fetching only. Only enable for
-	// internal/VPN deployments where the IdP legitimately runs on private networks.
-	//
-	// Use cases:
-	//   - Home lab deployments with internal Dex
-	//   - Air-gapped environments
-	//   - Enterprise deployments with private IdPs
-	//
-	// Note: For Google OAuth, this setting has no effect as Google's JWKS endpoint
-	// is always publicly accessible.
-	//
-	// Default: false (blocked for security)
+	// Deprecated: list the hosts in JWKSPrivateIPHosts. Setting it logs a
+	// deprecation warning and still lifts the guard for every host.
+	// Default: false
 	AllowPrivateIPJWKS bool
+
+	// JWKSPrivateIPHosts lists the hostnames whose JWKS endpoint, used to
+	// validate forwarded SSO ID tokens (TrustedAudiences), may resolve to
+	// private, loopback or link-local addresses. Every other host keeps the
+	// SSRF guard at connection time. Entries match the JWKS URL's hostname
+	// exactly (no port, no wildcard).
+	//
+	// Default: empty (refused for every host)
+	JWKSPrivateIPHosts []string
 
 	// JWKSRootCAs is the CA pool used to verify the JWKS endpoint's TLS
 	// certificate when validating forwarded SSO ID tokens (TrustedAudiences)

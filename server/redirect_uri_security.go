@@ -308,7 +308,7 @@ func (s *Server) validateHostnameWithDNS(ctx context.Context, hostname, rawURI s
 		return nil
 	}
 
-	allowPrivate := s.Config.AllowPrivateIPRedirectURIs || slices.Contains(s.Config.AllowPrivateIPRedirectURIHosts, hostname)
+	allowPrivate := s.Config.AllowPrivateIPRedirectURIs || slices.Contains(s.Config.redirectURIPrivateIPHosts(), hostname)
 	for _, ip := range ips {
 		if ip.IsPrivate() && !allowPrivate {
 			return newRedirectURISecurityError(

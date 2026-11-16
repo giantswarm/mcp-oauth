@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -76,6 +77,9 @@ func newExternalTokenHandler(t *testing.T, level slog.Level, accessToken bool) (
 	)
 	provider := mock.NewProvider()
 	provider.JWKSURIFunc = func(context.Context) (string, error) { return jwksServer.URL, nil }
+	jwksURL, err := url.Parse(jwksServer.URL)
+	require.NoError(t, err)
+	jwksHost := jwksURL.Hostname()
 	provider.IssuerURLFunc = func() string { return issuer }
 
 	store := memory.New()
@@ -88,10 +92,10 @@ func newExternalTokenHandler(t *testing.T, level slog.Level, accessToken bool) (
 		Issuer:             issuer,
 		ResourceIdentifier: resource,
 		TrustedAudiences:   []string{audience},
-		AllowPrivateIPJWKS: true,
+		JWKSPrivateIPHosts: []string{jwksHost},
 		JWKSRootCAs:        rootCAs,
 	}, logger, server.WithTrustedIssuers([]server.TrustedIssuer{{
-		Issuer: issuer, JwksURL: jwksServer.URL, AllowPrivateIPJWKS: true, RootCAs: rootCAs,
+		Issuer: issuer, JwksURL: jwksServer.URL, JWKSPrivateIPHosts: []string{jwksHost}, RootCAs: rootCAs,
 		AllowedAudiences: []string{resource, audience},
 	}}))
 	if err != nil {

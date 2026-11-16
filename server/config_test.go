@@ -303,14 +303,14 @@ func TestLogSecurityWarnings(t *testing.T) {
 			},
 		},
 		{
-			name: "AllowPrivateIPClientMetadataHosts warning",
+			name: "ClientMetadataPrivateIPHosts warning",
 			config: &Config{
-				RequirePKCE:                       true,
-				RegistrationAccessToken:           "token",
-				AllowPrivateIPClientMetadataHosts: []string{"client.internal.example"},
+				RequirePKCE:                  true,
+				RegistrationAccessToken:      "token",
+				ClientMetadataPrivateIPHosts: []string{"client.internal.example"},
 			},
 			expectedWarnings: []string{
-				"SECURITY WARNING: AllowPrivateIPClientMetadataHosts is set",
+				"SECURITY WARNING: ClientMetadataPrivateIPHosts is set",
 				"client.internal.example",
 			},
 			notExpectedWarnings: []string{
