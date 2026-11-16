@@ -363,17 +363,33 @@ func validateCodeVerifierFormat(verifier string) error {
 	if verifier == "" {
 		return fmt.Errorf("code_verifier is required when code_challenge is present")
 	}
+	return validatePKCEStringFormat("code_verifier", verifier)
+}
 
-	if len(verifier) < MinCodeVerifierLength {
-		return fmt.Errorf("code_verifier must be at least %d characters (RFC 7636)", MinCodeVerifierLength)
+// validateCodeChallengeFormat checks a code challenge against the shape RFC
+// 7636 §4.2 gives it: for S256 the unpadded base64url encoding of a SHA-256
+// hash, for plain the verifier itself.
+func validateCodeChallengeFormat(challenge, method string) error {
+	if method == PKCEMethodPlain {
+		return validatePKCEStringFormat("code_challenge", challenge)
 	}
-	if len(verifier) > MaxCodeVerifierLength {
-		return fmt.Errorf("code_verifier must be at most %d characters (RFC 7636)", MaxCodeVerifierLength)
+	hash, err := base64.RawURLEncoding.Strict().DecodeString(challenge)
+	if err != nil || len(hash) != sha256.Size {
+		return fmt.Errorf("an S256 code_challenge must be the 43-character unpadded base64url encoding of a SHA-256 hash (RFC 7636)")
 	}
+	return nil
+}
 
-	for _, ch := range verifier {
+func validatePKCEStringFormat(name, value string) error {
+	if len(value) < MinCodeVerifierLength {
+		return fmt.Errorf("%s must be at least %d characters (RFC 7636)", name, MinCodeVerifierLength)
+	}
+	if len(value) > MaxCodeVerifierLength {
+		return fmt.Errorf("%s must be at most %d characters (RFC 7636)", name, MaxCodeVerifierLength)
+	}
+	for _, ch := range value {
 		if !isValidPKCEVerifierChar(ch) {
-			return fmt.Errorf("code_verifier contains invalid characters (must be [A-Za-z0-9-._~])")
+			return fmt.Errorf("%s contains invalid characters (must be [A-Za-z0-9-._~])", name)
 		}
 	}
 	return nil

@@ -66,12 +66,13 @@ func TestPrepareAuthorization_RefusalCarriesOAuthErrorCode(t *testing.T) {
 			wantDescription: "code_challenge_method is not supported, use S256",
 		},
 		{
-			name:            "short state",
+			name:            "malformed S256 challenge",
 			scope:           "openid",
-			challenge:       challenge,
+			challenge:       "not-a-challenge",
 			challengeMethod: PKCEMethodS256,
-			state:           "short",
+			state:           validState,
 			wantCode:        ErrorCodeInvalidRequest,
+			wantDescription: "an S256 code_challenge must be the 43-character unpadded base64url encoding of a SHA-256 hash (RFC 7636)",
 		},
 		{
 			name:            "scope too long",

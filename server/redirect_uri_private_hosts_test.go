@@ -104,7 +104,7 @@ func TestRedirectURIPrivateHostsAuthorizationFlow(t *testing.T) {
 	canonicalURI, err := server.ValidateRedirectURIForAuthorization(t.Context(), client.ClientID, registeredURI)
 	require.NoError(t, err)
 	authorizationURL, err := server.StartAuthorizationFlow(t.Context(), client.ClientID, canonicalURI, "openid", "",
-		strings.Repeat("a", 43), PKCEMethodS256, strings.Repeat("b", 43), nil)
+		"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", PKCEMethodS256, strings.Repeat("b", 43), nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, authorizationURL)
 	for _, redirectURI := range []string{
@@ -120,6 +120,6 @@ func TestRedirectURIPrivateHostsAuthorizationFlow(t *testing.T) {
 	}
 	resolver.setResult(privateHost, net.ParseIP("169.254.169.254"))
 	_, err = server.StartAuthorizationFlow(t.Context(), client.ClientID, canonicalURI, "openid", "",
-		strings.Repeat("a", 43), PKCEMethodS256, strings.Repeat("b", 43), nil)
+		"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", PKCEMethodS256, strings.Repeat("b", 43), nil)
 	require.ErrorContains(t, err, "redirect URI failed security validation")
 }
