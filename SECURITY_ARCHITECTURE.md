@@ -72,7 +72,7 @@ The `mcp-oauth` library implements an OAuth 2.1-compliant proxy pattern where th
 1. MCP client generates random `code_verifier` (43-128 characters)
 2. Client computes `code_challenge = SHA256(code_verifier)`
 3. Client sends challenge to OAuth server in authorization request
-4. OAuth server stores challenge in authorization state
+4. OAuth server refuses with `invalid_request` a challenge that is not RFC 7636-shaped (S256: 43-character unpadded base64url SHA-256 hash), then stores it in authorization state
 5. OAuth server returns authorization code to client
 6. Client sends code + verifier to OAuth server for token exchange
 7. OAuth server validates: `SHA256(received_verifier) == stored_challenge`

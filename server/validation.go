@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -368,17 +369,23 @@ func validateCodeVerifierFormat(verifier string) error {
 
 // validateCodeChallengeFormat checks a code challenge against the shape RFC
 // 7636 §4.2 gives it: for S256 the unpadded base64url encoding of a SHA-256
-// hash, for plain the verifier itself.
+// hash, for plain the verifier itself. The length is checked before decoding
+// because the base64 decoder skips CR and LF, even in strict mode.
 func validateCodeChallengeFormat(challenge, method string) error {
 	if method == PKCEMethodPlain {
 		return validatePKCEStringFormat("code_challenge", challenge)
 	}
+	if len(challenge) != base64.RawURLEncoding.EncodedLen(sha256.Size) {
+		return errMalformedS256Challenge
+	}
 	hash, err := base64.RawURLEncoding.Strict().DecodeString(challenge)
 	if err != nil || len(hash) != sha256.Size {
-		return fmt.Errorf("an S256 code_challenge must be the 43-character unpadded base64url encoding of a SHA-256 hash (RFC 7636)")
+		return errMalformedS256Challenge
 	}
 	return nil
 }
+
+var errMalformedS256Challenge = errors.New("an S256 code_challenge must be the 43-character unpadded base64url encoding of a SHA-256 hash (RFC 7636)")
 
 func validatePKCEStringFormat(name, value string) error {
 	if len(value) < MinCodeVerifierLength {

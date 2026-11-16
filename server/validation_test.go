@@ -1008,6 +1008,8 @@ func TestValidateCodeChallengeFormat(t *testing.T) {
 		"S256 challenge with padding":            {challenge: rfcChallenge + "=", method: PKCEMethodS256, wantErr: true},
 		"S256 challenge in standard base64":      {challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw+cM", method: PKCEMethodS256, wantErr: true},
 		"S256 challenge with non-zero tail bits": {challenge: rfcChallenge[:42] + "N", method: PKCEMethodS256, wantErr: true},
+		"S256 challenge with a trailing newline": {challenge: rfcChallenge + "\n", method: PKCEMethodS256, wantErr: true},
+		"S256 challenge with an inner CRLF":      {challenge: rfcChallenge[:20] + "\r\n" + rfcChallenge[20:], method: PKCEMethodS256, wantErr: true},
 		"plain challenge of 43 characters":       {challenge: strings.Repeat("a", 43), method: PKCEMethodPlain},
 		"plain challenge of 128 characters":      {challenge: strings.Repeat("~", 128), method: PKCEMethodPlain},
 		"plain challenge too short":              {challenge: strings.Repeat("a", 42), method: PKCEMethodPlain, wantErr: true},
