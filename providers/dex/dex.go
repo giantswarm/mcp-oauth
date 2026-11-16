@@ -137,25 +137,18 @@ type Config struct {
 	// Default: slog.Default()
 	Logger *slog.Logger
 
-	// AllowPrivateIP allows the Dex issuer URL to resolve to a private or
-	// loopback IP address during OIDC discovery and token endpoint calls. Required
-	// when Dex is fronted by an internal-only load balancer (e.g. Azure internal LB,
-	// air-gapped clusters) where the public hostname resolves to an RFC 1918 address.
-	// Emits a startup warning when set.
+	// AllowPrivateIP has no effect: the Dex client always reaches private and
+	// loopback addresses, honors HTTP_PROXY, HTTPS_PROXY and NO_PROXY, and pins
+	// redirects to the issuer host. IP-literal private addresses in IssuerURL
+	// are still rejected by URL validation.
 	//
-	// Note: IP-literal private addresses in IssuerURL (e.g. https://10.0.0.1) are
-	// still rejected by URL validation regardless of this flag. This flag only lifts
-	// the transport-level SSRF check for hostnames that resolve to private IPs at
-	// connection time.
-	//
-	// WARNING: Reduces SSRF protection. Only enable for private IdP deployments.
+	// Deprecated: remove it; setting it logs a deprecation warning.
 	AllowPrivateIP bool
 
 	// RootCAs is the CA pool used to verify Dex's TLS certificate during OIDC
-	// discovery and token endpoint calls (e.g. an internal-CA Dex). It applies
-	// with or without AllowPrivateIP. The pool replaces the system roots rather
-	// than extending them. nil uses the system pool. Ignored when HTTPClient is
-	// provided.
+	// discovery and token endpoint calls (e.g. an internal-CA Dex). The pool
+	// replaces the system roots rather than extending them. nil uses the
+	// system pool. Ignored when HTTPClient is provided.
 	RootCAs *x509.CertPool
 
 	// discoveryClient overrides the OIDC discovery client. Nil means
@@ -182,13 +175,10 @@ func NewProvider(cfg *Config) (*Provider, error) {
 	}
 
 	requestTimeout := resolveTimeout(cfg.RequestTimeout)
-	httpClient := resolveHTTPClient(cfg.HTTPClient, cfg.AllowPrivateIP, cfg.RootCAs, requestTimeout)
+	httpClient := resolveHTTPClient(cfg.HTTPClient, cfg.RootCAs, requestTimeout)
 	if cfg.AllowPrivateIP {
-		logger.Warn("SECURITY WARNING: AllowPrivateIP is enabled for Dex OIDC discovery and token endpoints",
-			"risk", "OIDC discovery and token endpoints can resolve to private/internal IP addresses — SSRF possible",
-			"recommendation", "Only enable when the IdP is behind an internal-only load balancer; ensure the issuer URL is not attacker-controlled",
-			"cwe", "CWE-918",
-		)
+		logger.Warn("DEPRECATED: dex.Config.AllowPrivateIP has no effect; remove it",
+			"note", "the Dex client reaches private addresses and honors HTTP_PROXY, HTTPS_PROXY and NO_PROXY without it")
 	}
 	discoveryClient := resolveDiscoveryClient(cfg.discoveryClient, httpClient, logger)
 
@@ -304,23 +294,15 @@ func resolveTimeout(timeout time.Duration) time.Duration {
 	return timeout
 }
 
-// resolveHTTPClient returns the HTTP client to use for Dex API calls and OIDC
-// discovery. When allowPrivateIP is true and no explicit client is provided, a
-// client without SSRF protection is returned so that Dex issuer URLs resolving
-// to RFC 1918 addresses (e.g. internal load balancers) are reachable.
-//
-// rootCAs applies on both paths: a Dex on a public address can still present an
-// internal-CA certificate, so trust does not depend on the dial posture. Both
-// clients come from providers/oidc, which owns the transport tuning.
-func resolveHTTPClient(client *http.Client, allowPrivateIP bool, rootCAs *x509.CertPool, timeout time.Duration) *http.Client {
-	switch {
-	case client != nil:
+// resolveHTTPClient returns the HTTP client for Dex API calls and OIDC
+// discovery: the explicit client when set, else the provider-endpoint client
+// from providers/oidc, which reaches private addresses, honors the proxy
+// environment and verifies TLS against rootCAs (the system pool when nil).
+func resolveHTTPClient(client *http.Client, rootCAs *x509.CertPool, timeout time.Duration) *http.Client {
+	if client != nil {
 		return client
-	case allowPrivateIP:
-		return oidc.NewPrivateIPAllowedHTTPClient(timeout, rootCAs)
-	default:
-		return oidc.NewDefaultDialHTTPClient(timeout, rootCAs)
 	}
+	return oidc.NewDefaultDialHTTPClient(timeout, rootCAs)
 }
 
 // resolveDiscoveryClient returns override when non-nil, otherwise constructs a

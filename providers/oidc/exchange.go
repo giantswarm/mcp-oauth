@@ -236,7 +236,7 @@ func NewTokenExchangeClientWithOptions(opts TokenExchangeClientOptions) *TokenEx
 	if httpClient == nil {
 		if opts.AllowPrivateIP {
 			// Use client without SSRF protection for private IdP deployments
-			httpClient = NewPrivateIPAllowedHTTPClient(DefaultHTTPTimeout, opts.RootCAs)
+			httpClient = NewDefaultDialHTTPClient(DefaultHTTPTimeout, opts.RootCAs)
 		} else {
 			// SECURITY: Use SSRF-safe client with DNS rebinding protection
 			httpClient = NewSSRFSafeHTTPClient(DefaultHTTPTimeout, opts.RootCAs)

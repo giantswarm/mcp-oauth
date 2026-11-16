@@ -169,7 +169,7 @@ func NewJWKSClientWithOptions(opts JWKSClientOptions) *JWKSClient {
 	if httpClient == nil {
 		switch {
 		case opts.AllowPrivateIP:
-			httpClient = NewPrivateIPAllowedHTTPClient(DefaultHTTPTimeout, opts.RootCAs)
+			httpClient = NewDefaultDialHTTPClient(DefaultHTTPTimeout, opts.RootCAs)
 		case len(opts.AllowPrivateIPHosts) > 0:
 			httpClient = NewHostScopedPrivateIPHTTPClient(opts.AllowPrivateIPHosts, DefaultHTTPTimeout, opts.RootCAs)
 		default:

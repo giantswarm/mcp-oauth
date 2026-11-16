@@ -395,43 +395,14 @@ func NewSSRFSafeHTTPClient(timeout time.Duration, rootCAs *x509.CertPool) *http.
 		rootCAs)
 }
 
-// NewPrivateIPAllowedHTTPClient creates an HTTP client without SSRF protection.
-// This client allows connections to private IP addresses, which is necessary
-// for private IdP deployments (e.g., internal Dex).
+// NewPrivateIPAllowedHTTPClient returns the same client as
+// NewDefaultDialHTTPClient: private, loopback and link-local addresses are
+// reachable, the proxy environment is honored and redirects are pinned to the
+// original host.
 //
-// WARNING: This reduces SSRF protection. Only use when connecting to trusted
-// internal services where the IdP legitimately runs on private networks.
-//
-// Parameters:
-//   - timeout: HTTP client timeout (0 uses default 10 seconds)
-//   - rootCAs: CA pool to verify the IdP's certificate against; nil uses the
-//     system pool. Pass the internal CA when the private IdP presents a
-//     certificate from a CA not in the system pool.
-//
-// Security Features:
-//   - TLS Verification: enforced (never InsecureSkipVerify). Verifies against
-//     the provided rootCAs pool (for an internal-CA IdP), or the system pool
-//     when rootCAs is nil.
-//   - No SSRF Protection: Private, loopback, and link-local addresses are ALLOWED
-//   - Host-pinned redirects: a redirect to a different host is refused. Because
-//     this client cannot filter private IPs, it pins requests to the host that was
-//     originally dialed so a discovery/JWKS endpoint cannot 302 the fetch to an
-//     arbitrary internal target.
-//
-// Use Cases:
-//   - Home lab deployments with internal Dex
-//   - Air-gapped environments
-//   - Enterprise deployments with private IdPs
-//
-// Example:
-//
-//	client := NewPrivateIPAllowedHTTPClient(30 * time.Second, dexCAPool)
-//	resp, err := client.Get("https://dex.internal/keys")
+// Deprecated: use NewDefaultDialHTTPClient.
 func NewPrivateIPAllowedHTTPClient(timeout time.Duration, rootCAs *x509.CertPool) *http.Client {
-	return newHTTPClient(timeout, defaultDialContext,
-		true,  // pinHost: the dialer cannot filter private IPs
-		false, // proxy: a private IdP is reached directly
-		rootCAs)
+	return NewDefaultDialHTTPClient(timeout, rootCAs)
 }
 
 // NewDefaultDialHTTPClient creates an HTTP client for calls to an

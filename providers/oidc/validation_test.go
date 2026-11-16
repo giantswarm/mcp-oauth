@@ -1062,11 +1062,23 @@ func TestHTTPClients_ProxyOnlyWhereTheDialGuardIsAbsent(t *testing.T) {
 		})
 	}
 
-	t.Run("default dial", func(t *testing.T) {
-		if NewDefaultDialHTTPClient(0, nil).Transport.(*http.Transport).Proxy == nil {
-			t.Error("expected the provider-endpoint client to honor the proxy environment")
-		}
-	})
+	unguarded := map[string]*http.Client{
+		"default dial":       NewDefaultDialHTTPClient(0, nil),
+		"private-IP allowed": NewPrivateIPAllowedHTTPClient(0, nil),
+		"jwks private-IP allowed": NewJWKSClientWithOptions(JWKSClientOptions{
+			AllowPrivateIP: true,
+		}).httpClient,
+		"token exchange private-IP allowed": NewTokenExchangeClientWithOptions(TokenExchangeClientOptions{
+			AllowPrivateIP: true,
+		}).httpClient,
+	}
+	for name, client := range unguarded {
+		t.Run(name, func(t *testing.T) {
+			if client.Transport.(*http.Transport).Proxy == nil {
+				t.Error("expected a client without a dial guard to honor the proxy environment")
+			}
+		})
+	}
 }
 
 // TestHTTPClients_RedirectGuard verifies that every client whose dialer cannot

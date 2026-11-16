@@ -810,6 +810,19 @@ A pool replaces the system roots rather than extending them. Start from
 `x509.SystemCertPool()` and append, as above, unless you intend to trust the
 internal CA alone.
 
+#### Egress proxies
+
+Calls to an endpoint the operator configures (Dex discovery and token
+endpoint, a JWKS or token exchange client with `AllowPrivateIP`) honor
+`HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`. These clients have no dial guard,
+so a proxy bypasses nothing. A host in `NO_PROXY` is dialed directly.
+
+The SSRF-safe clients (the default JWKS and token exchange clients, and the
+host-scoped private-IP clients) ignore the proxy environment: their guard
+checks the address they dial, and behind a proxy that is the proxy, not the
+target. `dex.Config.AllowPrivateIP` is deprecated and has no effect; the Dex
+client reaches private addresses without it.
+
 ### Example YAML Configuration
 
 ```yaml
