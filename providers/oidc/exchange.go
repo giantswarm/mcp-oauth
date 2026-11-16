@@ -109,7 +109,8 @@ type TokenExchangeClientOptions struct {
 	// Logger is the logger for debug/info messages (nil uses default logger).
 	Logger *slog.Logger
 
-	// AllowPrivateIP allows token endpoints to resolve to private IP addresses.
+	// AllowPrivateIP allows token endpoints to resolve to private IP addresses
+	// and makes the client honor HTTP_PROXY, HTTPS_PROXY and NO_PROXY.
 	// WARNING: Reduces SSRF protection. Only enable for internal/VPN deployments
 	// where the IdP legitimately runs on private networks.
 	AllowPrivateIP bool

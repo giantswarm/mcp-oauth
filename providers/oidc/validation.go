@@ -406,10 +406,11 @@ func NewPrivateIPAllowedHTTPClient(timeout time.Duration, rootCAs *x509.CertPool
 }
 
 // NewDefaultDialHTTPClient creates an HTTP client for calls to an
-// operator-configured provider endpoint (OIDC discovery and the token
-// endpoint). It dials with the standard dialer, so the endpoint may resolve to
-// a private address, and it honors the proxy environment variables, so an
-// egress-proxied deployment keeps working.
+// operator-configured provider endpoint (OIDC discovery, the token endpoint,
+// and a JWKS or token exchange endpoint with AllowPrivateIP). It dials with
+// the standard dialer, so the endpoint may resolve to a private address, and
+// it honors the proxy environment variables, so an egress-proxied deployment
+// keeps working.
 //
 // Use NewSSRFSafeHTTPClient instead whenever the target URL can come from a
 // token or a request. This client applies no dial guard.
@@ -477,7 +478,7 @@ func HostScopedPrivateIPDialContext(dialer *net.Dialer, allowedHosts []string) f
 // NewHostScopedPrivateIPHTTPClient creates an HTTP client that allows private
 // IP resolution only for the explicitly listed hostnames. All other hosts go
 // through the normal SSRF/DNS-rebinding guard. Use this instead of
-// NewPrivateIPAllowedHTTPClient when the private endpoint is a known in-cluster
+// NewDefaultDialHTTPClient when the private endpoint is a known in-cluster
 // service — it narrows the SSRF escape hatch to only the expected host.
 //
 // rootCAs, when non-nil, is the CA pool the client verifies the IdP's

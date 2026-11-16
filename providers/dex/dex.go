@@ -137,12 +137,13 @@ type Config struct {
 	// Default: slog.Default()
 	Logger *slog.Logger
 
-	// AllowPrivateIP has no effect: the Dex client always reaches private and
+	// AllowPrivateIP is ignored. The Dex client always reaches private and
 	// loopback addresses, honors HTTP_PROXY, HTTPS_PROXY and NO_PROXY, and pins
 	// redirects to the issuer host. IP-literal private addresses in IssuerURL
 	// are still rejected by URL validation.
 	//
-	// Deprecated: remove it; setting it logs a deprecation warning.
+	// Deprecated: AllowPrivateIP has no effect; remove it. Setting it logs a
+	// warning.
 	AllowPrivateIP bool
 
 	// RootCAs is the CA pool used to verify Dex's TLS certificate during OIDC
@@ -177,8 +178,7 @@ func NewProvider(cfg *Config) (*Provider, error) {
 	requestTimeout := resolveTimeout(cfg.RequestTimeout)
 	httpClient := resolveHTTPClient(cfg.HTTPClient, cfg.RootCAs, requestTimeout)
 	if cfg.AllowPrivateIP {
-		logger.Warn("DEPRECATED: dex.Config.AllowPrivateIP has no effect; remove it",
-			"note", "the Dex client reaches private addresses and honors HTTP_PROXY, HTTPS_PROXY and NO_PROXY without it")
+		logger.Warn("dex.Config.AllowPrivateIP is deprecated and has no effect: the Dex client reaches private addresses without it; remove the setting")
 	}
 	discoveryClient := resolveDiscoveryClient(cfg.discoveryClient, httpClient, logger)
 

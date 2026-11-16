@@ -978,7 +978,7 @@ func TestResolveHTTPClient(t *testing.T) {
 		require.Same(t, custom, resolveHTTPClient(custom, nil, timeout))
 	})
 
-	t.Run("default client reaches private addresses through the proxy environment", func(t *testing.T) {
+	t.Run("default client honors the proxy environment and pins redirects", func(t *testing.T) {
 		client := resolveHTTPClient(nil, nil, timeout)
 		require.Equal(t, timeout, client.Timeout)
 		transport, ok := client.Transport.(*http.Transport)
@@ -1003,7 +1003,7 @@ func TestAllowPrivateIP_WarningEmitted(t *testing.T) {
 		cfg.Logger = logger
 	}))
 
-	require.Contains(t, buf.String(), "DEPRECATED: dex.Config.AllowPrivateIP has no effect")
+	require.Contains(t, buf.String(), "dex.Config.AllowPrivateIP is deprecated and has no effect")
 	require.NotContains(t, buf.String(), "CWE-918")
 }
 
@@ -1023,7 +1023,7 @@ func TestAllowPrivateIP_WarningEmittedWithExplicitClient(t *testing.T) {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
 
-	require.Contains(t, buf.String(), "DEPRECATED: dex.Config.AllowPrivateIP has no effect")
+	require.Contains(t, buf.String(), "dex.Config.AllowPrivateIP is deprecated and has no effect")
 }
 
 // TestAllowPrivateIP_IPLiteralStillRejected confirms that AllowPrivateIP does not

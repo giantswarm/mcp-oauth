@@ -815,11 +815,13 @@ internal CA alone.
 Calls to an endpoint the operator configures (Dex discovery and token
 endpoint, a JWKS or token exchange client with `AllowPrivateIP`) honor
 `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`. These clients have no dial guard,
-so a proxy bypasses nothing. A host in `NO_PROXY` is dialed directly.
+so a proxy bypasses nothing. When a proxy is set, list an internal IdP that
+the proxy cannot reach in `NO_PROXY`; a host in `NO_PROXY` is dialed directly.
 
 The SSRF-safe clients (the default JWKS and token exchange clients, and the
-host-scoped private-IP clients) keep their own dial guard; SECURITY_ARCHITECTURE.md
-"Egress Proxies" describes how they use a proxy.
+host-scoped private-IP clients) ignore the proxy environment and dial the
+address their guard validated.
+
 `dex.Config.AllowPrivateIP` is deprecated and has no effect; the Dex
 client reaches private addresses without it.
 
