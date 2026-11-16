@@ -30,6 +30,57 @@ func newTestClient(httpClient *http.Client, ttl time.Duration) *DiscoveryClient 
 	return NewDiscoveryClientWithOptions(httpClient, ttl, slog.Default(), WithSkipValidation())
 }
 
+// writeDiscoveryDocument serves doc with its issuer set to the URL the test
+// server is reached at, which is the issuer the client discovers.
+func writeDiscoveryDocument(w http.ResponseWriter, r *http.Request, doc DiscoveryDocument) {
+	doc.Issuer = "https://" + r.Host
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(doc)
+}
+
+func TestDiscoveryClient_Discover_IssuerMustMatch(t *testing.T) {
+	doc := DiscoveryDocument{
+		AuthorizationEndpoint: "https://dex.example.com/auth",
+		TokenEndpoint:         "https://dex.example.com/token",
+		JWKSUri:               "https://dex.example.com/keys",
+	}
+
+	tests := []struct {
+		name      string
+		issuer    func(serverURL string) string
+		wantError bool
+	}{
+		{name: "identical issuer is accepted", issuer: func(u string) string { return u }},
+		{name: "another issuer is refused", issuer: func(string) string { return "https://honest.example.com" }, wantError: true},
+		{name: "trailing slash difference is refused", issuer: func(u string) string { return u + "/" }, wantError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var served string
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				d := doc
+				d.Issuer = served
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(d)
+			}))
+			defer server.Close()
+			served = tt.issuer(server.URL)
+
+			client := newTestClient(server.Client(), time.Hour)
+			got, err := client.Discover(t.Context(), server.URL)
+			if !tt.wantError {
+				require.NoError(t, err)
+				require.Equal(t, server.URL, got.Issuer)
+				return
+			}
+			require.ErrorContains(t, err, served)
+			require.ErrorContains(t, err, server.URL)
+			_, cached := client.cache.Load(server.URL)
+			require.False(t, cached, "a refused document must not be cached")
+		})
+	}
+}
+
 func TestNewDiscoveryClient(t *testing.T) {
 	t.Run("with default values", func(t *testing.T) {
 		client := NewDiscoveryClient(nil, 0, nil)
@@ -84,10 +135,7 @@ func TestDiscoveryClient_Discover(t *testing.T) {
 				http.Error(w, "not found", http.StatusNotFound)
 				return
 			}
-			w.Header().Set("Content-Type", "application/json")
-			if err := json.NewEncoder(w).Encode(validDoc); err != nil {
-				t.Errorf("failed to encode response: %v", err)
-			}
+			writeDiscoveryDocument(w, r, validDoc)
 		}))
 		defer server.Close()
 
@@ -97,8 +145,8 @@ func TestDiscoveryClient_Discover(t *testing.T) {
 			t.Fatalf("Discover() error = %v", err)
 		}
 
-		if doc.Issuer != validDoc.Issuer {
-			t.Errorf("Issuer = %v, want %v", doc.Issuer, validDoc.Issuer)
+		if doc.Issuer != server.URL {
+			t.Errorf("Issuer = %v, want %v", doc.Issuer, server.URL)
 		}
 		if doc.AuthorizationEndpoint != validDoc.AuthorizationEndpoint {
 			t.Errorf("AuthorizationEndpoint = %v, want %v", doc.AuthorizationEndpoint, validDoc.AuthorizationEndpoint)
@@ -142,9 +190,8 @@ func TestDiscoveryClient_Discover(t *testing.T) {
 		httpDoc := validDoc
 		httpDoc.AuthorizationEndpoint = "http://dex.example.com/auth" // HTTP instead of HTTPS
 
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(httpDoc)
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeDiscoveryDocument(w, r, httpDoc)
 		}))
 		defer server.Close()
 
@@ -160,10 +207,9 @@ func TestDiscoveryClient_Discover(t *testing.T) {
 
 	t.Run("cache hit", func(t *testing.T) {
 		callCount := 0
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			callCount++
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(validDoc)
+			writeDiscoveryDocument(w, r, validDoc)
 		}))
 		defer server.Close()
 
@@ -188,10 +234,9 @@ func TestDiscoveryClient_Discover(t *testing.T) {
 
 	t.Run("cache expiry", func(t *testing.T) {
 		callCount := 0
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			callCount++
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(validDoc)
+			writeDiscoveryDocument(w, r, validDoc)
 		}))
 		defer server.Close()
 
@@ -256,9 +301,9 @@ func TestDiscoveryClient_Discover(t *testing.T) {
 	})
 
 	t.Run("context cancellation", func(t *testing.T) {
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			time.Sleep(1 * time.Second) // Simulate slow response
-			_ = json.NewEncoder(w).Encode(validDoc)
+			writeDiscoveryDocument(w, r, validDoc)
 		}))
 		defer server.Close()
 
@@ -301,8 +346,7 @@ func TestDiscoveryClient_Discover_SingleflightCoalescesColdMisses(t *testing.T) 
 		}
 		atomic.AddInt64(&fetches, 1)
 		<-release // hold the in-flight request until all callers are queued
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(validDoc)
+		writeDiscoveryDocument(w, r, validDoc)
 	}))
 	defer server.Close()
 
@@ -333,7 +377,7 @@ func TestDiscoveryClient_Discover_SingleflightCoalescesColdMisses(t *testing.T) 
 	for i, err := range errs {
 		require.NoError(t, err, "caller %d", i)
 		require.NotNil(t, docs[i])
-		require.Equal(t, validDoc.Issuer, docs[i].Issuer)
+		require.Equal(t, server.URL, docs[i].Issuer)
 	}
 	require.EqualValues(t, 1, atomic.LoadInt64(&fetches),
 		"cold-cache callers must coalesce into a single upstream fetch (got %d)", atomic.LoadInt64(&fetches))
@@ -352,10 +396,9 @@ func TestDiscoveryClient_Discover_CallerCancelDoesNotPoisonOthers(t *testing.T) 
 	}
 
 	release := make(chan struct{})
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-release
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(validDoc)
+		writeDiscoveryDocument(w, r, validDoc)
 	}))
 	defer server.Close()
 
@@ -400,7 +443,7 @@ func TestDiscoveryClient_Discover_CallerCancelDoesNotPoisonOthers(t *testing.T) 
 	case r := <-joinerResult:
 		require.NoError(t, r.err, "joiner must receive the shared fetch result, not the leader's cancellation")
 		require.NotNil(t, r.doc)
-		require.Equal(t, validDoc.Issuer, r.doc.Issuer)
+		require.Equal(t, server.URL, r.doc.Issuer)
 	case <-time.After(2 * time.Second):
 		t.Fatal("joiner did not return within 2s of upstream release")
 	}
@@ -508,9 +551,8 @@ func TestDiscoveryClient_ClearCache(t *testing.T) {
 		JWKSUri:               "https://dex.example.com/keys",
 	}
 
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(validDoc)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeDiscoveryDocument(w, r, validDoc)
 	}))
 	defer server.Close()
 
