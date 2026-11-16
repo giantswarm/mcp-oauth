@@ -22,6 +22,11 @@ import (
 	"golang.org/x/net/http/httpproxy"
 )
 
+const (
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
+)
+
 // Selector returns the proxy for a connection to host and port, or nil to
 // connect directly.
 type Selector func(host, port string) (*url.URL, error)
@@ -34,7 +39,7 @@ type Selector func(host, port string) (*url.URL, error)
 func FromEnvironment() Selector {
 	proxyFunc := httpproxy.FromEnvironment().ProxyFunc()
 	return func(host, port string) (*url.URL, error) {
-		return proxyFunc(&url.URL{Scheme: "https", Host: net.JoinHostPort(host, port)})
+		return proxyFunc(&url.URL{Scheme: schemeHTTPS, Host: net.JoinHostPort(host, port)})
 	}
 }
 
@@ -62,20 +67,20 @@ func dialProxy(ctx context.Context, dialer *net.Dialer, network string, proxyURL
 	addr := proxyURL.Host
 	if proxyURL.Port() == "" {
 		port := "80"
-		if proxyURL.Scheme == "https" {
+		if proxyURL.Scheme == schemeHTTPS {
 			port = "443"
 		}
 		addr = net.JoinHostPort(proxyURL.Hostname(), port)
 	}
 
 	switch proxyURL.Scheme {
-	case "http":
+	case schemeHTTP:
 		conn, err := dialer.DialContext(ctx, network, addr)
 		if err != nil {
 			return nil, fmt.Errorf("failed to connect to proxy %s: %w", addr, err)
 		}
 		return conn, nil
-	case "https":
+	case schemeHTTPS:
 		tlsDialer := &tls.Dialer{
 			NetDialer: dialer,
 			Config:    &tls.Config{ServerName: proxyURL.Hostname(), MinVersion: tls.VersionTLS12},
