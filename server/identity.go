@@ -81,7 +81,7 @@ func (s *Server) StartIdentityFlow(ctx context.Context, returnURL *url.URL, code
 		return "", fmt.Errorf("%s: an S256 code challenge is required", ErrorCodeInvalidRequest)
 	}
 	if err := s.validatePKCEForAuthFlow(ctx, "", codeChallenge, PKCEMethodS256); err != nil {
-		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
+		return "", err
 	}
 	if err := s.onIssuerOrigin(returnURL); err != nil {
 		return "", fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
