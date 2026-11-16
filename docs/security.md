@@ -422,7 +422,7 @@ Use only in trusted development environments.
 
 ## Redirect URI Security
 
-The library provides comprehensive redirect URI validation to prevent SSRF and open redirect attacks. **All security features are enabled by default** following the library's principle of "secure by default, explicit opt-out for less security."
+The library provides comprehensive redirect URI validation against open redirects and authorization codes sent to unintended addresses. The server never connects to a redirect URI, so these checks are browser-redirect policy, not SSRF protection. **All security features are enabled by default** following the library's principle of "secure by default, explicit opt-out for less security."
 
 ### Secure by Default
 
@@ -438,7 +438,7 @@ The following security controls are **automatically enabled**:
 | `RedirectURIPrivateIPHosts` | empty | Hostnames whose redirect URIs may resolve to RFC 1918 private IPv4 or RFC 4193 IPv6 unique-local IPs; every other host keeps the private-IP check |
 | `AllowPrivateIPRedirectURIs` | `false` | Deprecated: lifts the private-IP check for every host |
 | `AllowPrivateIPRedirectURIHosts` | empty | Deprecated former name of `RedirectURIPrivateIPHosts`; both are honored |
-| `AllowLinkLocalRedirectURIs` | `false` | 169.254.x.x/fe80:: blocked (cloud SSRF) |
+| `AllowLinkLocalRedirectURIs` | `false` | 169.254.x.x/fe80:: blocked (cloud metadata addresses) |
 
 **Note for Native/CLI App Support:** If your OAuth server needs to support native applications (desktop apps, CLI tools), you must set `AllowLocalhostRedirectURIs: true` per [RFC 8252 Section 7.3](https://datatracker.ietf.org/doc/html/rfc8252#section-7.3). This allows HTTP on loopback addresses (`localhost`, `127.x.x.x`, `::1`) which is required for native app OAuth flows.
 
@@ -471,7 +471,7 @@ For deployments that require link-local callbacks, enable that exception separat
 
 ```go
 config := &server.Config{
-    // WARNING: Enables SSRF to cloud metadata services (169.254.169.254)
+    // WARNING: codes may be redirected to cloud metadata addresses (169.254.169.254)
     AllowLinkLocalRedirectURIs: true,
 }
 ```

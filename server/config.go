@@ -601,9 +601,10 @@ type Config struct {
 	// address. This is browser-redirect policy, not SSRF protection: the server
 	// never connects to a redirect URI.
 	//
+	// Default: false
+	//
 	// Deprecated: list the hosts in RedirectURIPrivateIPHosts. Setting it logs
 	// a deprecation warning and still lifts the check for every host.
-	// Default: false
 	AllowPrivateIPRedirectURIs bool
 
 	// RedirectURIPrivateIPHosts lists the hostnames whose redirect URIs may
@@ -628,8 +629,9 @@ type Config struct {
 	AllowPrivateIPRedirectURIHosts []string
 
 	// AllowLinkLocalRedirectURIs allows link-local addresses (169.254.0.0/16, fe80::/10).
-	// WARNING: Could enable access to cloud metadata services (SSRF to 169.254.169.254).
-	// This is a significant security risk in cloud environments (AWS, GCP, Azure).
+	// WARNING: the authorization code could be sent to a cloud metadata address
+	// (169.254.169.254) or another link-local service in the browser's network.
+	// This is browser-redirect policy: the server never connects to a redirect URI.
 	// Only enable if you have specific requirements for link-local addresses.
 	// Default: false (blocked for security)
 	AllowLinkLocalRedirectURIs bool
@@ -639,9 +641,10 @@ type Config struct {
 	// addresses. The client chooses that URL, so this lifts the SSRF guard for
 	// every client.
 	//
+	// Default: false
+	//
 	// Deprecated: list the hosts in ClientMetadataPrivateIPHosts. Setting it
 	// logs a deprecation warning and still lifts the guard for every host.
-	// Default: false
 	AllowPrivateIPClientMetadata bool
 
 	// ClientMetadataPrivateIPHosts lists the hostnames whose CIMD metadata
@@ -671,9 +674,10 @@ type Config struct {
 	// SSO ID tokens (TrustedAudiences) resolve to private, loopback or
 	// link-local addresses.
 	//
+	// Default: false
+	//
 	// Deprecated: list the hosts in JWKSPrivateIPHosts. Setting it logs a
 	// deprecation warning and still lifts the guard for every host.
-	// Default: false
 	AllowPrivateIPJWKS bool
 
 	// JWKSPrivateIPHosts lists the hostnames whose JWKS endpoint, used to

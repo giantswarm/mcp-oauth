@@ -186,7 +186,7 @@ func TestClientMetadataPrivateIPHosts(t *testing.T) {
 		require.ErrorContains(t, err, errPrivateIP)
 	})
 
-	t.Run("a listed name rebinding to another host's address is still dialed only by name", func(t *testing.T) {
+	t.Run("a literal IP is not matched by a listed hostname", func(t *testing.T) {
 		transport := createSSRFProtectedTransport(false, []string{"localhost"}, nil)
 		_, err := transport.DialContext(t.Context(), "tcp", net.JoinHostPort("127.0.0.1", serverURL.Port()))
 		require.ErrorContains(t, err, errPrivateIP)
