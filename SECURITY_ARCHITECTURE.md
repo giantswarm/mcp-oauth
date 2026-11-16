@@ -852,9 +852,10 @@ To switch back, unset `AccessTokenFormat` (or set to opaque). New sessions get o
 
 **How It Works**:
 1. Client includes `resource` parameter in authorization request
-2. OAuth server binds the resource to the resulting access token
-3. During token validation, server checks token's `aud` (audience) claim matches request
-4. Mismatched resource results in 401 Unauthorized
+2. OAuth server refuses a `resource` it does not serve (`ResourceIdentifier`, or a `ResourceMetadataByPath` identifier) with `invalid_target`, at the authorization and token endpoints
+3. OAuth server binds the resource to the resulting access token
+4. During token validation, server checks token's `aud` (audience) claim matches request
+5. Mismatched resource results in 401 Unauthorized
 
 **Validation Flow**:
 ```
@@ -868,7 +869,7 @@ Client → Presents same token to https://admin.example.com ❌ REJECTED (401)
 
 **Best Practices**:
 - Use specific, well-defined resource URIs
-- Configure `AllowedResources` to prevent typos/attacks
+- List every resource this server issues tokens for in `ResourceIdentifier` or `ResourceMetadataByPath`
 - Monitor for tokens used against wrong resources (possible attack indicator)
 - Consider requiring resource parameter for multi-service deployments
 

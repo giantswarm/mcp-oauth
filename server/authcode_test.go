@@ -3533,6 +3533,7 @@ func TestResourceParameter_ConsistencyValidation(t *testing.T) {
 		&Config{
 			Issuer:                      "https://auth.example.com",
 			ResourceIdentifier:          "https://mcp.example.com",
+			ResourceMetadataByPath:      map[string]ProtectedResourceConfig{"/files": {}},
 			AccessTokenTTL:              3600,
 			RefreshTokenTTL:             86400,
 			RequirePKCE:                 true,
@@ -3597,7 +3598,7 @@ func TestResourceParameter_ConsistencyValidation(t *testing.T) {
 			authCodeObj.Code,
 			client.ClientID,
 			client.RedirectURIs[0],
-			"https://different-mcp.example.com", // Resource B (different!)
+			"https://mcp.example.com/files", // Resource B (different!)
 			codeVerifier,
 			"",
 		)

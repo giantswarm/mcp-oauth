@@ -43,7 +43,11 @@ func newConsentFlow(t *testing.T, configure func(*server.Config), redirectURIs .
 func newConsentFlowWithProvider(t *testing.T, provider providers.Provider, configure func(*server.Config), redirectURIs ...string) *consentFlow {
 	t.Helper()
 	store := memory.New()
-	cfg := &server.Config{Issuer: testIssuer, DisableNonceEchoRequirement: true}
+	cfg := &server.Config{
+		Issuer:                      testIssuer,
+		DisableNonceEchoRequirement: true,
+		ResourceMetadataByPath:      map[string]server.ProtectedResourceConfig{"/files": {}},
+	}
 	if configure != nil {
 		configure(cfg)
 	}
@@ -205,7 +209,7 @@ func TestConsent_ApproveThenCodeAndRemembered(t *testing.T) {
 		requireConsentPage(t, w)
 	})
 	t.Run("another resource asks again", func(t *testing.T) {
-		w := f.get(f.authorizeTarget(consentTestRedirect, testutil.GenerateRandomString(43), url.Values{"resource": {"https://other.example.com"}}))
+		w := f.get(f.authorizeTarget(consentTestRedirect, testutil.GenerateRandomString(43), url.Values{"resource": {testIssuer + "/files"}}))
 		requireConsentPage(t, w)
 	})
 	t.Run("prompt=consent asks again", func(t *testing.T) {

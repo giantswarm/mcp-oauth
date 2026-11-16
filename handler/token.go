@@ -165,18 +165,7 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	// Exchange authorization code for tokens
 	tokenResponse, scope, err := h.server.ExchangeAuthorizationCode(r.Context(), code, client.ClientID, redirectURI, resource, codeVerifier, dpopJKT)
 	if err != nil {
-		if errors.Is(err, server.ErrStorageUnavailable) {
-			h.writeTokenStorageUnavailable(w, r, grantTypeAuthorizationCode, span, startTime, err)
-			return
-		}
-		h.logger.Error("Failed to exchange authorization code", "client_id", client.ClientID, "ip", clientIP, paramError, err)
-		h.recordTokenFailure(r.Context(), grantTypeAuthorizationCode, constants.ErrorCodeInvalidGrant)
-		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
-		instrumentation.RecordError(span, err)
-		instrumentation.SetSpanError(span, "code exchange failed")
-		// SECURITY: Don't leak internal error details to client
-		// Audit logging is done in ExchangeAuthorizationCode
-		h.writeError(w, constants.ErrorCodeInvalidGrant, "Authorization code is invalid or expired", http.StatusBadRequest)
+		h.writeAuthorizationCodeExchangeError(w, r, span, startTime, client.ClientID, clientIP, err)
 		return
 	}
 
@@ -194,6 +183,30 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 
 	// Return tokens
 	h.writeTokenResponse(w, tokenResponse, scope)
+}
+
+// writeAuthorizationCodeExchangeError answers a failed authorization code
+// exchange: invalid_target for a resource this server does not serve, 503
+// for unavailable storage, and a generic invalid_grant otherwise so the
+// response does not reveal which check failed (details are audited by
+// ExchangeAuthorizationCode).
+func (h *Handler) writeAuthorizationCodeExchangeError(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, clientID, clientIP string, err error) {
+	if errors.Is(err, server.ErrStorageUnavailable) {
+		h.writeTokenStorageUnavailable(w, r, grantTypeAuthorizationCode, span, startTime, err)
+		return
+	}
+	instrumentation.RecordError(span, err)
+	h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+	if errors.Is(err, server.ErrInvalidTarget) {
+		h.recordTokenFailure(r.Context(), grantTypeAuthorizationCode, constants.ErrorCodeInvalidTarget)
+		instrumentation.SetSpanError(span, "invalid resource")
+		h.writeError(w, constants.ErrorCodeInvalidTarget, "The resource parameter does not name a resource this server issues tokens for", http.StatusBadRequest)
+		return
+	}
+	h.logger.Error("Failed to exchange authorization code", "client_id", clientID, "ip", clientIP, paramError, err)
+	h.recordTokenFailure(r.Context(), grantTypeAuthorizationCode, constants.ErrorCodeInvalidGrant)
+	instrumentation.SetSpanError(span, "code exchange failed")
+	h.writeError(w, constants.ErrorCodeInvalidGrant, "Authorization code is invalid or expired", http.StatusBadRequest)
 }
 
 func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request, clientIP string) {

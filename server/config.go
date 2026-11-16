@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/security"
 )
 
@@ -1349,6 +1350,37 @@ func (c *Config) GetResourceIdentifier() string {
 		return c.ResourceIdentifier
 	}
 	return c.Issuer
+}
+
+// PathResourceIdentifier returns the resource identifier advertised for the
+// Protected Resource Metadata path resourcePath: pathConfig.ResourceIdentifier
+// when set, else GetResourceIdentifier with resourcePath appended (the root
+// path appends nothing).
+func (c *Config) PathResourceIdentifier(resourcePath string, pathConfig ProtectedResourceConfig) string {
+	if pathConfig.ResourceIdentifier != "" {
+		return pathConfig.ResourceIdentifier
+	}
+	if resourcePath == "/" || resourcePath == "" {
+		return c.GetResourceIdentifier()
+	}
+	return c.GetResourceIdentifier() + resourcePath
+}
+
+// ServesResource reports whether resource names a protected resource this
+// server issues tokens for: GetResourceIdentifier or the identifier of a
+// ResourceMetadataByPath entry. URLs are compared after normalization
+// (scheme and host case, default port, trailing slash).
+func (c *Config) ServesResource(resource string) bool {
+	normalizedResource := helpers.NormalizeURL(resource)
+	if normalizedResource == helpers.NormalizeURL(c.GetResourceIdentifier()) {
+		return true
+	}
+	for resourcePath, pathConfig := range c.ResourceMetadataByPath {
+		if normalizedResource == helpers.NormalizeURL(c.PathResourceIdentifier(resourcePath, pathConfig)) {
+			return true
+		}
+	}
+	return false
 }
 
 // SetTrustedSchemesMap builds the pre-computed trusted schemes map from the given schemes.

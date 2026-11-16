@@ -34,7 +34,7 @@ config := &server.Config{
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `Issuer` | `string` | *required* | Canonical URL of your OAuth server |
-| `ResourceIdentifier` | `string` | `""` | Resource identifier for token audience binding (RFC 8707) |
+| `ResourceIdentifier` | `string` | `""` | Resource identifier for token audience binding (RFC 8707); defaults to `Issuer`. A `resource` parameter that is neither this value nor a `ResourceMetadataByPath` identifier is refused with `invalid_target` |
 | `SupportedScopes` | `[]string` | `nil` | Scopes this server supports |
 
 ### Security Settings
