@@ -144,6 +144,7 @@ func NewDiscoveryClientWithOptions(httpClient *http.Client, cacheTTL time.Durati
 // Security Features:
 //   - SSRF protection via ValidateIssuerURL
 //   - HTTPS enforcement for issuer and all discovered endpoints
+//   - The document's issuer must be identical to issuerURL (no normalization)
 //   - Document caching with TTL to reduce attack surface
 //
 // Example:
@@ -251,6 +252,13 @@ func (c *DiscoveryClient) fetchAndCache(ctx context.Context, issuerURL string) (
 	// SECURITY: Validate all endpoints use HTTPS
 	if err := c.validateDocument(&doc); err != nil {
 		return nil, fmt.Errorf("invalid discovery document: %w", err)
+	}
+
+	// OpenID Connect Discovery 1.0 §4.3 and RFC 8414 §3.3: the issuer in the
+	// document must be identical to the issuer the document was fetched for,
+	// compared without normalization; otherwise the document must not be used.
+	if doc.Issuer != issuerURL {
+		return nil, fmt.Errorf("invalid discovery document: issuer %q does not match the configured issuer %q", doc.Issuer, issuerURL)
 	}
 
 	c.cache.Store(issuerURL, &cachedDocument{
