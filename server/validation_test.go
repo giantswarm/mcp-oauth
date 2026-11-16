@@ -816,6 +816,55 @@ func TestCanonicalLoopbackRedirectURI_Match(t *testing.T) {
 			registeredURIs: []string{"http://localhost/callback/"},
 			want:           false,
 		},
+		// Only the port may vary: query, fragment and userinfo match exactly
+		{
+			name:           "same query on any port matches",
+			requestedURI:   "http://127.0.0.1:49567/callback?tenant=a",
+			registeredURIs: []string{"http://127.0.0.1/callback?tenant=a"},
+			want:           true,
+		},
+		{
+			name:           "different query does not match",
+			requestedURI:   "http://127.0.0.1:49567/callback?tenant=b",
+			registeredURIs: []string{"http://127.0.0.1/callback?tenant=a"},
+			want:           false,
+		},
+		{
+			name:           "added query does not match",
+			requestedURI:   "http://127.0.0.1:49567/callback?tenant=a",
+			registeredURIs: []string{"http://127.0.0.1/callback"},
+			want:           false,
+		},
+		{
+			name:           "dropped query does not match",
+			requestedURI:   "http://127.0.0.1:49567/callback",
+			registeredURIs: []string{"http://127.0.0.1/callback?tenant=a"},
+			want:           false,
+		},
+		{
+			name:           "empty query marker does not match",
+			requestedURI:   "http://127.0.0.1:49567/callback?",
+			registeredURIs: []string{"http://127.0.0.1/callback"},
+			want:           false,
+		},
+		{
+			name:           "fragment does not match",
+			requestedURI:   "http://127.0.0.1:49567/callback#frag",
+			registeredURIs: []string{"http://127.0.0.1/callback"},
+			want:           false,
+		},
+		{
+			name:           "userinfo does not match",
+			requestedURI:   "http://user@127.0.0.1:49567/callback",
+			registeredURIs: []string{"http://127.0.0.1/callback"},
+			want:           false,
+		},
+		{
+			name:           "escaped path does not match its decoded form",
+			requestedURI:   "http://127.0.0.1:49567/call%2Fback",
+			registeredURIs: []string{"http://127.0.0.1/call/back"},
+			want:           false,
+		},
 		// Scheme must match
 		{
 			name:           "different scheme does not match",

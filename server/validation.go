@@ -189,24 +189,21 @@ func (s *Server) resolveRegisteredRedirectURI(client *storage.Client, redirectUR
 }
 
 // canonicalLoopbackRedirectURI returns the canonical URI for a loopback
-// port-agnostic match (RFC 8252 §7.3 + §8.3). Scheme, host, and path are
-// taken from the matched registered URI; only the port is taken from the
-// request (the native app binds an ephemeral port, so RFC 8252 mandates the
-// request port wins on the redirect leg). Returns ok=false when no registered
-// loopback URI matches.
+// port-agnostic match (RFC 8252 §7.3 + §8.3). Only the port may differ from a
+// registered loopback URI; scheme and host compare case-insensitively and
+// every other component (userinfo, path, query, fragment) compares exactly
+// (RFC 9700 §4.1.3). The canonical URI is the matched registered URI with the
+// request's port, since the native app binds an ephemeral port. Returns
+// ok=false when no registered loopback URI matches.
 func canonicalLoopbackRedirectURI(requestedURI string, registeredURIs []string) (string, bool) {
 	parsed, err := url.Parse(requestedURI)
 	if err != nil {
 		return "", false
 	}
-	hostname := parsed.Hostname()
-	if !isLoopbackAddress(hostname) {
+	if !isLoopbackAddress(parsed.Hostname()) {
 		return "", false
 	}
-
-	requestedScheme := strings.ToLower(parsed.Scheme)
-	requestedHost := strings.ToLower(hostname)
-	requestedPath := parsed.Path
+	requestedKey := loopbackMatchKey(parsed)
 	requestedPort := parsed.Port()
 
 	for _, registered := range registeredURIs {
@@ -215,12 +212,7 @@ func canonicalLoopbackRedirectURI(requestedURI string, registeredURIs []string) 
 			continue
 		}
 		registeredHost := registeredParsed.Hostname()
-		if !isLoopbackAddress(registeredHost) {
-			continue
-		}
-		if strings.ToLower(registeredParsed.Scheme) != requestedScheme ||
-			strings.ToLower(registeredHost) != requestedHost ||
-			registeredParsed.Path != requestedPath {
+		if !isLoopbackAddress(registeredHost) || loopbackMatchKey(registeredParsed) != requestedKey {
 			continue
 		}
 		canonical := *registeredParsed
@@ -230,6 +222,16 @@ func canonicalLoopbackRedirectURI(requestedURI string, registeredURIs []string) 
 		return canonical.String(), true
 	}
 	return "", false
+}
+
+// loopbackMatchKey serializes u without its port, with scheme and host
+// lowercased, so two loopback redirect URIs that differ only in port share a
+// key.
+func loopbackMatchKey(u *url.URL) string {
+	key := *u
+	key.Scheme = strings.ToLower(u.Scheme)
+	key.Host = net.JoinHostPort(strings.ToLower(u.Hostname()), "")
+	return key.String()
 }
 
 // validateScopes validates that requested scopes are allowed
