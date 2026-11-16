@@ -13,10 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
-	"github.com/stretchr/testify/require"
 )
 
 // enterpriseGroupCount represents a realistic enterprise Active Directory group count
