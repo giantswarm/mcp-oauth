@@ -430,7 +430,7 @@ The following security controls are **automatically enabled**:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `ProductionMode` | `true` | HTTPS required for non-loopback URIs; `DisableProductionMode` is refused unless `Issuer` is a loopback URL |
+| `ProductionMode` | `true` | HTTPS required for non-loopback URIs; `DisableProductionMode` is deprecated outside a loopback `Issuer` and logs a warning there |
 | `DNSValidation` | `true` | Resolve hostnames to check IPs |
 | `DNSValidationStrict` | `true` | Fail-closed on DNS failures |
 | `ValidateRedirectURIAtAuthorization` | `true` | Re-validate at authorization time (TOCTOU protection) |
@@ -477,8 +477,8 @@ To completely disable security features (e.g., for local development), use the e
 
 ```go
 config := &server.Config{
-    // Accept http:// redirect URIs on any host; refused unless Issuer is a
-    // loopback URL such as http://localhost:8080
+    // Accept http:// redirect URIs on any host; deprecated (warns) unless
+    // Issuer is a loopback URL such as http://localhost:8080
     DisableProductionMode: true,
 
     // Disable DNS validation (if latency is unacceptable)

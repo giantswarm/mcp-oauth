@@ -9,12 +9,10 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/security"
 )
 
@@ -583,10 +581,11 @@ type Config struct {
 	// Default: true (set by applySecurityDefaults unless DisableProductionMode).
 	ProductionMode bool
 
-	// DisableProductionMode accepts http:// redirect URIs on any host. It is
-	// refused unless Issuer is itself a loopback URL (http://localhost,
-	// http://127.0.0.1, http://[::1]): a deployed server never needs it, and
-	// native clients' loopback redirects are covered by
+	// DisableProductionMode accepts http:// redirect URIs on any host.
+	//
+	// Deprecated: only meaningful with a loopback Issuer (http://localhost,
+	// http://127.0.0.1, http://[::1]); with any other Issuer it logs a
+	// deprecation warning. Native clients' loopback redirects are covered by
 	// AllowLocalhostRedirectURIs.
 	// Default: false
 	DisableProductionMode bool
@@ -1254,10 +1253,6 @@ func (c *Config) Validate() error {
 			c.ForwardedSessionIdentity, ForwardedSessionIdentityBearer, ForwardedSessionIdentityPrincipal)
 	}
 
-	if err := c.validateDisableProductionMode(); err != nil {
-		return err
-	}
-
 	if !c.IsJWTAccessTokenFormat() {
 		// AccessTokenFormatOpaque (or empty/unknown — treated as opaque).
 		// Reject anything that is not the explicit opaque value or empty so
@@ -1286,21 +1281,6 @@ func (c *Config) Validate() error {
 			c.AccessTokenSigningAlgorithm, supportedSigningAlgorithmsList())
 	}
 	return validateSigningKeyMatchesAlgorithm(c.AccessTokenSigningKey, c.AccessTokenSigningAlgorithm)
-}
-
-// validateDisableProductionMode refuses DisableProductionMode unless the
-// issuer is a loopback URL: outside local development it only lets
-// authorization codes travel over plain HTTP to non-loopback hosts.
-func (c *Config) validateDisableProductionMode() error {
-	if !c.DisableProductionMode {
-		return nil
-	}
-	issuerURL, err := url.Parse(c.Issuer)
-	if err == nil && helpers.IsLoopbackHostname(issuerURL.Hostname()) {
-		return nil
-	}
-	return fmt.Errorf("DisableProductionMode is only accepted with a loopback Issuer (got %q): remove it; "+
-		"loopback redirect URIs of native clients are allowed by AllowLocalhostRedirectURIs (default true)", c.Issuer)
 }
 
 // validateIntrospectionResourceServers rejects empty entries in the allowlist.

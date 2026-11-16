@@ -1,6 +1,7 @@
 package server
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -61,28 +62,34 @@ func TestRedirectURIDefaults_DisableProductionMode(t *testing.T) {
 		name              string
 		issuer            string
 		allowInsecureHTTP bool
-		wantRefused       bool
+		wantDeprecation   bool
 	}{
-		{name: "https issuer", issuer: "https://auth.example.com", wantRefused: true},
-		{name: "http issuer on a public host", issuer: "http://auth.example.com", allowInsecureHTTP: true, wantRefused: true},
+		{name: "https issuer", issuer: "https://auth.example.com", wantDeprecation: true},
+		{name: "http issuer on a public host", issuer: "http://auth.example.com", allowInsecureHTTP: true, wantDeprecation: true},
 		{name: "localhost issuer", issuer: "http://localhost:8080"},
 		{name: "IPv4 loopback issuer", issuer: "http://127.0.0.1:8080"},
 		{name: "IPv6 loopback issuer", issuer: "http://[::1]:8080"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv, err := newRedirectDefaultsServer(t, &Config{
-				Issuer:                tt.issuer,
-				AllowInsecureHTTP:     tt.allowInsecureHTTP,
-				DisableProductionMode: true,
-			})
-			if tt.wantRefused {
-				require.ErrorContains(t, err, "DisableProductionMode")
-				require.ErrorContains(t, err, "AllowLocalhostRedirectURIs")
-				return
-			}
+			logger, logs := captureLogger()
+			store := memory.New()
+			t.Cleanup(store.Stop)
+			srv, err := New(mock.NewProvider(), store, store, store, &Config{
+				Issuer:                     tt.issuer,
+				AllowInsecureHTTP:          tt.allowInsecureHTTP,
+				DisableProductionMode:      true,
+				DisableDNSValidation:       true,
+				DisableDNSValidationStrict: true,
+			}, logger)
 			require.NoError(t, err)
 			require.NoError(t, srv.ValidateRedirectURIForRegistration(t.Context(), "http://app.example.com/callback"))
+
+			deprecated := strings.Contains(logs.String(), "DEPRECATED: DisableProductionMode")
+			require.Equal(t, tt.wantDeprecation, deprecated, logs.String())
+			if tt.wantDeprecation {
+				require.Contains(t, logs.String(), "AllowLocalhostRedirectURIs")
+			}
 		})
 	}
 }
