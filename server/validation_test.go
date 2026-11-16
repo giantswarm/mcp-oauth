@@ -917,9 +917,9 @@ func TestValidateRedirectURI_RFC8252LoopbackPort(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			setup := newTestServerSetup(false)
 			config := &Config{
-				AllowLocalhostRedirectURIs: tt.allowLocalhostRedirectURIs,
-				AllowInsecureHTTP:          true,
-				Issuer:                     "http://localhost:8080",
+				DisableLocalhostRedirectURIs: !tt.allowLocalhostRedirectURIs,
+				AllowInsecureHTTP:            true,
+				Issuer:                       "http://localhost:8080",
 			}
 			srv, err := setup.createServer(config)
 			if err != nil {

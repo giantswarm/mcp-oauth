@@ -159,7 +159,7 @@ The `oauth.redirect_uri.security_rejected` metric tracks security validation fai
 | `blocked_scheme` | Dangerous scheme (javascript:, data:, file:, etc.) |
 | `private_ip` | RFC 1918 private IP (10.x, 172.16.x, 192.168.x) |
 | `link_local` | Link-local address (169.254.x.x - cloud metadata SSRF) |
-| `loopback_not_allowed` | Loopback when AllowLocalhostRedirectURIs=false |
+| `loopback_not_allowed` | Loopback when DisableLocalhostRedirectURIs=true |
 | `http_not_allowed` | HTTP on non-loopback in ProductionMode |
 | `dns_resolves_to_private_ip` | Hostname resolves to private IP (DNS rebinding) |
 | `dns_resolves_to_link_local` | Hostname resolves to link-local (DNS rebinding) |

@@ -507,6 +507,29 @@ func TestFromEnv_BadAllowLocalhostRedirectURIs(t *testing.T) {
 	}
 }
 
+func TestFromEnv_AllowLocalhostRedirectURIs(t *testing.T) {
+	tests := []struct {
+		name        string
+		value       string
+		wantAllow   bool
+		wantDisable bool
+	}{
+		{name: "unset", wantAllow: true},
+		{name: "true", value: "true", wantAllow: true},
+		{name: "false", value: "false", wantDisable: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setRequired(t, "https://auth.example")
+			t.Setenv("OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS", tt.value)
+			cfg, err := oauthconfig.FromEnv()
+			require.NoError(t, err)
+			require.Equal(t, tt.wantAllow, cfg.AllowLocalhostRedirectURIs)
+			require.Equal(t, tt.wantDisable, cfg.DisableLocalhostRedirectURIs)
+		})
+	}
+}
+
 func TestFromEnv_EmptyTrustedRedirectSchemesOmitted(t *testing.T) {
 	setRequired(t, "https://auth.example")
 	t.Setenv("OAUTH_TRUSTED_REDIRECT_SCHEMES", "  , , ")

@@ -98,10 +98,12 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 		return nil, err
 	}
 
-	cfg.AllowLocalhostRedirectURIs, err = optionalBool(prefix+"ALLOW_LOCALHOST_REDIRECT_URIS", false)
+	allowLoopbackRedirectURIs, err := optionalBool(prefix+"ALLOW_LOCALHOST_REDIRECT_URIS", true)
 	if err != nil {
 		return nil, err
 	}
+	cfg.AllowLocalhostRedirectURIs = allowLoopbackRedirectURIs
+	cfg.DisableLocalhostRedirectURIs = !allowLoopbackRedirectURIs
 
 	return cfg, nil
 }

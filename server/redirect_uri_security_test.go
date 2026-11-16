@@ -46,7 +46,8 @@ func defaultTestSecurityConfig() testSecurityConfig {
 // Note: This creates a server with a mock DNS resolver to avoid real DNS lookups in tests.
 //
 // Security features are controlled via the testSecurityConfig struct for readability:
-// - productionMode=false sets DisableProductionMode=true (allows HTTP on non-loopback)
+// - productionMode=false sets DisableProductionMode=true with a loopback issuer (allows HTTP on non-loopback)
+// - allowLocalhost=false sets DisableLocalhostRedirectURIs=true
 // - dnsValidation=false sets DisableDNSValidation=true (disables DNS checks)
 func newTestServerWithSecurityConfig(cfg testSecurityConfig) *Server {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -55,17 +56,22 @@ func newTestServerWithSecurityConfig(cfg testSecurityConfig) *Server {
 
 	defaultDialer := newMockDNSResolver()
 
+	issuer := "https://auth.example.com"
+	if !cfg.productionMode {
+		issuer = "http://localhost:8080"
+	}
+
 	config := &Config{
-		Issuer: "https://auth.example.com",
+		Issuer: issuer,
 		// Use Disable* fields to opt-out of secure defaults
 		DisableProductionMode:              !cfg.productionMode,
 		DisableDNSValidation:               !cfg.dnsValidation,
 		DisableDNSValidationStrict:         !cfg.dnsValidation, // Match strict to validation setting
 		DisableAuthorizationTimeValidation: true,               // Disable for simpler testing
 		// Allow* flags for specific relaxations
-		AllowLocalhostRedirectURIs: cfg.allowLocalhost,
-		AllowPrivateIPRedirectURIs: cfg.allowPrivateIP,
-		AllowLinkLocalRedirectURIs: cfg.allowLinkLocal,
+		DisableLocalhostRedirectURIs: !cfg.allowLocalhost,
+		AllowPrivateIPRedirectURIs:   cfg.allowPrivateIP,
+		AllowLinkLocalRedirectURIs:   cfg.allowLinkLocal,
 		// Always set these explicitly for tests
 		BlockedRedirectSchemes: []string{"javascript", "data", "file", "vbscript", "about", "ftp", "blob", "ms-appx", "ms-appx-web"},
 		DNSResolver:            defaultDialer.resolver(),

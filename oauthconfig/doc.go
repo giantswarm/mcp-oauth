@@ -26,7 +26,7 @@
 //   - OAUTH_MAX_CLIENTS_PER_IP                — positive integer
 //   - OAUTH_TRUST_PROXY                       (default false)
 //   - OAUTH_TRUSTED_AUDIENCES                 — comma-separated audience list
-//   - OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS     (default false) — RFC 8252 native-app loopback support
+//   - OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS     (default true) — RFC 8252 native-app loopback support; false refuses loopback redirects
 //   - OAUTH_TRUSTED_REDIRECT_SCHEMES          — comma-separated URI schemes (e.g. "cursor,vscode")
 //     populates server.Config.TrustedPublicRegistrationSchemes
 //   - OAUTH_TRUSTED_CLIENTS                   — JSON array of {"client_id", "redirect_uris"}

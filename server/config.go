@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/security"
 )
 
@@ -575,26 +577,32 @@ type Config struct {
 	// These settings control security validation of redirect URIs during client registration
 	// and authorization flows. They address SSRF and open redirect vulnerabilities.
 
-	// ProductionMode enforces strict security validation for redirect URIs:
-	// - HTTPS required for all redirect URIs (except loopback when AllowLocalhostRedirectURIs=true)
-	// - Private IP addresses blocked in redirect URIs (unless AllowPrivateIPRedirectURIs=true)
-	// - Link-local addresses blocked (unless AllowLinkLocalRedirectURIs=true)
-	// - Dangerous URI schemes blocked (javascript:, data:, file:, etc.)
-	// Default: true (secure by default - set automatically by applySecurityDefaults)
-	// To disable for development, set DisableProductionMode=true instead.
+	// ProductionMode refuses plain-HTTP redirect URIs on hosts that are not
+	// loopback (RFC 9700 §4.1.3; MCP Communication Security). It has no other
+	// effect: private-IP, link-local and scheme checks apply regardless.
+	// Default: true (set by applySecurityDefaults unless DisableProductionMode).
 	ProductionMode bool
 
-	// DisableProductionMode explicitly disables ProductionMode for development environments.
-	// WARNING: Disabling ProductionMode significantly weakens redirect URI security.
-	// Only set this to true for local development where you need HTTP on non-loopback hosts.
-	// Default: false (ProductionMode is enabled)
+	// DisableProductionMode accepts http:// redirect URIs on any host. It is
+	// refused unless Issuer is itself a loopback URL (http://localhost,
+	// http://127.0.0.1, http://[::1]): a deployed server never needs it, and
+	// native clients' loopback redirects are covered by
+	// AllowLocalhostRedirectURIs.
+	// Default: false
 	DisableProductionMode bool
 
-	// AllowLocalhostRedirectURIs allows http://localhost and http://127.0.0.1 redirect URIs
-	// even in ProductionMode. Required for native apps per RFC 8252.
-	// Also allows loopback IPv6 addresses (::1, [::1]).
-	// Default: false (Go zero-value; set to true for native app support per RFC 8252 Section 7.3)
+	// AllowLocalhostRedirectURIs accepts loopback redirect URIs
+	// (http://localhost, http://127.0.0.0/8, http://[::1]) over plain HTTP and
+	// on any port, as RFC 8252 §7.3 requires for native clients. A registered
+	// loopback redirect URI matches a request on any port.
+	// Default: true (set by applySecurityDefaults unless
+	// DisableLocalhostRedirectURIs).
 	AllowLocalhostRedirectURIs bool
+
+	// DisableLocalhostRedirectURIs refuses loopback redirect URIs, for a
+	// server whose clients never run on the user's machine.
+	// Default: false
+	DisableLocalhostRedirectURIs bool
 
 	// AllowPrivateIPRedirectURIs allows redirect URIs that resolve to private IP addresses
 	// (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 per RFC 1918,
@@ -1246,6 +1254,10 @@ func (c *Config) Validate() error {
 			c.ForwardedSessionIdentity, ForwardedSessionIdentityBearer, ForwardedSessionIdentityPrincipal)
 	}
 
+	if err := c.validateDisableProductionMode(); err != nil {
+		return err
+	}
+
 	if !c.IsJWTAccessTokenFormat() {
 		// AccessTokenFormatOpaque (or empty/unknown — treated as opaque).
 		// Reject anything that is not the explicit opaque value or empty so
@@ -1274,6 +1286,21 @@ func (c *Config) Validate() error {
 			c.AccessTokenSigningAlgorithm, supportedSigningAlgorithmsList())
 	}
 	return validateSigningKeyMatchesAlgorithm(c.AccessTokenSigningKey, c.AccessTokenSigningAlgorithm)
+}
+
+// validateDisableProductionMode refuses DisableProductionMode unless the
+// issuer is a loopback URL: outside local development it only lets
+// authorization codes travel over plain HTTP to non-loopback hosts.
+func (c *Config) validateDisableProductionMode() error {
+	if !c.DisableProductionMode {
+		return nil
+	}
+	issuerURL, err := url.Parse(c.Issuer)
+	if err == nil && helpers.IsLoopbackHostname(issuerURL.Hostname()) {
+		return nil
+	}
+	return fmt.Errorf("DisableProductionMode is only accepted with a loopback Issuer (got %q): remove it; "+
+		"loopback redirect URIs of native clients are allowed by AllowLocalhostRedirectURIs (default true)", c.Issuer)
 }
 
 // validateIntrospectionResourceServers rejects empty entries in the allowlist.

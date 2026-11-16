@@ -15,6 +15,7 @@ import (
 //   - RequirePKCE=true (OAuth 2.1 compliance)
 //   - AllowRefreshTokenRotation=true (prevents refresh token theft)
 //   - ProductionMode=true (HTTPS required for non-loopback)
+//   - AllowLocalhostRedirectURIs=true (RFC 8252 §7.3 loopback redirects)
 //   - DNSValidation=true (SSRF protection)
 //   - DNSValidationStrict=true (fail-closed DNS validation)
 //   - ValidateRedirectURIAtAuthorization=true (TOCTOU protection)
@@ -47,6 +48,7 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 	if !config.DisableProductionMode {
 		config.ProductionMode = true
 	}
+	config.AllowLocalhostRedirectURIs = !config.DisableLocalhostRedirectURIs
 	if !config.DisableDNSValidation {
 		config.DNSValidation = true
 	}
@@ -257,8 +259,8 @@ func logRedirectURISecurityStatus(config *Config, logger *slog.Logger) {
 	// Warn about explicitly disabled security features
 	if config.DisableProductionMode {
 		logger.Warn("SECURITY WARNING: ProductionMode is DISABLED",
-			"risk", "HTTP allowed on non-loopback hosts, relaxed redirect URI validation",
-			"recommendation", "Only disable for local development environments",
+			"risk", "HTTP redirect URIs allowed on non-loopback hosts",
+			"recommendation", "Only for a loopback issuer in local development",
 			"learn_more", "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics#section-4.1")
 	}
 	if config.DisableDNSValidation {

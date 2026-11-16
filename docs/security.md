@@ -430,29 +430,20 @@ The following security controls are **automatically enabled**:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `ProductionMode` | `true` | HTTPS required for non-loopback URIs |
+| `ProductionMode` | `true` | HTTPS required for non-loopback URIs; `DisableProductionMode` is refused unless `Issuer` is a loopback URL |
 | `DNSValidation` | `true` | Resolve hostnames to check IPs |
 | `DNSValidationStrict` | `true` | Fail-closed on DNS failures |
 | `ValidateRedirectURIAtAuthorization` | `true` | Re-validate at authorization time (TOCTOU protection) |
-| `AllowLocalhostRedirectURIs` | `false` | Loopback blocked by default (set to `true` for native apps) |
+| `AllowLocalhostRedirectURIs` | `true` | Loopback redirects over HTTP on any port (RFC 8252 §7.3); set `DisableLocalhostRedirectURIs` to refuse them |
 | `AllowPrivateIPRedirectURIs` | `false` | RFC 1918 private IPv4 and RFC 4193 IPv6 unique-local IPs blocked |
 | `AllowPrivateIPRedirectURIHosts` | empty | Hostnames whose redirect URIs may resolve to RFC 1918 private IPv4 or RFC 4193 IPv6 unique-local IPs; every other host keeps the private-IP guard |
 | `AllowLinkLocalRedirectURIs` | `false` | 169.254.x.x/fe80:: blocked (cloud SSRF) |
 
-**Note for Native/CLI App Support:** If your OAuth server needs to support native applications (desktop apps, CLI tools), you must set `AllowLocalhostRedirectURIs: true` per [RFC 8252 Section 7.3](https://datatracker.ietf.org/doc/html/rfc8252#section-7.3). This allows HTTP on loopback addresses (`localhost`, `127.x.x.x`, `::1`) which is required for native app OAuth flows.
+**Note for Native/CLI App Support:** Loopback redirect URIs (`localhost`, `127.x.x.x`, `::1`) are accepted over HTTP and on any port by default, as [RFC 8252 Section 7.3](https://datatracker.ietf.org/doc/html/rfc8252#section-7.3) requires for native applications. A server without native clients can refuse them with `DisableLocalhostRedirectURIs: true`.
 
 ### Escape Hatches for Less Strict Validation
 
 If you need to reduce security for specific use cases, configure only the exception you need. The following examples are alternatives.
-
-For native applications, allow loopback callbacks:
-
-```go
-config := &server.Config{
-    // Native app support (RFC 8252) - allows HTTP on localhost/loopback
-    AllowLocalhostRedirectURIs: true,
-}
-```
 
 For known callbacks on private hostnames, list those hostnames. This allows RFC 1918 private IPv4 and RFC 4193 IPv6 unique-local addresses for listed hosts only. Literal private IP redirect URIs and link-local addresses remain blocked.
 
@@ -486,7 +477,8 @@ To completely disable security features (e.g., for local development), use the e
 
 ```go
 config := &server.Config{
-    // Disable HTTPS requirement for non-loopback (development only!)
+    // Accept http:// redirect URIs on any host; refused unless Issuer is a
+    // loopback URL such as http://localhost:8080
     DisableProductionMode: true,
 
     // Disable DNS validation (if latency is unacceptable)
@@ -526,19 +518,11 @@ config := &server.Config{
 
 ### Native App Support (RFC 8252)
 
-For native/CLI apps that need localhost redirects:
-
-```go
-config := server.HighSecurityRedirectURIConfig()
-config.Issuer = "https://auth.example.com"
-// AllowLocalhostRedirectURIs is already true in HighSecurityRedirectURIConfig
-```
-
-Or manually:
+Native/CLI apps need no setting: loopback redirects (`http://localhost`, `http://127.0.0.1`, `http://[::1]`) are allowed by default. To refuse them:
 
 ```go
 config := &server.Config{
-    AllowLocalhostRedirectURIs: true,  // Allows http://localhost, http://127.0.0.1, http://[::1]
+    DisableLocalhostRedirectURIs: true,
 }
 ```
 
