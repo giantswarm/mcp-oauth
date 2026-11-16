@@ -134,5 +134,23 @@ func TestPrepareAuthorization_UnknownClientIsNotARefusal(t *testing.T) {
 		"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", PKCEMethodS256, testutil.GenerateRandomString(43), nil)
 	require.Error(t, err)
 	var refused *AuthorizationRequestError
-	require.False(t, errors.As(err, &refused), "a failed client lookup is a server failure: %v", err)
+	require.False(t, errors.As(err, &refused), "an unknown client is not a refusal of the request: %v", err)
+	require.ErrorIs(t, err, ErrClientNotVerified)
+}
+
+func TestPrepareAuthorization_UnregisteredRedirectURIIsRejected(t *testing.T) {
+	srv, _, _ := setupFlowTestServer(t)
+	client, _, err := srv.RegisterClient(t.Context(), "Test Client", ClientTypePublic, "",
+		[]string{"https://example.com/callback"}, []string{"openid"}, "192.168.1.100", 10)
+	require.NoError(t, err)
+	redirectURI, err := url.Parse("https://example.com/other")
+	require.NoError(t, err)
+
+	_, err = srv.PrepareAuthorization(t.Context(), client.ClientID, redirectURI, "openid", "",
+		"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", PKCEMethodS256, testutil.GenerateRandomString(43), nil)
+	require.ErrorIs(t, err, ErrRedirectURIRejected)
+	var refused *AuthorizationRequestError
+	require.ErrorAs(t, err, &refused)
+	require.Equal(t, ErrorCodeInvalidRequest, refused.Code)
+	require.Equal(t, "redirect_uri is not registered for this client", refused.Description)
 }

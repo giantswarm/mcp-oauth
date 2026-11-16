@@ -279,9 +279,14 @@ func (s *Server) validatePKCEWithAudit(ctx context.Context, authCode *storage.Au
 // canonical, registered form for the client. Callers redirecting /authorize
 // protocol errors back to the client MUST use this return value as the
 // redirect target — it provably originates from server-side storage, not from
-// the request, satisfying RFC 6749 §3.1.2.4.
+// the request, satisfying RFC 6749 §3.1.2.4. A client that cannot be loaded
+// is ErrClientNotVerified, or ErrStorageUnavailable when the store did not
+// answer.
 func (s *Server) ValidateRedirectURIForAuthorization(ctx context.Context, clientID, redirectURI string) (*url.URL, error) {
-	client, err := s.getOrFetchClient(ctx, clientID)
+	client, err := s.GetClient(ctx, clientID)
+	if errors.Is(err, ErrStorageUnavailable) {
+		return nil, err
+	}
 	if err != nil {
 		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidClient)
 		return nil, fmt.Errorf("%s: %w: %w", ErrorCodeInvalidClient, ErrClientNotVerified, err)
@@ -423,12 +428,12 @@ func (s *Server) checkClientRedirectURI(ctx context.Context, clientID, redirectU
 	}
 	if err != nil {
 		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidClient)
-		return nil, fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
+		return nil, fmt.Errorf("%s: %w: %w", ErrorCodeInvalidClient, ErrClientNotVerified, err)
 	}
 
 	if err := s.validateRedirectURI(client, redirectURI); err != nil {
 		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidRedirectURI)
-		return nil, newAuthorizationRequestError(ErrorCodeInvalidRequest, "redirect_uri is not registered for this client", err)
+		return nil, newAuthorizationRequestError(ErrorCodeInvalidRequest, "redirect_uri is not registered for this client", fmt.Errorf("%w: %w", ErrRedirectURIRejected, err))
 	}
 
 	// SECURITY: Authorization-time redirect URI validation (TOCTOU protection)
@@ -436,7 +441,8 @@ func (s *Server) checkClientRedirectURI(ctx context.Context, clientID, redirectU
 		s.logAuthFailure(ctx, "", clientID, "redirect_uri_security_violation")
 		s.Logger.Warn("Redirect URI failed authorization-time security validation",
 			paramClientID, clientID, "redirect_uri", sanitizeURIForLogging(redirectURI), logKeyError, err.Error())
-		return nil, newAuthorizationRequestError(ErrorCodeInvalidRequest, "redirect URI failed security validation", nil)
+		return nil, newAuthorizationRequestError(ErrorCodeInvalidRequest, "redirect_uri failed security validation",
+			fmt.Errorf("%w: redirect URI failed security validation: %w", ErrRedirectURIRejected, err))
 	}
 	return client, nil
 }

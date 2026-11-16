@@ -380,6 +380,10 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	// client before any error branch may redirect to it. The canonical URI
 	// returned is the redirect target.
 	canonicalRedirectURI, err := h.server.ValidateRedirectURIForAuthorization(r.Context(), clientID, redirectURI)
+	if errors.Is(err, server.ErrStorageUnavailable) {
+		h.writeStorageUnavailable(w, r, endpointAuthorize, http.MethodGet, span, startTime, err)
+		return
+	}
 	if err != nil {
 		// The cause stays in the log: it can describe the network the
 		// server fetched a client metadata document from.
@@ -439,40 +443,11 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	)
 
 	authorizationRequest, err := h.server.PrepareAuthorization(r.Context(), clientID, canonicalRedirectURI, scope, resource, codeChallenge, codeChallengeMethod, state, authOpts)
-	var refused *server.AuthorizationRequestError
-	switch {
-	case err == nil:
-	case errors.As(err, &refused):
-		h.logger.Info("Authorization request rejected", "client_id", clientID, paramError, err)
-		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
+	if err != nil {
+		h.respondAuthorizationFailure(w, r, span, startTime, clientID, authorizationError{
 			redirectURI: canonicalRedirectURI,
 			state:       state,
-			code:        refused.Code,
-			description: refused.Description,
-			spanError:   "authorization request refused",
-		})
-		return
-	case errors.Is(err, server.ErrStorageUnavailable):
-		h.logger.Warn("Authorization request failed: storage temporarily unavailable", "client_id", clientID)
-		instrumentation.RecordError(span, err)
-		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
-			redirectURI: canonicalRedirectURI,
-			state:       state,
-			code:        constants.ErrorCodeTemporarilyUnavailable,
-			description: "The server could not reach its client store; retry the request",
-			spanError:   "storage unavailable",
-		})
-		return
-	default:
-		h.logger.Error("Failed to start authorization flow", paramError, err)
-		instrumentation.RecordError(span, err)
-		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
-			redirectURI: canonicalRedirectURI,
-			state:       state,
-			code:        constants.ErrorCodeServerError,
-			description: "Failed to start authorization flow",
-			spanError:   "authorization flow failed",
-		})
+		}, err)
 		return
 	}
 
@@ -520,9 +495,11 @@ func (h *Handler) redirectToProvider(w http.ResponseWriter, r *http.Request, spa
 		if errors.Is(err, server.ErrAuthorizationPermissionsChanged) && h.refreshConsent(w, r, span, startTime, authorizationRequest) {
 			return
 		}
-		h.logger.Error("Failed to start authorization flow", paramError, err)
-		instrumentation.RecordError(span, err)
-		fail("authorization flow failed")
+		h.respondAuthorizationFailure(w, r, span, startTime, authorizationRequest.ClientID, authorizationError{
+			method:      method,
+			redirectURI: redirectURI,
+			state:       authorizationRequest.State,
+		}, err)
 		return
 	}
 
@@ -764,6 +741,37 @@ type authorizationError struct {
 	code        string
 	description string
 	spanError   string
+}
+
+// respondAuthorizationFailure answers an error of
+// [server.Server.PrepareAuthorization] or [server.Server.BeginAuthorization].
+// e carries the method, the validated redirect URI and the client's state. A
+// refusal of the client or of redirect_uri is answered directly, never
+// redirected (RFC 6749 §4.1.2.1); other errors are redirected with their OAuth
+// error code.
+func (h *Handler) respondAuthorizationFailure(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, clientID string, e authorizationError, err error) {
+	var refused *server.AuthorizationRequestError
+	switch {
+	case errors.Is(err, server.ErrClientNotVerified):
+		h.logger.Info("Authorization request rejected: invalid client", "client_id", clientID, paramError, err)
+		e.redirectURI = nil
+		e.code, e.description, e.spanError = constants.ErrorCodeInvalidClient, "client could not be verified", "invalid client"
+	case errors.As(err, &refused):
+		h.logger.Info("Authorization request rejected", "client_id", clientID, paramError, err)
+		if errors.Is(err, server.ErrRedirectURIRejected) {
+			e.redirectURI = nil
+		}
+		e.code, e.description, e.spanError = refused.Code, refused.Description, "authorization request refused"
+	case errors.Is(err, server.ErrStorageUnavailable):
+		h.logger.Warn("Authorization request failed: storage temporarily unavailable", "client_id", clientID)
+		instrumentation.RecordError(span, err)
+		e.code, e.description, e.spanError = constants.ErrorCodeTemporarilyUnavailable, "The server could not reach its client store; retry the request", "storage unavailable"
+	default:
+		h.logger.Error("Failed to start authorization flow", "client_id", clientID, paramError, err)
+		instrumentation.RecordError(span, err)
+		e.code, e.description, e.spanError = constants.ErrorCodeServerError, "Failed to start authorization flow", "authorization flow failed"
+	}
+	h.respondAuthorizationError(w, r, span, startTime, e)
 }
 
 // respondAuthorizationError redirects (302) to redirectURI with

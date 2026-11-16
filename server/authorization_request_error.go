@@ -1,5 +1,13 @@
 package server
 
+import "errors"
+
+// ErrRedirectURIRejected marks an authorization request whose redirect_uri is
+// not registered for its client or failed the authorization-time security
+// check. RFC 6749 §4.1.2.1: the error is shown to the person and never
+// redirected to that URI.
+var ErrRedirectURIRejected = errors.New("redirect_uri rejected")
+
 // AuthorizationRequestError is an authorization request refused because a
 // parameter is missing or not acceptable, as [Server.PrepareAuthorization]
 // returns it. Code is the OAuth error code of the refusal (RFC 6749 §4.1.2.1,
@@ -7,8 +15,10 @@ package server
 // client in error_description. The detailed reason is in the wrapped error and
 // belongs in logs only.
 //
-// Match it with errors.As. Any other error is a server failure, not a refusal
-// of the request.
+// Match it with errors.As. A refusal of redirect_uri also matches
+// [ErrRedirectURIRejected]. Outside this type, an unknown client is
+// [ErrClientNotVerified], a store that did not answer [ErrStorageUnavailable],
+// and any other error a server failure.
 type AuthorizationRequestError struct {
 	Code        string
 	Description string

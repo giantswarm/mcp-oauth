@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -102,4 +103,45 @@ func TestServeAuthorization_ClientStoreOutageRedirectsTemporarilyUnavailable(t *
 
 	requireAuthorizationErrorRedirect(t, w, constants.ErrorCodeTemporarilyUnavailable,
 		"The server could not reach its client store; retry the request", state)
+}
+
+func TestServeAuthorization_RedirectURIRejectedAtAuthorizationIsAnsweredDirectly(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	t.Cleanup(store.Stop)
+	const privateRedirectURI = "https://10.0.0.1/callback"
+	handler.server.Config.AllowPrivateIPRedirectURIs = true
+	client, _, err := handler.server.RegisterClient(t.Context(), "Test Client", "public", "",
+		[]string{privateRedirectURI}, []string{"openid"}, "192.168.1.100", 10)
+	require.NoError(t, err)
+	trustClient(handler.server, client.ClientID)
+	handler.server.Config.AllowPrivateIPRedirectURIs = false
+	handler.server.Config.ValidateRedirectURIAtAuthorization = true
+
+	req := httptest.NewRequest(http.MethodGet, "/authorize?response_type=code&client_id="+url.QueryEscape(client.ClientID)+
+		"&redirect_uri="+url.QueryEscape(privateRedirectURI)+"&scope=openid&state="+testutil.GenerateRandomString(43)+
+		"&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256", nil)
+	w := httptest.NewRecorder()
+	handler.ServeAuthorization(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	require.Empty(t, w.Header().Get("Location"))
+	var body map[string]string
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.Equal(t, constants.ErrorCodeInvalidRequest, body["error"])
+	require.Equal(t, "redirect_uri failed security validation", body["error_description"])
+}
+
+func TestServeAuthorization_ClientStoreOutageBeforeRedirectURICheckAnswers503(t *testing.T) {
+	env := newOutageEnv(t)
+	env.faulty.Fail(storagemock.OnOperation("get_client", storagemock.ConnectionRefused))
+
+	req := httptest.NewRequest(http.MethodGet, "/authorize?response_type=code&client_id="+url.QueryEscape(env.clientID)+
+		"&redirect_uri="+url.QueryEscape(refusalRedirectURI)+"&scope=openid&state="+testutil.GenerateRandomString(43)+
+		"&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256", nil)
+	w := httptest.NewRecorder()
+	env.handler.ServeAuthorization(w, req)
+
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+	require.NotEmpty(t, w.Header().Get("Retry-After"))
+	require.Empty(t, w.Header().Get("Location"))
 }
