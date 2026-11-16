@@ -576,17 +576,19 @@ type Config struct {
 	// and authorization flows. They address SSRF and open redirect vulnerabilities.
 
 	// ProductionMode refuses plain-HTTP redirect URIs on hosts that are not
-	// loopback (RFC 9700 §4.1.3; MCP Communication Security). It has no other
-	// effect: private-IP, link-local and scheme checks apply regardless.
+	// loopback at registration (RFC 9700 §4.1.3; MCP Communication Security).
+	// It has no other effect: private-IP, link-local and scheme checks apply
+	// regardless.
 	// Default: true (set by applySecurityDefaults unless DisableProductionMode).
 	ProductionMode bool
 
-	// DisableProductionMode accepts http:// redirect URIs on any host.
+	// DisableProductionMode accepts http:// redirect URIs on hosts that are not
+	// loopback at registration. The authorization request still refuses them
+	// while Issuer uses https://.
 	//
-	// Deprecated: only meaningful with a loopback Issuer (http://localhost,
-	// http://127.0.0.1, http://[::1]); with any other Issuer it logs a
-	// deprecation warning. Native clients' loopback redirects are covered by
-	// AllowLocalhostRedirectURIs.
+	// Deprecated: remove it. New logs a deprecation warning unless Issuer is a
+	// loopback URL (http://localhost, http://127.0.0.1, http://[::1]). Loopback
+	// redirect URIs of native clients need no setting.
 	// Default: false
 	DisableProductionMode bool
 
@@ -594,8 +596,9 @@ type Config struct {
 	// (http://localhost, http://127.0.0.0/8, http://[::1]) over plain HTTP and
 	// on any port, as RFC 8252 §7.3 requires for native clients. A registered
 	// loopback redirect URI matches a request on any port.
-	// Default: true (set by applySecurityDefaults unless
-	// DisableLocalhostRedirectURIs).
+	// New sets it to !DisableLocalhostRedirectURIs, so a value set here is
+	// overwritten: set DisableLocalhostRedirectURIs to refuse loopback.
+	// Default: true
 	AllowLocalhostRedirectURIs bool
 
 	// DisableLocalhostRedirectURIs refuses loopback redirect URIs, for a

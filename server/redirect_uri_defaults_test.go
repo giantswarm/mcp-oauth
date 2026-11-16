@@ -51,6 +51,16 @@ func TestRedirectURIDefaults_DisableLocalhostRedirectURIs(t *testing.T) {
 	require.Error(t, srv.ValidateRedirectURIForRegistration(t.Context(), "http://127.0.0.1:49152/callback"))
 }
 
+func TestRedirectURIDefaults_AllowLocalhostRedirectURIsFalseIsOverwritten(t *testing.T) {
+	srv, err := newRedirectDefaultsServer(t, &Config{
+		Issuer:                     "https://auth.example.com",
+		AllowLocalhostRedirectURIs: false,
+	})
+	require.NoError(t, err)
+	require.True(t, srv.Config.AllowLocalhostRedirectURIs)
+	require.NoError(t, srv.ValidateRedirectURIForRegistration(t.Context(), "http://127.0.0.1:49152/callback"))
+}
+
 func TestRedirectURIDefaults_PlainHTTPOnPublicHostRefused(t *testing.T) {
 	srv, err := newRedirectDefaultsServer(t, &Config{Issuer: "https://auth.example.com"})
 	require.NoError(t, err)
@@ -63,12 +73,13 @@ func TestRedirectURIDefaults_DisableProductionMode(t *testing.T) {
 		issuer            string
 		allowInsecureHTTP bool
 		wantDeprecation   bool
+		wantAuthorization bool
 	}{
 		{name: "https issuer", issuer: "https://auth.example.com", wantDeprecation: true},
-		{name: "http issuer on a public host", issuer: "http://auth.example.com", allowInsecureHTTP: true, wantDeprecation: true},
-		{name: "localhost issuer", issuer: "http://localhost:8080"},
-		{name: "IPv4 loopback issuer", issuer: "http://127.0.0.1:8080"},
-		{name: "IPv6 loopback issuer", issuer: "http://[::1]:8080"},
+		{name: "http issuer on a public host", issuer: "http://auth.example.com", allowInsecureHTTP: true, wantDeprecation: true, wantAuthorization: true},
+		{name: "localhost issuer", issuer: "http://localhost:8080", wantAuthorization: true},
+		{name: "IPv4 loopback issuer", issuer: "http://127.0.0.1:8080", wantAuthorization: true},
+		{name: "IPv6 loopback issuer", issuer: "http://[::1]:8080", wantAuthorization: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -83,7 +94,15 @@ func TestRedirectURIDefaults_DisableProductionMode(t *testing.T) {
 				DisableDNSValidationStrict: true,
 			}, logger)
 			require.NoError(t, err)
-			require.NoError(t, srv.ValidateRedirectURIForRegistration(t.Context(), "http://app.example.com/callback"))
+			client, _, err := srv.RegisterClient(t.Context(), "Web", ClientTypePublic, "",
+				[]string{"http://app.example.com/callback"}, []string{"openid"}, "192.168.1.100", 10)
+			require.NoError(t, err)
+			authorizationErr := srv.validateRedirectURI(client, "http://app.example.com/callback")
+			if tt.wantAuthorization {
+				require.NoError(t, authorizationErr)
+			} else {
+				require.Error(t, authorizationErr)
+			}
 
 			deprecated := strings.Contains(logs.String(), "DEPRECATED: DisableProductionMode")
 			require.Equal(t, tt.wantDeprecation, deprecated, logs.String())

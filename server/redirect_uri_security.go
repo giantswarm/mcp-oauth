@@ -179,7 +179,7 @@ func (s *Server) validateHTTPRedirectURI(ctx context.Context, parsed *url.URL, r
 			return newRedirectURISecurityError(
 				RedirectURIErrorCategoryLoopback,
 				rawURI,
-				"loopback addresses disabled via AllowLocalhostRedirectURIs=false",
+				"loopback addresses disabled via DisableLocalhostRedirectURIs=true",
 				"redirect_uri: loopback addresses are not allowed",
 			)
 		}

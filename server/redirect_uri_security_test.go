@@ -226,7 +226,7 @@ func TestValidateRedirectURIForRegistration_Loopback(t *testing.T) {
 		"https://127.0.0.1/callback",  // HTTPS on loopback IP
 	}
 
-	t.Run("Loopback allowed when AllowLocalhostRedirectURIs=true", func(t *testing.T) {
+	t.Run("Loopback allowed by default", func(t *testing.T) {
 		server := newTestServerWithSecurityConfig(defaultTestSecurityConfig())
 		for _, uri := range loopbackURIs {
 			err := server.ValidateRedirectURIForRegistration(ctx, uri)
@@ -236,7 +236,7 @@ func TestValidateRedirectURIForRegistration_Loopback(t *testing.T) {
 		}
 	})
 
-	t.Run("Loopback blocked when AllowLocalhostRedirectURIs=false", func(t *testing.T) {
+	t.Run("Loopback blocked when DisableLocalhostRedirectURIs=true", func(t *testing.T) {
 		server := newTestServerWithSecurityConfig(testSecurityConfig{
 			productionMode: true,
 			allowLocalhost: false,
