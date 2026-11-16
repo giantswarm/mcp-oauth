@@ -462,7 +462,7 @@ type Config struct {
 
 	// Deprecated: AllowNoStateParameter has no effect. The client's state is
 	// OPTIONAL (OAuth 2.1 §4.1.1) and accepted without it; PKCE, enforced for
-	// every authorization request, provides the CSRF protection (§7.10).
+	// every authorization request, provides the CSRF protection (RFC 9700 §2.1).
 	AllowNoStateParameter bool
 
 	// AllowPublicClientRegistration controls two security aspects of client registration:

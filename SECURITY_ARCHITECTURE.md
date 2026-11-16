@@ -118,7 +118,7 @@ The client's `state` is OPTIONAL and opaque to this server (OAuth 2.1
 §4.1.1). The server only bounds its length (`MaxStateLength`) and returns it
 unchanged in the redirect. The client compares it; PKCE, which the server
 enforces on every authorization request, provides the same CSRF protection
-(OAuth 2.1 §7.10). It never keys stored state: each flow is stored under a
+(RFC 9700 §2.1). It never keys stored state: each flow is stored under a
 server-generated `StateID`, so clients sending equal or short values cannot
 collide.
 
@@ -944,7 +944,7 @@ DPoPMiddleware → ValidateToken → handler
 **Mitigations**:
 1. PKCE (Layer 1): Code useless without original verifier
 2. PKCE (Layer 2): Provider binding prevents injection
-3. State parameter: Validates callback origin
+3. Provider state: binds the provider callback to the flow this server started
 4. One-time use: Code immediately invalidated
 5. Short lifetime: 10-minute window
 
@@ -953,7 +953,7 @@ DPoPMiddleware → ValidateToken → handler
 **Attack**: Attacker injects stolen code into victim's session
 
 **Mitigations**:
-1. State parameter (constant-time validation)
+1. Provider state: server-generated, single-use, looked up on the provider callback
 2. PKCE on provider leg (OAuth 2.1 enhancement)
 3. Client secret authentication
 4. One-time use enforcement
@@ -969,8 +969,8 @@ DPoPMiddleware → ValidateToken → handler
 **Attack**: Malicious site initiates OAuth flow for victim
 
 **Mitigations**:
-1. State parameter (mandatory, minimum 16 chars)
-2. Dual-layer state (client + provider)
+1. PKCE, enforced on every authorization request (RFC 9700 §2.1)
+2. Client state, optional and checked by the client; provider state, server-generated and checked by this server
 3. Constant-time comparison (timing attack protection)
 4. One-time use (prevents replay)
 
@@ -1103,7 +1103,6 @@ done
 - [ ] Set appropriate token lifetimes (shorter = more secure)
 - [ ] Enable refresh token rotation (`AllowRefreshTokenRotation=true`)
 - [ ] Review and test revoked token cleanup
-- [ ] Set `MinStateLength` >= 22 (default)
 - [ ] Enforce PKCE (`RequirePKCE=true`, default)
 - [ ] Disable plain PKCE (`AllowPKCEPlain=false`, default)
 

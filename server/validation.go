@@ -318,8 +318,8 @@ func (s *Server) validateClientScopes(requestedScope string, clientScopes []stri
 // validateClientStateParameter validates the client-provided state parameter.
 // OAuth 2.1 §4.1.1 makes state OPTIONAL and opaque to the authorization
 // server: the client checks it, and PKCE (enforced for every request) gives
-// the CSRF protection state would (§7.10). Only its length is bounded, so it
-// can be echoed back in the redirect.
+// the CSRF protection state would (RFC 9700 §2.1). Only its length is
+// bounded, so it can be echoed back in the redirect.
 func (s *Server) validateClientStateParameter(state string) error {
 	if len(state) > s.Config.MaxStateLength {
 		return fmt.Errorf("state parameter must be at most %d characters", s.Config.MaxStateLength)

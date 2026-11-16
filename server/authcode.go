@@ -442,9 +442,7 @@ func (s *Server) checkClientRedirectURI(ctx context.Context, clientID, redirectU
 func (s *Server) beginAuthorization(ctx context.Context, authorizationRequest *AuthorizationRequest) (string, error) {
 	// The client's state is opaque and may be short or absent, so it never
 	// keys stored state; two clients sending the same value must not collide.
-	trackingState := generateRandomToken()
-
-	// Generate provider state (different from client state for defense in depth)
+	stateID := generateRandomToken()
 	providerState := generateRandomToken()
 
 	// Generate PKCE for server-to-provider leg (OAuth 2.1)
@@ -465,7 +463,7 @@ func (s *Server) beginAuthorization(ctx context.Context, authorizationRequest *A
 
 	// Save authorization state with both client and server PKCE parameters and resource binding
 	authState := &storage.AuthorizationState{
-		StateID:              trackingState,
+		StateID:              stateID,
 		OriginalClientState:  authorizationRequest.State, // Empty if client didn't provide state
 		ClientID:             authorizationRequest.ClientID,
 		RedirectURI:          authorizationRequest.RedirectURI,
