@@ -376,25 +376,8 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// RFC 6749 §4.1.2.1 + §3.1.2.4: redirect_uri must be registered for the
-	// client before any error branch may redirect to it. The canonical URI
-	// returned is the redirect target.
-	canonicalRedirectURI, err := h.server.ValidateRedirectURIForAuthorization(r.Context(), clientID, redirectURI)
-	if errors.Is(err, server.ErrStorageUnavailable) {
-		h.writeStorageUnavailable(w, r, endpointAuthorize, http.MethodGet, span, startTime, err)
-		return
-	}
-	if err != nil {
-		// The cause stays in the log: it can describe the network the
-		// server fetched a client metadata document from.
-		h.logger.Info("Authorization request rejected: invalid client or redirect_uri", "client_id", clientID, paramError, err)
-		h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusBadRequest, startTime)
-		instrumentation.SetSpanError(span, "invalid client or redirect_uri")
-		if errors.Is(err, server.ErrClientNotVerified) {
-			h.writeError(w, constants.ErrorCodeInvalidClient, "client could not be verified", http.StatusBadRequest)
-			return
-		}
-		h.writeError(w, constants.ErrorCodeInvalidRequest, "redirect_uri is not registered for this client", http.StatusBadRequest)
+	canonicalRedirectURI, ok := h.authorizationRedirectURI(w, r, span, startTime, clientID, redirectURI)
+	if !ok {
 		return
 	}
 
@@ -461,6 +444,32 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.redirectToProvider(w, r, span, startTime, http.MethodGet, authorizationRequest)
+}
+
+// authorizationRedirectURI returns the canonical, registered form of
+// redirectURI for the client, or answers the request directly and returns
+// false. RFC 6749 §4.1.2.1 + §3.1.2.4: redirect_uri must be registered for the
+// client before any error branch may redirect to it.
+func (h *Handler) authorizationRedirectURI(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, clientID, redirectURI string) (*url.URL, bool) {
+	canonicalRedirectURI, err := h.server.ValidateRedirectURIForAuthorization(r.Context(), clientID, redirectURI)
+	if err == nil {
+		return canonicalRedirectURI, true
+	}
+	if errors.Is(err, server.ErrStorageUnavailable) {
+		h.writeStorageUnavailable(w, r, endpointAuthorize, http.MethodGet, span, startTime, err)
+		return nil, false
+	}
+	// The cause stays in the log: it can describe the network the
+	// server fetched a client metadata document from.
+	h.logger.Info("Authorization request rejected: invalid client or redirect_uri", "client_id", clientID, paramError, err)
+	h.recordHTTPMetrics(r.Context(), endpointAuthorize, http.MethodGet, http.StatusBadRequest, startTime)
+	instrumentation.SetSpanError(span, "invalid client or redirect_uri")
+	if errors.Is(err, server.ErrClientNotVerified) {
+		h.writeError(w, constants.ErrorCodeInvalidClient, "client could not be verified", http.StatusBadRequest)
+		return nil, false
+	}
+	h.writeError(w, constants.ErrorCodeInvalidRequest, "redirect_uri is not registered for this client", http.StatusBadRequest)
+	return nil, false
 }
 
 // redirectToProvider starts the upstream flow for the request and redirects the
