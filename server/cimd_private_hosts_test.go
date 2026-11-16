@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -185,4 +186,42 @@ func TestSSRFProtectedTransport_RefusesPrivateTargetBeforeTheProxy(t *testing.T)
 	_, err := transport.DialContext(t.Context(), "tcp", net.JoinHostPort("localhost", "443"))
 	require.ErrorContains(t, err, errPrivateIP)
 	require.Empty(t, proxy.Requests())
+}
+
+func TestDialFirstReachable_FallsBackFromARefusedAddress(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	require.NoError(t, err)
+	ips := []net.IPAddr{{IP: net.IPv4(127, 0, 0, 2)}, {IP: net.IPv4(127, 0, 0, 1)}}
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+
+	t.Run("direct", func(t *testing.T) {
+		conn, err := dialFirstReachable(t.Context(), dialer, "tcp", "metadata.example", port, ips, nil)
+		require.NoError(t, err)
+		require.Equal(t, listener.Addr().String(), conn.RemoteAddr().String())
+		require.NoError(t, conn.Close())
+	})
+
+	t.Run("through the proxy", func(t *testing.T) {
+		proxy := proxytunneltest.New(t, http.StatusOK)
+		conn, err := dialFirstReachable(t.Context(), dialer, "tcp", "metadata.example", port, ips, proxy.URL())
+		require.NoError(t, err)
+		require.NoError(t, conn.Close())
+
+		requests := proxy.Requests()
+		require.Len(t, requests, 2)
+		require.Equal(t, net.JoinHostPort("127.0.0.2", port), requests[0].Host)
+		require.Equal(t, net.JoinHostPort("127.0.0.1", port), requests[1].Host)
+	})
 }

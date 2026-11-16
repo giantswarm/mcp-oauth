@@ -1,5 +1,5 @@
-// Package proxytunnel connects to an address the caller has already validated,
-// through the HTTP proxy the environment names for its host.
+// Package proxytunnel connects to addresses the caller has already validated,
+// through the HTTP proxy the environment names for their host.
 //
 // A guarded dialer resolves a hostname, checks every address, and must then
 // reach exactly the address it checked. Handing the hostname to a proxy would
@@ -78,6 +78,84 @@ func Dial(ctx context.Context, dialer *net.Dialer, network string, proxyURL *url
 		return nil, err
 	}
 	return conn, nil
+}
+
+// DialEach dials ips in order with Dial, one attempt (and through a proxy one
+// CONNECT) per address, and returns the first connection. The dial budget is
+// the earliest of dialer.Timeout, dialer.Deadline and the context deadline;
+// like net.Dialer, each attempt gets the time left divided by the addresses
+// left, with a two-second floor, so an address that drops packets cannot use
+// up the whole budget.
+func DialEach(ctx context.Context, dialer *net.Dialer, network string, proxyURL *url.URL, ips []net.IP, port string) (net.Conn, error) {
+	return dialInTurn(ctx, dialBudget(ctx, dialer, time.Now()), len(ips), func(ctx context.Context, i int) (net.Conn, error) {
+		return Dial(ctx, dialer, network, proxyURL, ips[i], port)
+	})
+}
+
+// dialBudget is the deadline net.Dialer derives for a dial started at now:
+// the earliest non-zero of now+Timeout, Deadline and the context deadline.
+func dialBudget(ctx context.Context, dialer *net.Dialer, now time.Time) time.Time {
+	var deadline time.Time
+	earliest := func(candidate time.Time) {
+		if !candidate.IsZero() && (deadline.IsZero() || candidate.Before(deadline)) {
+			deadline = candidate
+		}
+	}
+	if dialer.Timeout > 0 {
+		earliest(now.Add(dialer.Timeout))
+	}
+	earliest(dialer.Deadline)
+	if ctxDeadline, ok := ctx.Deadline(); ok {
+		earliest(ctxDeadline)
+	}
+	return deadline
+}
+
+// dialInTurn runs attempt for 0..n-1 until one succeeds, giving each the
+// share of deadline partialDeadline assigns. A zero deadline leaves the
+// attempts unbounded here.
+func dialInTurn(ctx context.Context, deadline time.Time, n int, attempt func(ctx context.Context, i int) (net.Conn, error)) (net.Conn, error) {
+	if n == 0 {
+		return nil, errors.New("no address to dial")
+	}
+	errs := make([]error, 0, n)
+	for i := range n {
+		if err := ctx.Err(); err != nil {
+			return nil, errors.Join(append(errs, err)...)
+		}
+		attemptCtx := ctx
+		if !deadline.IsZero() {
+			attemptDeadline, ok := partialDeadline(time.Now(), deadline, n-i)
+			if !ok {
+				return nil, errors.Join(append(errs, context.DeadlineExceeded)...)
+			}
+			var cancel context.CancelFunc
+			attemptCtx, cancel = context.WithDeadline(ctx, attemptDeadline)
+			defer cancel()
+		}
+		conn, err := attempt(attemptCtx, i)
+		if err == nil {
+			return conn, nil
+		}
+		errs = append(errs, err)
+	}
+	return nil, errors.Join(errs...)
+}
+
+// partialDeadline is net.Dialer's split of a dial deadline across the
+// addresses left: an equal share each, but at least two seconds while that
+// much time remains. ok is false once the deadline has passed.
+func partialDeadline(now, deadline time.Time, addrsRemaining int) (time.Time, bool) {
+	remaining := deadline.Sub(now)
+	if remaining <= 0 {
+		return time.Time{}, false
+	}
+	const minimum = 2 * time.Second
+	share := remaining / time.Duration(addrsRemaining)
+	if share < minimum {
+		share = min(minimum, remaining)
+	}
+	return now.Add(share), true
 }
 
 func dialProxy(ctx context.Context, dialer *net.Dialer, network string, proxyURL *url.URL) (net.Conn, error) {

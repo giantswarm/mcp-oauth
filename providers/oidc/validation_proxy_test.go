@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -62,4 +63,51 @@ func TestSSRFSafeDialRefusesPrivateTargetBeforeTheProxy(t *testing.T) {
 	_, err := dial(t.Context(), "tcp", net.JoinHostPort("localhost", "443"))
 	require.ErrorIs(t, err, ErrRestrictedAddress)
 	require.Empty(t, proxy.Requests())
+}
+
+// TestGuardedDialTriesEachValidatedAddress listens on the last address
+// localhost resolves to, so the dial only succeeds if it moves past the
+// earlier ones, directly and through the proxy.
+func TestGuardedDialTriesEachValidatedAddress(t *testing.T) {
+	ips, err := net.DefaultResolver.LookupIP(t.Context(), "ip", "localhost")
+	require.NoError(t, err)
+	if len(ips) < 2 {
+		t.Skip("localhost resolves to a single address here")
+	}
+	last := ips[len(ips)-1]
+	listener, err := net.Listen("tcp", net.JoinHostPort(last.String(), "0"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	require.NoError(t, err)
+	addr := net.JoinHostPort("localhost", port)
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+
+	t.Run("direct", func(t *testing.T) {
+		dial := hostScopedPrivateIPDialContext(dialer, []string{"localhost"}, proxyAlways(nil))
+		conn, err := dial(t.Context(), "tcp", addr)
+		require.NoError(t, err)
+		require.NoError(t, conn.Close())
+	})
+
+	t.Run("through the proxy", func(t *testing.T) {
+		proxy := proxytunneltest.New(t, http.StatusOK)
+		dial := hostScopedPrivateIPDialContext(dialer, []string{"localhost"}, proxyAlways(proxy.URL()))
+		conn, err := dial(t.Context(), "tcp", addr)
+		require.NoError(t, err)
+		require.NoError(t, conn.Close())
+
+		requests := proxy.Requests()
+		require.Len(t, requests, len(ips))
+		require.Equal(t, net.JoinHostPort(last.String(), port), requests[len(requests)-1].Host)
+	})
 }

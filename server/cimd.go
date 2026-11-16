@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -231,18 +230,19 @@ func rejectPrivateIPs(host string, ips []net.IPAddr) error {
 	return nil
 }
 
-// dialFirstReachable dials the already validated addresses in order, through proxyURL
-// when it is non-nil, and returns the first connection, so the dial never resolves host again.
+// dialFirstReachable tries the already validated addresses in order, through
+// proxyURL when it is non-nil, and returns the first connection, so the dial
+// never resolves host again.
 func dialFirstReachable(ctx context.Context, dialer *net.Dialer, network, host, port string, ips []net.IPAddr, proxyURL *url.URL) (net.Conn, error) {
-	dialErrs := make([]error, 0, len(ips))
+	addrs := make([]net.IP, 0, len(ips))
 	for _, ipAddr := range ips {
-		conn, err := proxytunnel.Dial(ctx, dialer, network, proxyURL, ipAddr.IP, port)
-		if err == nil {
-			return conn, nil
-		}
-		dialErrs = append(dialErrs, err)
+		addrs = append(addrs, ipAddr.IP)
 	}
-	return nil, fmt.Errorf("failed to connect to %s: %w", host, errors.Join(dialErrs...))
+	conn, err := proxytunnel.DialEach(ctx, dialer, network, proxyURL, addrs, port)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to %s: %w", host, err)
+	}
+	return conn, nil
 }
 
 // fetchClientMetadata fetches and validates OAuth client metadata from an HTTPS URL

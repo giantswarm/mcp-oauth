@@ -248,3 +248,69 @@ func TestDialVerifiesAnHTTPSProxy(t *testing.T) {
 	require.Nil(t, conn)
 	require.Equal(t, "localhost", <-serverNames)
 }
+
+func TestDialEachFallsBackFromARefusedAddress(t *testing.T) {
+	ip, port := echoServer(t)
+	refused := net.IPv4(127, 0, 0, 2)
+
+	conn, err := proxytunnel.DialEach(t.Context(), &net.Dialer{Timeout: 5 * time.Second}, "tcp", nil, []net.IP{refused, ip}, port)
+	require.NoError(t, err)
+	require.Equal(t, net.JoinHostPort(ip.String(), port), conn.RemoteAddr().String())
+	require.NoError(t, conn.Close())
+}
+
+func TestDialEachTunnelsEachAddressInTurn(t *testing.T) {
+	proxy := proxytunneltest.New(t, http.StatusOK)
+	ip, port := echoServer(t)
+	refused := net.IPv4(127, 0, 0, 2)
+
+	conn, err := proxytunnel.DialEach(t.Context(), &net.Dialer{Timeout: 5 * time.Second}, "tcp", proxy.URL(), []net.IP{refused, ip}, port)
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+
+	requests := proxy.Requests()
+	require.Len(t, requests, 2)
+	require.Equal(t, net.JoinHostPort(refused.String(), port), requests[0].Host)
+	require.Equal(t, net.JoinHostPort(ip.String(), port), requests[1].Host)
+}
+
+// TestDialEachLeavesTimeAfterASilentTunnel pins that a CONNECT the proxy
+// never answers takes only its share of the dialer timeout.
+func TestDialEachLeavesTimeAfterASilentTunnel(t *testing.T) {
+	ip, port := echoServer(t)
+	silent := net.IPv4(127, 0, 0, 2)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				request, err := http.ReadRequest(bufio.NewReader(conn))
+				if err != nil || request.Host != net.JoinHostPort(ip.String(), port) {
+					_, _ = io.Copy(io.Discard, conn)
+					return
+				}
+				upstream, err := net.Dial("tcp", request.Host)
+				if err != nil {
+					return
+				}
+				defer func() { _ = upstream.Close() }()
+				_, _ = io.WriteString(conn, "HTTP/1.1 200 Connection established\r\n\r\n")
+				go func() { _, _ = io.Copy(upstream, conn) }()
+				_, _ = io.Copy(conn, upstream)
+			}()
+		}
+	}()
+	proxyURL := &url.URL{Scheme: "http", Host: listener.Addr().String()}
+
+	start := time.Now()
+	conn, err := proxytunnel.DialEach(context.WithoutCancel(t.Context()), &net.Dialer{Timeout: 3 * time.Second}, "tcp", proxyURL, []net.IP{silent, ip}, port)
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+	require.Less(t, time.Since(start), 3*time.Second, "the silent address must leave time for the next one")
+}

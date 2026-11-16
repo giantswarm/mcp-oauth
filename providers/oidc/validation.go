@@ -304,20 +304,23 @@ func ssrfSafeDialContext(dialer *net.Dialer, proxyFor proxytunnel.Selector) dial
 			}
 		}
 
-		// All IPs are safe, connect to the first one
-		return dialValidated(ctx, dialer, network, host, port, ips[0], proxyFor)
+		return dialValidated(ctx, dialer, network, host, port, ips, proxyFor)
 	}
 }
 
-// dialValidated connects to an IP the guard already accepted, through a
-// CONNECT tunnel when the environment names a proxy for host, so the proxy
-// never resolves host again.
-func dialValidated(ctx context.Context, dialer *net.Dialer, network, host, port string, ip net.IP, proxyFor proxytunnel.Selector) (net.Conn, error) {
+// dialValidated tries the IPs the guard already accepted in order, through a
+// CONNECT tunnel per IP when the environment names a proxy for host, so
+// neither the dial nor the proxy resolves host again.
+func dialValidated(ctx context.Context, dialer *net.Dialer, network, host, port string, ips []net.IP, proxyFor proxytunnel.Selector) (net.Conn, error) {
 	proxyURL, err := proxyFor(host, port)
 	if err != nil {
 		return nil, fmt.Errorf("failed to select a proxy for %q: %w", host, err)
 	}
-	return proxytunnel.Dial(ctx, dialer, network, proxyURL, ip, port)
+	conn, err := proxytunnel.DialEach(ctx, dialer, network, proxyURL, ips, port)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to %q: %w", host, err)
+	}
+	return conn, nil
 }
 
 // dialContextFunc is the DialContext signature shared by the package's HTTP
@@ -522,7 +525,7 @@ func hostScopedPrivateIPDialContext(dialer *net.Dialer, allowedHosts []string, p
 			}
 		}
 
-		return dialValidated(ctx, dialer, network, host, port, ips[0], proxyFor)
+		return dialValidated(ctx, dialer, network, host, port, ips, proxyFor)
 	}
 }
 
