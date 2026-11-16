@@ -109,12 +109,12 @@ func TestServeAuthorization_RedirectURIRejectedAtAuthorizationIsAnsweredDirectly
 	handler, store := setupTestHandler(t)
 	t.Cleanup(store.Stop)
 	const privateRedirectURI = "https://10.0.0.1/callback"
-	handler.server.Config.AllowPrivateIPRedirectURIs = true
+	handler.server.Config.AllowPrivateIPRedirectURIs = true //nolint:staticcheck // a literal-IP redirect URI is never matched by AllowPrivateIPRedirectURIHosts
 	client, _, err := handler.server.RegisterClient(t.Context(), "Test Client", "public", "",
 		[]string{privateRedirectURI}, []string{"openid"}, "192.168.1.100", 10)
 	require.NoError(t, err)
 	trustClient(handler.server, client.ClientID)
-	handler.server.Config.AllowPrivateIPRedirectURIs = false
+	handler.server.Config.AllowPrivateIPRedirectURIs = false //nolint:staticcheck // see above
 	handler.server.Config.ValidateRedirectURIAtAuthorization = true
 
 	req := httptest.NewRequest(http.MethodGet, "/authorize?response_type=code&client_id="+url.QueryEscape(client.ClientID)+

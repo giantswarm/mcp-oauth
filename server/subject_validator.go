@@ -151,21 +151,17 @@ type TrustedIssuer struct {
 	// downstream relies on. Fail-closed: if set and the claim is absent or not a
 	// non-empty string, the token is rejected.
 	SubjectClaim string
-	// AllowPrivateIPJWKS allows JwksURL to resolve to a private or loopback IP
-	// address. Set this when the JWKS endpoint is an in-cluster service (e.g.
-	// the Kubernetes API server's /openid/v1/jwks) that is not reachable via a
-	// public address.
+	// AllowPrivateIPJWKS lets JwksURL resolve to any private, loopback or
+	// link-local address.
 	//
-	// WARNING: Disables SSRF protection for this issuer's JWKS fetch. Only set
-	// when JwksURL is a known, controlled in-cluster endpoint. Prefer
-	// AllowPrivateIPJWKSHosts when the endpoint is a specific known service.
+	// Deprecated: list the host in AllowPrivateIPJWKSHosts. It still lifts the
+	// guard for this issuer, and WithTrustedIssuers logs a deprecation warning.
 	AllowPrivateIPJWKS bool
 
-	// AllowPrivateIPJWKSHosts lists the specific hostnames whose JWKS URL is
-	// permitted to resolve to a private IP. All other hosts retain SSRF
-	// protection. Use this instead of AllowPrivateIPJWKS when the private
-	// endpoint is a known in-cluster service (e.g.
-	// muster.agent-platform.svc.cluster.local). Ignored when
+	// AllowPrivateIPJWKSHosts lists the hostnames whose JWKS URL may resolve to
+	// a private, loopback or link-local address (e.g. an in-cluster service such
+	// as muster.agent-platform.svc.cluster.local). Every other host keeps the
+	// SSRF guard at connection time. Entries match exactly. Ignored when
 	// AllowPrivateIPJWKS is true.
 	AllowPrivateIPJWKSHosts []string
 

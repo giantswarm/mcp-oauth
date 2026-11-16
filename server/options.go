@@ -129,6 +129,7 @@ func WithTrustedIssuers(issuers []TrustedIssuer) Option {
 		if len(issuers) == 0 {
 			return
 		}
+		logTrustedIssuerPrivateIPDeprecations(issuers, s.Logger)
 		v, err := NewOIDCValidator(issuers)
 		if err != nil {
 			s.Logger.Error("failed to initialise trusted issuer validator", logKeyError, err)

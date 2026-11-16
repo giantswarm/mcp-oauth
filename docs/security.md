@@ -462,14 +462,7 @@ config := &server.Config{
 }
 ```
 
-For internal/VPN deployments that require private addresses for every host, use the global exception. `AllowPrivateIPRedirectURIs: true` overrides the hostname list, including when both are set:
-
-```go
-config := &server.Config{
-    // WARNING: Enables SSRF to internal networks
-    AllowPrivateIPRedirectURIs: true,
-}
-```
+The deprecated `AllowPrivateIPRedirectURIs: true` lifts the check for every host and overrides the hostname list. Setting it logs a deprecation warning.
 
 For deployments that require link-local callbacks, enable that exception separately:
 
@@ -509,16 +502,19 @@ The following flags exist for non-production scenarios. Each emits a startup `WA
 | Field | Risk | Dev use case |
 |---|---|---|
 | `AllowInsecureHTTP` | Bearer tokens transmitted in clear — full credential exposure | Non-loopback HTTP test environments. RFC 8252 §7.3 loopback HTTP (`http://localhost`) is always permitted without this flag. |
-| `AllowPrivateIPClientMetadata` | SSRF into cluster — CIMD metadata URLs resolve to private / loopback IPs (CWE-918) | CIMD fetch against internal metadata endpoints during development |
-| `AllowPrivateIPClientMetadataHosts` | SSRF limited to the listed hostnames — their CIMD metadata URLs may resolve to private / loopback IPs; every other host keeps the guard | A known CIMD client on a private hostname (an internal load balancer, a VPN-only platform). Prefer it to `AllowPrivateIPClientMetadata`; a client served under an internal CA also needs `ClientMetadataRootCAs` |
-| `AllowPrivateIPJWKS` | SSRF into cluster — JWKS endpoints resolve to private / loopback IPs (CWE-918) | Private IdP deployments (e.g., internal Dex) where the JWKS URI is on an RFC 1918 address |
+| `AllowPrivateIPClientMetadataHosts` | SSRF limited to the listed hostnames: their CIMD metadata URLs may resolve to private / loopback IPs; every other host keeps the guard | A known CIMD client on a private hostname (an internal load balancer, a VPN-only platform); a client served under an internal CA also needs `ClientMetadataRootCAs` |
+| `AllowPrivateIPJWKSHosts` | SSRF limited to the listed hostnames: their JWKS endpoints may resolve to private / loopback IPs; every other host keeps the guard | A private IdP (e.g., internal Dex) whose JWKS validates forwarded SSO ID tokens |
+| `AllowPrivateIPClientMetadata` | Deprecated: SSRF into cluster for every CIMD host (CWE-918) | Replace with `AllowPrivateIPClientMetadataHosts` |
+| `AllowPrivateIPJWKS` | Deprecated: SSRF into cluster for every JWKS host (CWE-918) | Replace with `AllowPrivateIPJWKSHosts` |
+
+Every private-IP allowance follows one pattern, `AllowPrivateIP<Operation>Hosts`: an exact hostname list (no port, no wildcard), with the connection-time guard kept for every host that is not listed. The deprecated blanket switches still work and log a deprecation warning naming their host list.
 
 ```go
-// Development / private-network only — never set in internet-facing production
+// Development / private-network only, never set in internet-facing production
 config := &server.Config{
-    AllowInsecureHTTP:            true, // http:// issuer/redirect outside loopback
-    AllowPrivateIPClientMetadata: true, // CIMD fetches to RFC 1918 / loopback addresses
-    AllowPrivateIPJWKS:           true, // JWKS fetch to RFC 1918 / loopback addresses
+    AllowInsecureHTTP:                 true,                         // http:// issuer/redirect outside loopback
+    AllowPrivateIPClientMetadataHosts: []string{"gateway.internal"}, // CIMD on a private hostname
+    AllowPrivateIPJWKSHosts:           []string{"dex.internal"},     // forwarded-token JWKS on a private IdP
 }
 ```
 
@@ -745,37 +741,37 @@ The trade-off of `principal`:
 
 ### Private IdP Deployments
 
-If your Identity Provider (e.g., Dex) runs on a private network, JWKS fetching will fail due to SSRF protection. Use the `AllowPrivateIPJWKS` configuration option to allow JWKS endpoints to resolve to private IP addresses:
+If your Identity Provider (e.g., Dex) runs on a private network, JWKS fetching will fail due to SSRF protection. List the JWKS host in `AllowPrivateIPJWKSHosts`; every other host keeps the guard:
 
 ```go
 config := &server.Config{
-    Issuer:             "https://dex.internal.example.com",
-    TrustedAudiences:   []string{"muster-client"},
-
-    // Allow JWKS fetching from private IdP
-    // WARNING: Reduces SSRF protection for JWKS endpoints only
-    AllowPrivateIPJWKS: true,
+    Issuer:                  "https://dex.internal.example.com",
+    TrustedAudiences:        []string{"muster-client"},
+    AllowPrivateIPJWKSHosts: []string{"dex.internal.example.com"},
 }
 ```
 
 | Setting | Default | Behavior |
 |---------|---------|----------|
-| `AllowPrivateIPJWKS` | `false` | Private IPs blocked for JWKS fetching |
+| `AllowPrivateIPJWKSHosts` | empty | Listed hosts may resolve to private IPs; every other host is guarded |
+| `AllowPrivateIPJWKS` | `false` | Deprecated: lifts the guard for every JWKS host |
 
-**When enabled, allows:**
+Trusted issuers have the same field, `TrustedIssuer.AllowPrivateIPJWKSHosts`.
+
+**For a listed host, allows:**
 - Private IP ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 (RFC 1918)
 - Loopback addresses: 127.0.0.0/8, ::1
 - Link-local addresses: 169.254.0.0/16, fe80::/10
 
 **Security notes:**
-- HTTPS is still required even when `AllowPrivateIPJWKS` is enabled
+- HTTPS is still required for a listed host
 - This only affects JWKS fetching for SSO token validation (TrustedAudiences)
-- A warning is logged at startup when this option is enabled
+- A warning naming the hosts is logged at startup
 - For Google OAuth, this setting has no effect as Google's JWKS endpoint is always publicly accessible
 
 #### Internal CA trust
 
-`AllowPrivateIPJWKS` controls which IP addresses a fetch may reach. It does not
+`AllowPrivateIPJWKSHosts` controls which IP addresses a fetch may reach. It does not
 control which CA signs the certificate. Those are independent settings: an IdP on
 a public address can still present a certificate from an internal CA.
 
@@ -802,7 +798,7 @@ if !pool.AppendCertsFromPEM(caPEM) {
 config := &server.Config{
     Issuer:           "https://dex.example.com",
     TrustedAudiences: []string{"muster-client"},
-    JWKSRootCAs:      pool, // no AllowPrivateIPJWKS needed
+    JWKSRootCAs:      pool, // no AllowPrivateIPJWKSHosts needed
 }
 ```
 
