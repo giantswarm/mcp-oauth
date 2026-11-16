@@ -49,7 +49,7 @@ func (s *Server) validatePKCEForAuthFlow(ctx context.Context, clientID, codeChal
 	// PKCE validation (secure by default, configurable for backward compatibility)
 	if s.Config.RequirePKCE && (codeChallenge == "" || codeChallengeMethod == "") {
 		s.logAuthFailure(ctx, "", clientID, "missing_pkce_parameters")
-		return fmt.Errorf("PKCE is required: code_challenge and code_challenge_method parameters are mandatory (OAuth 2.1)")
+		return newAuthorizationRequestError(ErrorCodeInvalidRequest, "PKCE is required: code_challenge and code_challenge_method parameters are mandatory", nil)
 	}
 
 	// Validate PKCE method if provided
@@ -59,12 +59,12 @@ func (s *Server) validatePKCEForAuthFlow(ctx context.Context, clientID, codeChal
 
 	if codeChallengeMethod == "" {
 		s.logAuthFailure(ctx, "", clientID, "missing_code_challenge_method")
-		return fmt.Errorf("code_challenge_method is required when code_challenge is provided")
+		return newAuthorizationRequestError(ErrorCodeInvalidRequest, "code_challenge_method is required when code_challenge is provided", nil)
 	}
 
 	if codeChallengeMethod == PKCEMethodPlain && !s.Config.AllowPKCEPlain {
 		s.logAuthFailure(ctx, "", clientID, "plain_pkce_not_allowed")
-		return fmt.Errorf("'plain' code_challenge_method is not allowed (only S256 is supported for security)")
+		return newAuthorizationRequestError(ErrorCodeInvalidRequest, "code_challenge_method plain is not allowed, use S256", nil)
 	}
 
 	if codeChallengeMethod != PKCEMethodS256 && codeChallengeMethod != PKCEMethodPlain {
@@ -73,7 +73,8 @@ func (s *Server) validatePKCEForAuthFlow(ctx context.Context, clientID, codeChal
 		if s.Config.AllowPKCEPlain {
 			supportedMethods = "S256, plain"
 		}
-		return fmt.Errorf("unsupported code_challenge_method: %s (supported: %s)", codeChallengeMethod, supportedMethods)
+		return newAuthorizationRequestError(ErrorCodeInvalidRequest, "code_challenge_method is not supported, use "+supportedMethods,
+			fmt.Errorf("unsupported code_challenge_method: %s (supported: %s)", codeChallengeMethod, supportedMethods))
 	}
 
 	return nil
@@ -85,19 +86,19 @@ func (s *Server) validateScopesForAuthFlow(ctx context.Context, clientID, scope 
 	// Validate scope string length to prevent DoS attacks
 	if len(scope) > s.Config.MaxScopeLength {
 		s.logAuthFailure(ctx, "", clientID, fmt.Sprintf("scope_too_long: %d characters (max: %d)", len(scope), s.Config.MaxScopeLength))
-		return fmt.Errorf("%s: scope parameter exceeds maximum length of %d characters", ErrorCodeInvalidScope, s.Config.MaxScopeLength)
+		return newAuthorizationRequestError(ErrorCodeInvalidScope, fmt.Sprintf("scope parameter exceeds maximum length of %d characters", s.Config.MaxScopeLength), nil)
 	}
 
 	// Validate scopes against server configuration
 	if err := s.validateScopes(scope); err != nil {
 		s.logAuthFailure(ctx, "", clientID, fmt.Sprintf("%s: %v", ErrorCodeInvalidScope, err))
-		return fmt.Errorf("%s: %w", ErrorCodeInvalidScope, err)
+		return newAuthorizationRequestError(ErrorCodeInvalidScope, "scope is not supported by this server", err)
 	}
 
 	// Validate scopes against client's allowed scopes
 	if err := s.validateClientScopes(scope, clientScopes); err != nil {
 		s.logAuthFailure(ctx, "", clientID, fmt.Sprintf("%s: %v", ErrorCodeInvalidScope, err))
-		return fmt.Errorf("%s: %w", ErrorCodeInvalidScope, err)
+		return newAuthorizationRequestError(ErrorCodeInvalidScope, "scope is not allowed for this client", err)
 	}
 
 	return nil
@@ -324,7 +325,7 @@ func (s *Server) PrepareAuthorization(ctx context.Context, clientID string, redi
 	// CRITICAL SECURITY: Validate state parameter from client for CSRF protection
 	if err := s.validateClientStateParameter(clientState); err != nil {
 		s.logAuthFailure(ctx, "", clientID, "invalid_state_parameter")
-		return nil, fmt.Errorf("oauth security bcp violation: %w", err)
+		return nil, newAuthorizationRequestError(ErrorCodeInvalidRequest, err.Error(), fmt.Errorf("oauth security bcp violation: %w", err))
 	}
 
 	if err := s.validatePKCEForAuthFlow(ctx, clientID, codeChallenge, codeChallengeMethod); err != nil {
@@ -347,7 +348,7 @@ func (s *Server) PrepareAuthorization(ctx context.Context, clientID string, redi
 	if resource != "" {
 		if err := s.validateResourceParameter(resource); err != nil {
 			s.logAuthFailure(ctx, "", clientID, fmt.Sprintf("invalid_resource: %v", err))
-			return nil, fmt.Errorf("%s: resource parameter is invalid: %w", ErrorCodeInvalidRequest, err)
+			return nil, newAuthorizationRequestError(ErrorCodeInvalidTarget, "resource parameter is invalid", fmt.Errorf("resource parameter is invalid: %w", err))
 		}
 	}
 
@@ -416,8 +417,10 @@ var ErrAuthorizationPermissionsChanged = errors.New("upstream permissions change
 // checkClientRedirectURI returns the client after checking that redirectURI is
 // registered for it and passes the authorization-time security check.
 func (s *Server) checkClientRedirectURI(ctx context.Context, clientID, redirectURI string) (*storage.Client, error) {
-	// Validate client - use getOrFetchClient to support URL-based client IDs (CIMD)
-	client, err := s.getOrFetchClient(ctx, clientID)
+	client, err := s.GetClient(ctx, clientID)
+	if errors.Is(err, ErrStorageUnavailable) {
+		return nil, err
+	}
 	if err != nil {
 		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidClient)
 		return nil, fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
@@ -425,7 +428,7 @@ func (s *Server) checkClientRedirectURI(ctx context.Context, clientID, redirectU
 
 	if err := s.validateRedirectURI(client, redirectURI); err != nil {
 		s.logAuthFailure(ctx, "", clientID, ErrorCodeInvalidRedirectURI)
-		return nil, fmt.Errorf("%s: %w", ErrorCodeInvalidRequest, err)
+		return nil, newAuthorizationRequestError(ErrorCodeInvalidRequest, "redirect_uri is not registered for this client", err)
 	}
 
 	// SECURITY: Authorization-time redirect URI validation (TOCTOU protection)
@@ -433,7 +436,7 @@ func (s *Server) checkClientRedirectURI(ctx context.Context, clientID, redirectU
 		s.logAuthFailure(ctx, "", clientID, "redirect_uri_security_violation")
 		s.Logger.Warn("Redirect URI failed authorization-time security validation",
 			paramClientID, clientID, "redirect_uri", sanitizeURIForLogging(redirectURI), logKeyError, err.Error())
-		return nil, fmt.Errorf("%s: redirect URI failed security validation", ErrorCodeInvalidRequest)
+		return nil, newAuthorizationRequestError(ErrorCodeInvalidRequest, "redirect URI failed security validation", nil)
 	}
 	return client, nil
 }

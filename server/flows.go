@@ -16,6 +16,7 @@ const (
 	ErrorCodeInvalidRedirectURI = constants.ErrorCodeInvalidRedirectURI
 	ErrorCodeInvalidScope       = constants.ErrorCodeInvalidScope
 	ErrorCodeInvalidGrant       = constants.ErrorCodeInvalidGrant
+	ErrorCodeInvalidTarget      = constants.ErrorCodeInvalidTarget
 	OAuthSpecVersion            = constants.OAuthSpecVersion
 )
 

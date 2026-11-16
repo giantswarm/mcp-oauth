@@ -179,13 +179,12 @@ func TestServeAuthorization_RespondAuthorizationError_PinsSpanAttributes(t *test
 		require.True(t, ok)
 	})
 
-	t.Run("authorization flow failed", func(t *testing.T) {
+	t.Run("authorization request refused", func(t *testing.T) {
 		handler, store := setupTestHandler(t)
 		defer store.Stop()
 		sr := installSpanRecorder(t, handler)
 		clientID := registerMinimalClient(t, handler)
 
-		// Unsupported code_challenge_method causes StartAuthorizationFlow to fail.
 		req := httptest.NewRequest(http.MethodGet,
 			"/authorize?client_id="+clientID+redirectParam+responseCode+
 				"&state="+validState+"&code_challenge=x&code_challenge_method=BOGUS",
@@ -194,10 +193,10 @@ func TestServeAuthorization_RespondAuthorizationError_PinsSpanAttributes(t *test
 
 		span := findAuthSpan(t, sr)
 		require.Equal(t, codes.Error, span.Status.Code)
-		require.Equal(t, "authorization flow failed", span.Status.Description)
+		require.Equal(t, "authorization request refused", span.Status.Description)
 		v, ok := spanAttrString(span, attribute.Key(instrumentation.AttrError))
 		require.True(t, ok)
-		require.Equal(t, constants.ErrorCodeServerError, v)
+		require.Equal(t, constants.ErrorCodeInvalidRequest, v)
 		_, ok = spanAttrString(span, attribute.Key(instrumentation.AttrErrorDescription))
 		require.True(t, ok)
 	})

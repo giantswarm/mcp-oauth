@@ -439,7 +439,31 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	)
 
 	authorizationRequest, err := h.server.PrepareAuthorization(r.Context(), clientID, canonicalRedirectURI, scope, resource, codeChallenge, codeChallengeMethod, state, authOpts)
-	if err != nil {
+	var refused *server.AuthorizationRequestError
+	switch {
+	case err == nil:
+	case errors.As(err, &refused):
+		h.logger.Info("Authorization request rejected", "client_id", clientID, paramError, err)
+		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
+			redirectURI: canonicalRedirectURI,
+			state:       state,
+			code:        refused.Code,
+			description: refused.Description,
+			spanError:   "authorization request refused",
+		})
+		return
+	case errors.Is(err, server.ErrStorageUnavailable):
+		h.logger.Warn("Authorization request failed: storage temporarily unavailable", "client_id", clientID)
+		instrumentation.RecordError(span, err)
+		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
+			redirectURI: canonicalRedirectURI,
+			state:       state,
+			code:        constants.ErrorCodeTemporarilyUnavailable,
+			description: "The server could not reach its client store; retry the request",
+			spanError:   "storage unavailable",
+		})
+		return
+	default:
 		h.logger.Error("Failed to start authorization flow", paramError, err)
 		instrumentation.RecordError(span, err)
 		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
