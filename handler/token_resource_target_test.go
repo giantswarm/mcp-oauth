@@ -78,3 +78,76 @@ func TestServeToken_AuthorizationCode_ResourceTarget(t *testing.T) {
 		})
 	}
 }
+
+func TestServeAuthorization_MultipleResourcesRedirectInvalidTarget(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	t.Cleanup(store.Stop)
+	audit := installAuditCapture(handler)
+	client, _, err := handler.server.RegisterClient(t.Context(), "Test Client", "public", "",
+		[]string{refusalRedirectURI}, []string{"openid"}, "192.168.1.100", 10)
+	require.NoError(t, err)
+	trustClient(handler.server, client.ClientID)
+	state := testutil.GenerateRandomString(43)
+
+	query := url.Values{
+		"response_type":         {"code"},
+		"client_id":             {client.ClientID},
+		"redirect_uri":          {refusalRedirectURI},
+		"state":                 {state},
+		"scope":                 {"openid"},
+		"resource":              {testIssuer, testIssuer},
+		"code_challenge":        {"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"},
+		"code_challenge_method": {"S256"},
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeAuthorization(recorder, httptest.NewRequest(http.MethodGet, "/authorize?"+query.Encode(), nil))
+
+	requireAuthorizationErrorRedirect(t, recorder, constants.ErrorCodeInvalidTarget, multipleResourcesDescription, state)
+	require.Contains(t, audit.String(), auditReasonMultipleResources)
+}
+
+func TestServeAuthorization_MultipleResourcesWithUnregisteredRedirectAnswerDirectly(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	t.Cleanup(store.Stop)
+	client, _, err := handler.server.RegisterClient(t.Context(), "Test Client", "public", "",
+		[]string{refusalRedirectURI}, []string{"openid"}, "192.168.1.100", 10)
+	require.NoError(t, err)
+
+	query := url.Values{
+		"response_type": {"code"},
+		"client_id":     {client.ClientID},
+		"redirect_uri":  {"https://attacker.example.com/callback"},
+		"resource":      {testIssuer, "https://other.example.com/mcp"},
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeAuthorization(recorder, httptest.NewRequest(http.MethodGet, "/authorize?"+query.Encode(), nil))
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code, "body: %s", recorder.Body.String())
+	require.Empty(t, recorder.Header().Get("Location"))
+}
+
+func TestServeToken_MultipleResourcesInvalidTarget(t *testing.T) {
+	for _, grantType := range []string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:token-exchange"} {
+		t.Run(grantType, func(t *testing.T) {
+			handler, store := setupTestHandler(t)
+			t.Cleanup(store.Stop)
+			audit := installAuditCapture(handler)
+
+			form := url.Values{
+				"grant_type": {grantType},
+				"resource":   {testIssuer, "https://other.example.com/mcp"},
+			}
+			request := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			recorder := httptest.NewRecorder()
+
+			handler.ServeToken(recorder, request)
+
+			require.Equal(t, http.StatusBadRequest, recorder.Code, "body: %s", recorder.Body.String())
+			var errorResponse oauth.ErrorResponse
+			require.NoError(t, json.NewDecoder(recorder.Body).Decode(&errorResponse))
+			require.Equal(t, constants.ErrorCodeInvalidTarget, errorResponse.Error)
+			require.Contains(t, audit.String(), auditReasonMultipleResources)
+		})
+	}
+}

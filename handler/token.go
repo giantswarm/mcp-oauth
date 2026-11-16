@@ -21,6 +21,13 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
+// RFC 8707 §2 allows several resource parameters; this server issues tokens
+// with a single audience, so it cannot honor more than one and refuses them.
+const (
+	auditReasonMultipleResources = "multiple_resources"
+	multipleResourcesDescription = "Only one resource parameter is supported: this server issues single-audience tokens"
+)
+
 // ServeToken handles the OAuth token endpoint
 func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
@@ -56,6 +63,15 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	grantType := r.Form.Get("grant_type")
+
+	if len(r.Form["resource"]) > 1 {
+		h.logAuthFailure(r.Context(), "", clientIP, auditReasonMultipleResources, "Token request rejected: more than one resource parameter")
+		h.recordTokenFailure(r.Context(), grantType, constants.ErrorCodeInvalidTarget)
+		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "multiple resources")
+		h.writeError(w, constants.ErrorCodeInvalidTarget, multipleResourcesDescription, http.StatusBadRequest)
+		return
+	}
 
 	switch grantType {
 	case grantTypeAuthorizationCode:

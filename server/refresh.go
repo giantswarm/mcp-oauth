@@ -347,8 +347,10 @@ func (s *Server) storeRefreshedProviderToken(ctx context.Context, userID, newAcc
 // read, so a token presented by the wrong client never reads it, acquires the
 // refresh lock, or triggers an upstream call. metaClientID is the stored client
 // binding read non-destructively from the token metadata — the same value the
-// atomic consume returns.
-func (s *Server) resolveRefreshGrant(ctx context.Context, refreshToken, clientID, metaClientID string, familyStore storage.RefreshTokenFamilyStore, supportsFamilies bool) (userID string, providerToken *oauth2.Token, unified bool, err error) {
+// atomic consume returns. metaAudience is the grant's stored audience; a grant
+// bound to a resource this server no longer serves is refused at the same
+// point.
+func (s *Server) resolveRefreshGrant(ctx context.Context, refreshToken, clientID, metaClientID, metaAudience string, familyStore storage.RefreshTokenFamilyStore, supportsFamilies bool) (userID string, providerToken *oauth2.Token, unified bool, err error) {
 	_, unified = s.userProviderTokenStore()
 
 	var storedClientID string
@@ -362,6 +364,9 @@ func (s *Server) resolveRefreshGrant(ctx context.Context, refreshToken, clientID
 	// refresh or lock acquisition. The refresh token MUST only be accepted by the
 	// client it was issued to.
 	if err = s.validateRefreshTokenClientBinding(ctx, storedClientID, clientID, userID); err != nil {
+		return "", nil, unified, err
+	}
+	if err = s.refuseUnservedRefreshAudience(ctx, metaAudience, userID, clientID); err != nil {
 		return "", nil, unified, err
 	}
 
@@ -402,7 +407,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		metadata = &storage.TokenMetadata{}
 	}
 
-	userID, providerToken, unified, err := s.resolveRefreshGrant(ctx, refreshToken, clientID, metadata.ClientID, familyStore, supportsFamilies)
+	userID, providerToken, unified, err := s.resolveRefreshGrant(ctx, refreshToken, clientID, metadata.ClientID, metadata.Audience, familyStore, supportsFamilies)
 	if err != nil {
 		return nil, err
 	}
@@ -414,7 +419,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	newProviderToken, err := s.refreshProviderTokenForGrant(ctx, userID, refreshToken, providerToken)
 	if err != nil {
 		if !unified && storage.IsNotFoundError(err) {
-			_, _, _, grantErr := s.resolveRefreshGrant(ctx, refreshToken, clientID, metadata.ClientID, familyStore, supportsFamilies)
+			_, _, _, grantErr := s.resolveRefreshGrant(ctx, refreshToken, clientID, metadata.ClientID, metadata.Audience, familyStore, supportsFamilies)
 			if grantErr != nil {
 				return nil, grantErr
 			}
@@ -429,6 +434,27 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	baseMetadata := *metadata
 	baseMetadata.UserID = userID
 	return s.issueRefreshedTokens(ctx, refreshToken, newProviderToken, baseMetadata)
+}
+
+const auditReasonRefreshResourceNotServed = "refresh_resource_not_served"
+
+// refuseUnservedRefreshAudience answers invalid_grant (RFC 6749 §5.2) when the
+// grant is bound to a resource this server no longer serves, so a refresh never
+// mints a token for a foreign audience (RFC 8707 §2.2). An empty audience is
+// served: the issued token defaults to GetResourceIdentifier.
+//
+// The refresh token is left in place rather than consumed or its family
+// revoked: either would turn a client's retry of the same token into a
+// reuse-detection theft alarm, while an unconsumed token re-enters this same
+// refusal until it expires.
+func (s *Server) refuseUnservedRefreshAudience(ctx context.Context, audience, userID, clientID string) error {
+	if audience == "" || s.Config.servesResource(audience) {
+		return nil
+	}
+	s.Logger.Debug("Refresh refused: grant audience is not served by this authorization server",
+		paramAudience, audience, paramClientID, clientID, "user_id", userID)
+	s.Auditor.LogAuthFailure(ctx, userID, clientID, "", auditReasonRefreshResourceNotServed)
+	return errInvalidGrant
 }
 
 func (s *Server) issueRefreshedTokens(ctx context.Context, refreshToken string, newProviderToken *oauth2.Token, metadata storage.TokenMetadata) (*oauth2.Token, error) {

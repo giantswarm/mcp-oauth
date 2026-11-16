@@ -131,3 +131,74 @@ func TestExchangeAuthorizationCode_ResourceTarget(t *testing.T) {
 		})
 	}
 }
+
+func TestRefreshAccessToken_ResourceNoLongerServed(t *testing.T) {
+	const servedResource = "https://mcp.example.com/mcp"
+	srv, store, client, logs := newResourceTargetServer(t, servedResource, nil)
+	verifier := testutil.GenerateRandomString(50)
+	challengeHash := sha256.Sum256([]byte(verifier))
+	authCode := &storage.AuthorizationCode{
+		Code:                testutil.GenerateRandomString(32),
+		ClientID:            client.ClientID,
+		RedirectURI:         client.RedirectURIs[0],
+		Scope:               "openid",
+		Resource:            servedResource,
+		CodeChallenge:       base64.RawURLEncoding.EncodeToString(challengeHash[:]),
+		CodeChallengeMethod: PKCEMethodS256,
+		UserID:              "user-123",
+		ProviderToken:       testutil.GenerateTestToken(),
+		CreatedAt:           time.Now(),
+		ExpiresAt:           time.Now().Add(10 * time.Minute),
+	}
+	require.NoError(t, store.SaveAuthorizationCode(t.Context(), authCode))
+	tokens, _, err := srv.ExchangeAuthorizationCode(t.Context(), authCode.Code, client.ClientID,
+		client.RedirectURIs[0], servedResource, verifier, "")
+	require.NoError(t, err)
+	require.NotEmpty(t, tokens.RefreshToken)
+	require.NoError(t, store.SaveUserProviderToken(t.Context(), authCode.UserID, authCode.ProviderToken))
+
+	srv.Config.ResourceIdentifier = "https://mcp.example.com/v2"
+	_, err = srv.RefreshAccessToken(t.Context(), tokens.RefreshToken, client.ClientID)
+	require.ErrorIs(t, err, errInvalidGrant)
+	require.True(t, containsAuthFailure(logs.String(), auditReasonRefreshResourceNotServed), "audit log: %s", logs.String())
+	require.False(t, containsAuditEvent(logs.String(), "refresh_token_reuse_detected"), "audit log: %s", logs.String())
+
+	srv.Config.ResourceIdentifier = servedResource
+	_, err = srv.RefreshAccessToken(t.Context(), tokens.RefreshToken, client.ClientID)
+	require.NoError(t, err, "the refused refresh token is neither consumed nor revoked")
+}
+
+func TestSelfIssuedExchange_AllowedResourceComparedNormalized(t *testing.T) {
+	tests := []struct {
+		name        string
+		resource    string
+		wantRefused bool
+	}{
+		{name: "listed value", resource: "https://backend.example.com"},
+		{name: "listed value with upper-case host, default port and trailing slash", resource: "https://BACKEND.example.com:443/"},
+		{name: "own identifier with trailing slash", resource: "https://api.example.com/"},
+		{name: "another path on the listed host", resource: "https://backend.example.com/other", wantRefused: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, _ := newActorExchangeServer(t)
+			srv.Config.TokenExchangeAllowedResources = []string{"https://backend.example.com"}
+			srv.subjectValidators = map[string]SubjectTokenValidator{
+				SubjectTokenTypeIDToken: &stubTokenValidator{byToken: map[string]*SubjectIdentity{
+					"sub-tok": {Subject: testSubject, Issuer: testIssuer},
+				}},
+			}
+
+			_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+				Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
+				Resource: tt.resource,
+			}})
+
+			if tt.wantRefused {
+				require.ErrorIs(t, err, ErrInvalidTarget)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
