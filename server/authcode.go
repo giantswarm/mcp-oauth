@@ -327,7 +327,6 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID string, re
 // person has not approved leaves no state behind. The parameters are those of
 // [Server.StartAuthorizationFlow].
 func (s *Server) PrepareAuthorization(ctx context.Context, clientID string, redirectURI *url.URL, scope, resource, codeChallenge, codeChallengeMethod, clientState string, authOpts *providers.AuthorizationURLOptions) (*AuthorizationRequest, error) {
-	// CRITICAL SECURITY: Validate state parameter from client for CSRF protection
 	if err := s.validateClientStateParameter(clientState); err != nil {
 		s.logAuthFailure(ctx, "", clientID, "invalid_state_parameter")
 		return nil, newAuthorizationRequestError(ErrorCodeInvalidRequest, err.Error(), fmt.Errorf("oauth security bcp violation: %w", err))
@@ -450,14 +449,9 @@ func (s *Server) checkClientRedirectURI(ctx context.Context, clientID, redirectU
 // beginAuthorization stores the authorization state for a checked request and
 // returns the upstream authorization URL.
 func (s *Server) beginAuthorization(ctx context.Context, authorizationRequest *AuthorizationRequest) (string, error) {
-	// Generate server-side state if client didn't provide one
-	trackingState := authorizationRequest.State
-	if trackingState == "" {
-		trackingState = generateRandomToken()
-		s.Logger.Debug("Generated server-side state for client without state parameter", paramClientID, authorizationRequest.ClientID)
-	}
-
-	// Generate provider state (different from client state for defense in depth)
+	// The client's state is opaque and may be short or absent, so it never
+	// keys stored state; two clients sending the same value must not collide.
+	stateID := generateRandomToken()
 	providerState := generateRandomToken()
 
 	// Generate PKCE for server-to-provider leg (OAuth 2.1)
@@ -477,9 +471,8 @@ func (s *Server) beginAuthorization(ctx context.Context, authorizationRequest *A
 	s.logAuthorizationFlowStarted(ctx, authorizationRequest.ClientID, authorizationRequest.RedirectURI, authorizationRequest.Scope, authorizationRequest.CodeChallengeMethod, authorizationRequest.Resource, authOpts)
 
 	// Save authorization state with both client and server PKCE parameters and resource binding
-	// Use trackingState (which may be server-generated if client didn't provide state)
 	authState := &storage.AuthorizationState{
-		StateID:              trackingState,
+		StateID:              stateID,
 		OriginalClientState:  authorizationRequest.State, // Empty if client didn't provide state
 		ClientID:             authorizationRequest.ClientID,
 		RedirectURI:          authorizationRequest.RedirectURI,

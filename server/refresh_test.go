@@ -51,7 +51,7 @@ func TestServer_RefreshTokenRotation(t *testing.T) {
 
 	// Start auth flow and get tokens
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	flowURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -66,7 +66,7 @@ func TestServer_RefreshTokenRotation(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -187,7 +187,7 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 
 	// Start auth flow and get initial tokens
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	flowURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -202,7 +202,7 @@ func TestServer_RefreshTokenReuseDetection(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -400,7 +400,7 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 
 	// Get initial tokens
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	flowURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -415,7 +415,7 @@ func TestServer_RefreshTokenReuseMultipleRotations(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -531,7 +531,7 @@ func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
 
 	// Get initial tokens
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	flowURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -546,7 +546,7 @@ func TestServer_ConcurrentRefreshTokenReuse(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -685,7 +685,7 @@ func TestServer_RefreshTokenReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 
 	// Get initial tokens
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	flowURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -700,7 +700,7 @@ func TestServer_RefreshTokenReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -1420,12 +1420,12 @@ func TestServer_RefreshAccessToken_FamilyIDInMetadata(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(ctx, clientID, mustParseURL(t, "https://example.com/callback"), "openid email", "", codeChallenge, PKCEMethodS256, clientState, nil)
+	flowURL, err := srv.StartAuthorizationFlow(ctx, clientID, mustParseURL(t, "https://example.com/callback"), "openid email", "", codeChallenge, PKCEMethodS256, clientState, nil)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -1514,12 +1514,12 @@ func TestServer_RefreshAccessToken_PreservesScopesAndAudience(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(ctx, clientID, mustParseURL(t, "https://example.com/callback"), "openid email profile", "", codeChallenge, PKCEMethodS256, clientState, nil)
+	flowURL, err := srv.StartAuthorizationFlow(ctx, clientID, mustParseURL(t, "https://example.com/callback"), "openid email profile", "", codeChallenge, PKCEMethodS256, clientState, nil)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}

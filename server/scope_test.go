@@ -102,7 +102,7 @@ func TestServer_StartAuthorizationFlow_EmptyScope(t *testing.T) {
 	}
 
 	// Verify authorization state was saved WITH the provider's default scopes
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, authURL))
 	if err != nil {
 		t.Fatalf("Failed to get authorization state: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestServer_StartAuthorizationFlow_WithExplicitScopes(t *testing.T) {
 	}
 
 	// Verify authorization state contains the requested scopes
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, authURL))
 	if err != nil {
 		t.Fatalf("Failed to get authorization state: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestServer_StartAuthorizationFlow_ScopeIntersection(t *testing.T) {
 	}
 
 	// Verify authorization state contains only the intersection
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, authURL))
 	if err != nil {
 		t.Fatalf("Failed to get authorization state: %v", err)
 	}

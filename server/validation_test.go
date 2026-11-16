@@ -2,9 +2,12 @@ package server
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -470,148 +473,34 @@ func TestHTTPSEnforcement_WithPort(t *testing.T) {
 	}
 }
 
+// The client's state is optional and opaque (OAuth 2.1 §4.1.1); only its
+// length is bounded so it can be echoed back in the redirect.
 func TestValidateClientStateParameter(t *testing.T) {
 	setup := newTestServerSetup(false)
-	srv, err := setup.createServer(&Config{
-		Issuer:         testAuthIssuer,
-		RequirePKCE:    true,
-		AllowPKCEPlain: false,
-	})
-	if err != nil {
-		t.Fatalf("Failed to create server: %v", err)
-	}
+	srv, err := setup.createServer(&Config{Issuer: testAuthIssuer})
+	require.NoError(t, err)
+	maxLength := srv.Config.MaxStateLength
 
 	tests := []struct {
 		name    string
 		state   string
 		wantErr bool
-		errMsg  string
 	}{
-		{
-			name:    "empty state",
-			state:   "",
-			wantErr: true,
-			errMsg:  "state parameter is required for CSRF protection",
-		},
-		{
-			name:    "state too short - 1 character",
-			state:   "x",
-			wantErr: true,
-			errMsg:  "state parameter must be at least 22 characters for security",
-		},
-		{
-			name:    "state too short - 10 characters",
-			state:   "0123456789",
-			wantErr: true,
-			errMsg:  "state parameter must be at least 22 characters for security",
-		},
-		{
-			name:    "state too short - 21 characters (just under minimum)",
-			state:   "012345678901234567890",
-			wantErr: true,
-			errMsg:  "state parameter must be at least 22 characters for security",
-		},
-		{
-			name:    "state exactly minimum length - 22 characters",
-			state:   "0123456789012345678901",
-			wantErr: false,
-		},
-		{
-			name:    "state 31 characters (above minimum)",
-			state:   "0123456789012345678901234567890",
-			wantErr: false,
-		},
-		{
-			name:    "state above minimum - 32 characters",
-			state:   "01234567890123456789012345678901",
-			wantErr: false,
-		},
-		{
-			name:    "state above minimum - 43 characters (PKCE verifier length)",
-			state:   "0123456789012345678901234567890123456789012",
-			wantErr: false,
-		},
-		{
-			name:    "state above minimum - 64 characters",
-			state:   "0123456789012345678901234567890123456789012345678901234567890123",
-			wantErr: false,
-		},
-		{
-			name:    "state with special characters above minimum length",
-			state:   "abcdef-GHIJKL_mnopqr.stuvwxyz",
-			wantErr: false, // 29 chars, above 24-char minimum
-		},
-		{
-			name:    "state with base64url characters and above minimum length",
-			state:   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef", // 32 chars
-			wantErr: false,
-		},
+		{name: "absent", state: ""},
+		{name: "one character", state: "x"},
+		{name: "below the provider-state minimum", state: strings.Repeat("s", srv.Config.MinStateLength-1)},
+		{name: "at the maximum length", state: strings.Repeat("s", maxLength)},
+		{name: "over the maximum length", state: strings.Repeat("s", maxLength+1), wantErr: true},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := srv.validateClientStateParameter(tt.state)
-
 			if tt.wantErr {
-				if err == nil {
-					t.Errorf("validateClientStateParameter() expected error but got none")
-					return
-				}
-				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
-					t.Errorf("validateClientStateParameter() error = %v, want error containing %q", err, tt.errMsg)
-				}
-			} else if err != nil {
-				t.Errorf("validateClientStateParameter() unexpected error = %v", err)
+				require.ErrorContains(t, err, fmt.Sprintf("at most %d characters", maxLength))
+				return
 			}
+			require.NoError(t, err)
 		})
-	}
-}
-
-// TestValidateClientStateParameter_TimingAttackResistance ensures that state validation
-// combined with constant-time comparison provides timing attack resistance.
-// This test verifies that the validation enforces minimum length requirements
-// which is the first line of defense against timing attacks.
-func TestValidateClientStateParameter_TimingAttackResistance(t *testing.T) {
-	setup := newTestServerSetup(false)
-	srv, err := setup.createServer(&Config{
-		Issuer:         testAuthIssuer,
-		RequirePKCE:    true,
-		AllowPKCEPlain: false,
-	})
-	if err != nil {
-		t.Fatalf("Failed to create server: %v", err)
-	}
-
-	shortStates := []string{
-		"a",
-		"ab",
-		"abc",
-		"abcd",
-		"12345",
-		"0123456789",           // 10 chars
-		"01234567890123456789", // 20 chars
-	}
-
-	for _, state := range shortStates {
-		err := srv.validateClientStateParameter(state)
-		if err == nil {
-			t.Errorf("validateClientStateParameter(%q) expected error for short state (len=%d) but got none", state, len(state))
-		}
-	}
-
-	validStates := []string{
-		strings.Repeat("a", 24),  // Exactly minimum
-		strings.Repeat("b", 32),  // Previous default
-		strings.Repeat("c", 43),  // PKCE verifier length
-		strings.Repeat("d", 64),  // Well above minimum
-		strings.Repeat("e", 128), // Very long
-	}
-
-	for _, state := range validStates {
-		err := srv.validateClientStateParameter(state)
-		if err != nil {
-			t.Errorf("validateClientStateParameter(%q) unexpected error for valid state (len=%d): %v", state[:10]+"...", len(state), err)
-		}
 	}
 }
 
@@ -861,108 +750,6 @@ func TestValidateClientScopes_SecurityScenarios(t *testing.T) {
 	})
 }
 
-// TestValidateClientStateParameter_AllowNoState tests that empty and short
-// client state is allowed when AllowNoStateParameter is enabled.
-func TestValidateClientStateParameter_AllowNoState(t *testing.T) {
-	t.Run("empty state rejected when AllowNoStateParameter=false (default)", func(t *testing.T) {
-		setup := newTestServerSetup(false)
-		srv, err := setup.createServer(&Config{
-			Issuer:                testAuthIssuer,
-			RequirePKCE:           true,
-			AllowNoStateParameter: false,
-		})
-		if err != nil {
-			t.Fatalf("Failed to create server: %v", err)
-		}
-
-		err = srv.validateClientStateParameter("")
-		if err == nil {
-			t.Error("Expected error for empty state when AllowNoStateParameter=false")
-		}
-	})
-
-	t.Run("empty state allowed when AllowNoStateParameter=true", func(t *testing.T) {
-		setup := newTestServerSetup(false)
-		srv, err := setup.createServer(&Config{
-			Issuer:                testAuthIssuer,
-			RequirePKCE:           true,
-			AllowNoStateParameter: true,
-		})
-		if err != nil {
-			t.Fatalf("Failed to create server: %v", err)
-		}
-
-		err = srv.validateClientStateParameter("")
-		if err != nil {
-			t.Errorf("Expected no error for empty state when AllowNoStateParameter=true, got: %v", err)
-		}
-	})
-
-	t.Run("valid state works regardless of AllowNoStateParameter setting", func(t *testing.T) {
-		validState := "0123456789012345678901234567890123456789012" // 43 chars
-
-		setup1 := newTestServerSetup(false)
-		srv1, err := setup1.createServer(&Config{
-			Issuer:                testAuthIssuer,
-			RequirePKCE:           true,
-			AllowNoStateParameter: false,
-		})
-		if err != nil {
-			t.Fatalf("Failed to create server: %v", err)
-		}
-		if err := srv1.validateClientStateParameter(validState); err != nil {
-			t.Errorf("Valid state should work with AllowNoStateParameter=false: %v", err)
-		}
-
-		setup2 := newTestServerSetup(false)
-		srv2, err := setup2.createServer(&Config{
-			Issuer:                testAuthIssuer,
-			RequirePKCE:           true,
-			AllowNoStateParameter: true,
-		})
-		if err != nil {
-			t.Fatalf("Failed to create server: %v", err)
-		}
-		if err := srv2.validateClientStateParameter(validState); err != nil {
-			t.Errorf("Valid state should work with AllowNoStateParameter=true: %v", err)
-		}
-	})
-
-	t.Run("short non-empty state accepted when AllowNoStateParameter=true", func(t *testing.T) {
-		setup := newTestServerSetup(false)
-		srv, err := setup.createServer(&Config{
-			Issuer:                testAuthIssuer,
-			RequirePKCE:           true,
-			AllowNoStateParameter: true,
-		})
-		if err != nil {
-			t.Fatalf("Failed to create server: %v", err)
-		}
-
-		err = srv.validateClientStateParameter("short")
-		if err != nil {
-			t.Errorf("Expected no error for short state when AllowNoStateParameter=true, got: %v", err)
-		}
-	})
-
-	t.Run("short non-empty state rejected when AllowNoStateParameter=false", func(t *testing.T) {
-		setup := newTestServerSetup(false)
-		srv, err := setup.createServer(&Config{
-			Issuer:                testAuthIssuer,
-			RequirePKCE:           true,
-			AllowNoStateParameter: false,
-		})
-		if err != nil {
-			t.Fatalf("Failed to create server: %v", err)
-		}
-
-		err = srv.validateClientStateParameter("short")
-		if err == nil {
-			t.Error("Expected error for short state when AllowNoStateParameter=false")
-		}
-	})
-}
-
 // TestCanonicalLoopbackRedirectURI_Match tests RFC 8252 §7.3 port-agnostic
 // matching for loopback redirect URIs.
 func TestCanonicalLoopbackRedirectURI_Match(t *testing.T) {
@@ -1155,15 +942,14 @@ func TestValidateRedirectURI_RFC8252LoopbackPort(t *testing.T) {
 	}
 }
 
-// TestValidateProviderStateParameter tests that provider state validation always
-// enforces minimum length regardless of AllowNoStateParameter.
+// TestValidateProviderStateParameter tests that the state this server sends
+// upstream is required and meets the minimum length.
 func TestValidateProviderStateParameter(t *testing.T) {
 	t.Run("empty provider state always rejected", func(t *testing.T) {
 		setup := newTestServerSetup(false)
 		srv, err := setup.createServer(&Config{
-			Issuer:                testAuthIssuer,
-			RequirePKCE:           true,
-			AllowNoStateParameter: true,
+			Issuer:      testAuthIssuer,
+			RequirePKCE: true,
 		})
 		if err != nil {
 			t.Fatalf("Failed to create server: %v", err)
@@ -1171,16 +957,15 @@ func TestValidateProviderStateParameter(t *testing.T) {
 
 		err = srv.validateProviderStateParameter("")
 		if err == nil {
-			t.Error("Expected error for empty provider state even with AllowNoStateParameter=true")
+			t.Error("Expected error for empty provider state")
 		}
 	})
 
-	t.Run("short provider state rejected even with AllowNoStateParameter=true", func(t *testing.T) {
+	t.Run("short provider state rejected", func(t *testing.T) {
 		setup := newTestServerSetup(false)
 		srv, err := setup.createServer(&Config{
-			Issuer:                testAuthIssuer,
-			RequirePKCE:           true,
-			AllowNoStateParameter: true,
+			Issuer:      testAuthIssuer,
+			RequirePKCE: true,
 		})
 		if err != nil {
 			t.Fatalf("Failed to create server: %v", err)
@@ -1188,16 +973,15 @@ func TestValidateProviderStateParameter(t *testing.T) {
 
 		err = srv.validateProviderStateParameter("short")
 		if err == nil {
-			t.Error("Expected error for short provider state even with AllowNoStateParameter=true")
+			t.Error("Expected error for short provider state")
 		}
 	})
 
 	t.Run("valid-length provider state accepted", func(t *testing.T) {
 		setup := newTestServerSetup(false)
 		srv, err := setup.createServer(&Config{
-			Issuer:                testAuthIssuer,
-			RequirePKCE:           true,
-			AllowNoStateParameter: false,
+			Issuer:      testAuthIssuer,
+			RequirePKCE: true,
 		})
 		if err != nil {
 			t.Fatalf("Failed to create server: %v", err)

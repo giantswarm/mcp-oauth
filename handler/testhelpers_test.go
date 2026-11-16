@@ -2,8 +2,11 @@ package handler
 
 import (
 	"context"
+	"net/url"
+	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/storage"
@@ -26,4 +29,15 @@ func saveTestAccessToken(ctx context.Context, store *memory.Store, accessToken s
 	return store.SaveTokenMetadata(ctx, accessToken, storage.TokenMetadata{
 		UserID: userID, ClientID: "test-client", TokenType: "access", ExpiresAt: expiresAt, Audience: audience,
 	})
+}
+
+// providerStateOf returns the state this server sent upstream in authURL, the
+// key of the pending authorization at the provider callback.
+func providerStateOf(t *testing.T, authURL string) string {
+	t.Helper()
+	parsed, err := url.Parse(authURL)
+	require.NoError(t, err)
+	state := parsed.Query().Get("state")
+	require.NotEmpty(t, state, "authorization URL carries no state: %s", authURL)
+	return state
 }

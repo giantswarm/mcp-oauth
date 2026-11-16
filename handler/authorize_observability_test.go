@@ -112,51 +112,8 @@ func TestServeAuthorization_RespondAuthorizationError_PinsSpanAttributes(t *test
 		redirectParam = "&redirect_uri=https://example.com/callback"
 		responseCode  = "&response_type=code"
 		validPKCE     = "&code_challenge=testchallenge&code_challenge_method=S256"
-		// 36 chars, well above the 24-char minimum.
-		validState = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		validState    = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	)
-
-	t.Run("state missing", func(t *testing.T) {
-		handler, store := setupTestHandler(t)
-		defer store.Stop()
-		sr := installSpanRecorder(t, handler)
-		clientID := registerMinimalClient(t, handler)
-
-		req := httptest.NewRequest(http.MethodGet,
-			"/authorize?client_id="+clientID+redirectParam+responseCode,
-			nil)
-		handler.ServeAuthorization(httptest.NewRecorder(), req)
-
-		span := findAuthSpan(t, sr)
-		require.Equal(t, codes.Error, span.Status.Code)
-		require.Equal(t, "state missing", span.Status.Description)
-		v, ok := spanAttrString(span, attribute.Key(instrumentation.AttrError))
-		require.True(t, ok, "span missing %s attribute", instrumentation.AttrError)
-		require.Equal(t, constants.ErrorCodeInvalidRequest, v)
-		_, ok = spanAttrString(span, attribute.Key(instrumentation.AttrErrorDescription))
-		require.True(t, ok, "span missing %s attribute", instrumentation.AttrErrorDescription)
-	})
-
-	t.Run("state too short", func(t *testing.T) {
-		handler, store := setupTestHandler(t)
-		defer store.Stop()
-		sr := installSpanRecorder(t, handler)
-		clientID := registerMinimalClient(t, handler)
-
-		req := httptest.NewRequest(http.MethodGet,
-			"/authorize?client_id="+clientID+redirectParam+responseCode+"&state=short",
-			nil)
-		handler.ServeAuthorization(httptest.NewRecorder(), req)
-
-		span := findAuthSpan(t, sr)
-		require.Equal(t, codes.Error, span.Status.Code)
-		require.Equal(t, "state too short", span.Status.Description)
-		v, ok := spanAttrString(span, attribute.Key(instrumentation.AttrError))
-		require.True(t, ok)
-		require.Equal(t, constants.ErrorCodeInvalidRequest, v)
-		_, ok = spanAttrString(span, attribute.Key(instrumentation.AttrErrorDescription))
-		require.True(t, ok)
-	})
 
 	t.Run("unsupported response_type", func(t *testing.T) {
 		handler, store := setupTestHandler(t)

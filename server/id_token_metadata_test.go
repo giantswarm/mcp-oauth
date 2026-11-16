@@ -80,10 +80,10 @@ func mintTokensWithIDTokenAndDPoP(t *testing.T, srv *Server, store *memory.Store
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 	clientState := testutil.GenerateRandomString(43)
 
-	_, err = srv.StartAuthorizationFlow(ctx, client.ClientID, mustParseURL(t, "https://example.com/callback"), "openid email", "", codeChallenge, PKCEMethodS256, clientState, nil)
+	flowURL, err := srv.StartAuthorizationFlow(ctx, client.ClientID, mustParseURL(t, "https://example.com/callback"), "openid email", "", codeChallenge, PKCEMethodS256, clientState, nil)
 	require.NoError(t, err)
 
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	require.NoError(t, err)
 
 	authCode, _, err := srv.HandleProviderCallback(ctx, authState.ProviderState, "code-"+testutil.GenerateRandomString(10))
