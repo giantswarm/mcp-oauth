@@ -14,8 +14,10 @@ import (
 // ErrInvalidTarget is returned by BrokeredExchange when the
 // requested audience cannot be served: no Exchanger is configured, the
 // client's allowlist does not contain the audience, or the Exchanger
-// itself reports the audience as unknown. Handlers map it to the RFC 8693
-// §2.2.2 invalid_target error response.
+// itself reports the audience as unknown. ExchangeAuthorizationCode
+// returns it for a resource parameter that is malformed or names a
+// resource this server does not serve. Handlers map it to the
+// invalid_target error response (RFC 8693 §2.2.2, RFC 8707 §2).
 var ErrInvalidTarget = errors.New("requested audience is not allowed for this client")
 
 // ErrExchangeRateLimited is returned by BrokeredExchange when the configured

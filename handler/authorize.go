@@ -346,7 +346,8 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 	// Set CORS headers for browser-based clients
 	h.setCORSHeaders(w, r)
 
-	if _, ok := h.gateIPRateLimit(w, r, span, endpointAuthorize, http.MethodGet, startTime); !ok {
+	clientIP, ok := h.gateIPRateLimit(w, r, span, endpointAuthorize, http.MethodGet, startTime)
+	if !ok {
 		return
 	}
 
@@ -400,6 +401,18 @@ func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
 			code:        constants.ErrorCodeUnsupportedResponseType,
 			description: fmt.Sprintf("response_type must be one of [%s]", strings.Join(oauth.DefaultResponseTypes, ", ")),
 			spanError:   "unsupported response_type",
+		})
+		return
+	}
+
+	if len(r.URL.Query()["resource"]) > 1 {
+		h.logAuthFailure(r.Context(), clientID, clientIP, auditReasonMultipleResources, "Authorization request rejected: more than one resource parameter")
+		h.respondAuthorizationError(w, r, span, startTime, authorizationError{
+			redirectURI: canonicalRedirectURI,
+			state:       state,
+			code:        constants.ErrorCodeInvalidTarget,
+			description: multipleResourcesDescription,
+			spanError:   "multiple resources",
 		})
 		return
 	}
