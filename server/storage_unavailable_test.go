@@ -85,10 +85,10 @@ func (f *faultyGrantFixture) issueCode(t *testing.T) (code, verifier string) {
 	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
 	clientState := testutil.GenerateRandomString(43)
 
-	_, err := f.srv.StartAuthorizationFlow(ctx, f.clientID, mustParseURL(t, "https://example.com/callback"),
+	flowURL, err := f.srv.StartAuthorizationFlow(ctx, f.clientID, mustParseURL(t, "https://example.com/callback"),
 		"openid email", "", challenge, PKCEMethodS256, clientState, nil)
 	require.NoError(t, err)
-	authState, err := f.store.GetAuthorizationState(ctx, clientState)
+	authState, err := f.store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	require.NoError(t, err)
 	authCode, _, err := f.srv.HandleProviderCallback(ctx, authState.ProviderState, "provider-code-"+testutil.GenerateRandomString(8))
 	require.NoError(t, err)

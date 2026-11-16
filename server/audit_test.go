@@ -88,7 +88,7 @@ func TestServer_AuditLoggingClientIDMismatch(t *testing.T) {
 
 	// Get authorization code
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	flowURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -103,7 +103,7 @@ func TestServer_AuditLoggingClientIDMismatch(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -191,7 +191,7 @@ func TestServer_AuditLoggingRedirectURIMismatch(t *testing.T) {
 
 	// Get authorization code
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	flowURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -206,7 +206,7 @@ func TestServer_AuditLoggingRedirectURIMismatch(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -442,7 +442,7 @@ func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
 
 	// Get authorization code
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	flowURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -457,7 +457,7 @@ func TestServer_AuditEventAuthorizationCodeReuse(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}

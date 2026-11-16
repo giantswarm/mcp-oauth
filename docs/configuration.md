@@ -44,7 +44,7 @@ config := &server.Config{
 | `RequirePKCE` | `bool` | `true` | Require PKCE for all authorization requests |
 | `AllowPKCEPlain` | `bool` | `false` | Allow insecure 'plain' PKCE method |
 | `AllowRefreshTokenRotation` | `bool` | `true` | Enable refresh token rotation |
-| `MinStateLength` | `int` | `22` | Minimum length for state parameter |
+| `MinStateLength` | `int` | `22` | Minimum length of the state sent to the provider and checked on its callback; the client's `state` has no minimum |
 
 ### Discovery Settings
 

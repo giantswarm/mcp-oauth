@@ -448,24 +448,22 @@ type Config struct {
 	// Default: false (PKCE is REQUIRED for public clients per OAuth 2.1)
 	AllowPublicClientsWithoutPKCE bool // default: false
 
-	// MinStateLength is the minimum length for state parameters to prevent
-	// timing attacks and ensure sufficient entropy for CSRF protection.
-	// OAuth 2.1 recommends at least 128 bits (16 bytes) of entropy.
+	// MinStateLength is the minimum length of the state this server sends to
+	// the upstream provider and checks on its callback. The client's state is
+	// opaque and has no minimum (OAuth 2.1 §4.1.1).
 	// Default and floor: 22 characters, the length of 16 random bytes (128 bits)
 	// in unpadded base64url. A length check cannot measure entropy.
 	MinStateLength int // default: 22
 
-	// MaxStateLength caps the `state` parameter length to prevent audit-log
-	// inflation / DoS via oversized state values.
+	// MaxStateLength caps the length of the client's and the provider's
+	// `state`, to prevent audit-log inflation / DoS via oversized values.
 	// Default: 512 characters (accommodates common JWT-encoded-state payloads).
 	MaxStateLength int // default: 512
 
-	// AllowNoStateParameter allows authorization requests without the state parameter.
-	// WARNING: Disabling state parameter validation weakens CSRF protection!
-	// The state parameter is REQUIRED by OAuth 2.1 for CSRF attack prevention.
-	// Only enable this for compatibility with clients that don't support state (e.g., some MCP clients).
-	// Default: false (state is REQUIRED for security)
-	AllowNoStateParameter bool // default: false
+	// Deprecated: AllowNoStateParameter has no effect. The client's state is
+	// OPTIONAL (OAuth 2.1 §4.1.1) and accepted without it; PKCE, enforced for
+	// every authorization request, provides the CSRF protection (RFC 9700 §2.1).
+	AllowNoStateParameter bool
 
 	// AllowPublicClientRegistration controls two security aspects of client registration:
 	// 1. Whether the DCR endpoint (/oauth/register) requires authentication (Bearer token)

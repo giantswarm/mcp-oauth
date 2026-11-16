@@ -67,35 +67,6 @@ func setupValidTokenProvider() func(context.Context, string) (*providers.UserInf
 	}
 }
 
-// setupFlowTestServerWithNoStateParameter creates a test server with AllowNoStateParameter=true
-func setupFlowTestServerWithNoStateParameter(t *testing.T) (*Server, *memory.Store, *mock.Provider) {
-	t.Helper()
-
-	store := memory.New()
-	t.Cleanup(func() { store.Stop() })
-
-	provider := mock.NewProvider()
-
-	config := &Config{
-		Issuer:                      "https://auth.example.com",
-		SupportedScopes:             []string{"openid", "email", "profile"},
-		AuthorizationCodeTTL:        600,
-		AccessTokenTTL:              3600,
-		RequirePKCE:                 true,
-		AllowPKCEPlain:              false,
-		AllowNoStateParameter:       true,
-		ClockSkewGracePeriod:        5,
-		DisableNonceEchoRequirement: true,
-	}
-
-	srv, err := New(provider, store, store, store, config, nil)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	return srv, store, provider
-}
-
 // TestPreserveRefreshToken tests the preserveRefreshToken helper function.
 func TestPreserveRefreshToken(t *testing.T) {
 	t.Run("new token has refresh token - use new", func(t *testing.T) {

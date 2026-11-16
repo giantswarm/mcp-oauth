@@ -258,8 +258,6 @@ func TestConsent_EffectiveScopesAreDisplayedAndFrozen(t *testing.T) {
 	changed := flow.post(consentID(t, page), consentDecisionApprove, nil)
 	requireConsentPage(t, changed)
 	require.Contains(t, changed.Body.String(), "<code>profile</code>")
-	_, err = flow.store.GetAuthorizationState(t.Context(), state)
-	require.ErrorIs(t, err, storage.ErrAuthorizationStateNotFound)
 	approved := flow.post(consentID(t, changed), consentDecisionApprove, nil)
 	requireProviderRedirect(t, approved)
 	upstream, err := url.Parse(approved.Header().Get("Location"))

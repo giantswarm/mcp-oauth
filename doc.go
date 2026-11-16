@@ -36,8 +36,9 @@
 // Library defaults aim for spec-compliant secure-by-default behaviour:
 //   - PKCE required; only S256 accepted (RFC 7636 + OAuth 2.1).
 //   - Refresh-token rotation on; reuse detection revokes the family.
-//   - `state` parameter required and length-bounded (configurable via
-//     [server.Config.MinStateLength] / [server.Config.MaxStateLength]).
+//   - The client's `state` is optional and opaque (OAuth 2.1 §4.1.1), bounded
+//     by [server.Config.MaxStateLength]; the state sent upstream is
+//     server-generated and checked against [server.Config.MinStateLength].
 //   - Per-IP and per-user rate limiters guard hot endpoints.
 //   - Bearer-token comparisons are constant-time.
 //   - Token-at-rest encryption available via [security.NewEncryptor] +
@@ -47,8 +48,8 @@
 //   - SSRF protection on the client-metadata-document and discovery
 //     fetchers.
 //
-// Insecure opt-outs (e.g. [server.Config.AllowNoStateParameter],
-// [server.Config.AllowInsecureHTTP]) emit a startup WARN.
+// Insecure opt-outs (e.g. [server.Config.AllowInsecureHTTP]) emit a startup
+// WARN.
 //
 // # Compliance
 //

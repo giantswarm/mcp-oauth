@@ -604,7 +604,7 @@ func (m *FlowStore) SaveAuthorizationState(ctx context.Context, state *storage.A
 	return m.SaveAuthStateFunc(ctx, state)
 }
 
-// GetAuthorizationState retrieves an authorization state by client state
+// GetAuthorizationState retrieves an authorization state by StateID
 func (m *FlowStore) GetAuthorizationState(ctx context.Context, stateID string) (*storage.AuthorizationState, error) {
 	m.CallCounts["GetAuthorizationState"]++
 	return m.GetAuthStateFunc(ctx, stateID)

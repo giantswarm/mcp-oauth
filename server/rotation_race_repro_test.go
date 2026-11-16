@@ -76,13 +76,13 @@ func loginRaceSession(t *testing.T, srv *Server, store *memory.Store, dex *singl
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 	clientState := testutil.GenerateRandomString(43)
 
-	_, err := srv.StartAuthorizationFlow(ctx, clientID,
+	flowURL, err := srv.StartAuthorizationFlow(ctx, clientID,
 		mustParseURL(t, "https://example.com/callback"),
 		"openid email", "", codeChallenge, PKCEMethodS256, clientState, nil)
 	if err != nil {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}

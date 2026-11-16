@@ -208,26 +208,6 @@ func TestIsMaxBytesError(t *testing.T) {
 	}
 }
 
-func setupTestHandlerWithAllowNoState(t *testing.T) (*Handler, *memory.Store) {
-	t.Helper()
-
-	store := memory.New()
-	provider := mock.NewProvider()
-
-	config := &server.Config{
-		Issuer:                testIssuer,
-		AllowNoStateParameter: true,
-	}
-
-	srv, err := server.New(provider, store, store, store, config, nil)
-	if err != nil {
-		t.Fatalf("server.New() error = %v", err)
-	}
-
-	handler := New(srv, nil)
-	return handler, store
-}
-
 func assertAuthorizationErrorRedirect(t *testing.T, w *httptest.ResponseRecorder, expectedRedirect, expectedErrorCode, expectedErrorDescriptionSubstr, expectedState string) {
 	t.Helper()
 

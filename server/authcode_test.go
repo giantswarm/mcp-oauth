@@ -68,13 +68,33 @@ func TestServer_StartAuthorizationFlow(t *testing.T) {
 			wantErr:             false,
 		},
 		{
-			name:                "missing state",
+			name:                "no state",
 			clientID:            client.ClientID,
 			redirectURI:         "https://example.com/callback",
 			scope:               "openid",
 			codeChallenge:       validChallenge,
 			codeChallengeMethod: PKCEMethodS256,
 			clientState:         "",
+			wantErr:             false,
+		},
+		{
+			name:                "short state",
+			clientID:            client.ClientID,
+			redirectURI:         "https://example.com/callback",
+			scope:               "openid",
+			codeChallenge:       validChallenge,
+			codeChallengeMethod: PKCEMethodS256,
+			clientState:         "x",
+			wantErr:             false,
+		},
+		{
+			name:                "state over the maximum length",
+			clientID:            client.ClientID,
+			redirectURI:         "https://example.com/callback",
+			scope:               "openid",
+			codeChallenge:       validChallenge,
+			codeChallengeMethod: PKCEMethodS256,
+			clientState:         testutil.GenerateRandomString(srv.Config.MaxStateLength + 1),
 			wantErr:             true,
 		},
 		{
@@ -154,7 +174,7 @@ func TestServer_StartAuthorizationFlow(t *testing.T) {
 				}
 
 				// Verify authorization state was saved
-				authState, err := store.GetAuthorizationState(ctx, tt.clientState)
+				authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, authURL))
 				if err != nil {
 					t.Errorf("Authorization state not saved: %v", err)
 				} else {
@@ -164,6 +184,9 @@ func TestServer_StartAuthorizationFlow(t *testing.T) {
 					if authState.RedirectURI != tt.redirectURI {
 						t.Errorf("authState.RedirectURI = %q, want %q", authState.RedirectURI, tt.redirectURI)
 					}
+					require.Equal(t, tt.clientState, authState.OriginalClientState)
+					require.NotEmpty(t, authState.StateID)
+					require.NotEqual(t, tt.clientState, authState.StateID, "the client's state never keys stored state")
 				}
 			}
 		})
@@ -427,7 +450,7 @@ func TestServer_HandleProviderCallback(t *testing.T) {
 	clientState := testutil.GenerateRandomString(43)
 
 	// Start authorization flow
-	_, err = srv.StartAuthorizationFlow(
+	flowURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		client.ClientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -443,7 +466,7 @@ func TestServer_HandleProviderCallback(t *testing.T) {
 	}
 
 	// Get the provider state
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -555,7 +578,7 @@ func TestServer_HandleProviderCallback_EmailLookup(t *testing.T) {
 	clientState := testutil.GenerateRandomString(43)
 
 	// Start authorization flow
-	_, err = srv.StartAuthorizationFlow(
+	flowURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		client.ClientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -571,7 +594,7 @@ func TestServer_HandleProviderCallback_EmailLookup(t *testing.T) {
 	}
 
 	// Get the provider state
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -700,7 +723,7 @@ func TestServer_HandleProviderCallback_ShortLivedToken(t *testing.T) {
 	clientState := testutil.GenerateRandomString(43)
 
 	// Start authorization flow
-	_, err = srv.StartAuthorizationFlow(
+	flowURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		client.ClientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -716,7 +739,7 @@ func TestServer_HandleProviderCallback_ShortLivedToken(t *testing.T) {
 	}
 
 	// Get the provider state
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -1778,7 +1801,7 @@ func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
 
 	// Get authorization code
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	flowURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -1793,7 +1816,7 @@ func TestServer_ConcurrentAuthorizationCodeReuse(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -1981,7 +2004,7 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 
 	// Start authorization flow
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	flowURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -1997,7 +2020,7 @@ func TestServer_AuthorizationCodeReuseRevokesTokens(t *testing.T) {
 	}
 
 	// Get provider state from stored auth state
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -2141,10 +2164,10 @@ func issueTestCode(t *testing.T, srv *Server, store *memory.Store, clientID, red
 	verifier = testutil.GenerateRandomString(testPKCEVerifierLength)
 	hash := sha256.Sum256([]byte(verifier))
 	clientState := testutil.GenerateRandomString(43)
-	_, err := srv.StartAuthorizationFlow(t.Context(), clientID, mustParseURL(t, redirect), "openid", "",
+	flowURL, err := srv.StartAuthorizationFlow(t.Context(), clientID, mustParseURL(t, redirect), "openid", "",
 		base64.RawURLEncoding.EncodeToString(hash[:]), PKCEMethodS256, clientState, nil)
 	require.NoError(t, err)
-	authState, err := store.GetAuthorizationState(t.Context(), clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(t.Context(), providerStateOf(t, flowURL))
 	require.NoError(t, err)
 	authCode, _, err := srv.HandleProviderCallback(t.Context(), authState.ProviderState, "provider-code")
 	require.NoError(t, err)
@@ -2306,7 +2329,7 @@ func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
 
 	// Start authorization flow
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	flowURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -2322,7 +2345,7 @@ func TestServer_AuthorizationCodeReuseRevokesMultipleTokens(t *testing.T) {
 	}
 
 	// Get provider state
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -2432,7 +2455,7 @@ func TestServer_GenericErrorMessagesNoInfoLeakage(t *testing.T) {
 
 	// Get a valid authorization code
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	flowURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -2447,7 +2470,7 @@ func TestServer_GenericErrorMessagesNoInfoLeakage(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -2588,7 +2611,7 @@ func TestServer_AuthCodeReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 
 	// Get authorization code
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	flowURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -2603,7 +2626,7 @@ func TestServer_AuthCodeReuseWithoutSecurityEventRateLimiter(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -3282,7 +3305,7 @@ func TestResourceParameter_AudienceValidation(t *testing.T) {
 		codeChallenge, codeVerifier := generatePKCEPair()
 		clientState := generateRandomToken()
 
-		_, err := srv.StartAuthorizationFlow(
+		flowURL, err := srv.StartAuthorizationFlow(
 			ctx,
 			client.ClientID,
 			mustParseURL(t, client.RedirectURIs[0]),
@@ -3298,7 +3321,7 @@ func TestResourceParameter_AudienceValidation(t *testing.T) {
 		}
 
 		// Extract provider state from auth state
-		authState, err := store.GetAuthorizationState(ctx, clientState)
+		authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 		if err != nil {
 			t.Fatalf("Failed to get authorization state: %v", err)
 		}
@@ -3362,7 +3385,7 @@ func TestResourceParameter_AudienceValidation(t *testing.T) {
 		codeChallenge, codeVerifier := generatePKCEPair()
 		clientState := generateRandomToken()
 
-		_, err = srv.StartAuthorizationFlow(
+		flowURL, err := srv.StartAuthorizationFlow(
 			ctx,
 			client.ClientID,
 			mustParseURL(t, client.RedirectURIs[0]),
@@ -3378,7 +3401,7 @@ func TestResourceParameter_AudienceValidation(t *testing.T) {
 		}
 
 		// Extract provider state from auth state
-		authState, err := store.GetAuthorizationState(ctx, clientState)
+		authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 		if err != nil {
 			t.Fatalf("Failed to get authorization state: %v", err)
 		}
@@ -3423,7 +3446,7 @@ func TestResourceParameter_AudienceValidation(t *testing.T) {
 		codeChallenge, codeVerifier := generatePKCEPair()
 		clientState := generateRandomToken()
 
-		_, err := srv.StartAuthorizationFlow(
+		flowURL, err := srv.StartAuthorizationFlow(
 			ctx,
 			client.ClientID,
 			mustParseURL(t, client.RedirectURIs[0]),
@@ -3439,7 +3462,7 @@ func TestResourceParameter_AudienceValidation(t *testing.T) {
 		}
 
 		// Extract provider state from auth state
-		authState, err := store.GetAuthorizationState(ctx, clientState)
+		authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 		if err != nil {
 			t.Fatalf("Failed to get authorization state: %v", err)
 		}
@@ -3541,7 +3564,7 @@ func TestResourceParameter_ConsistencyValidation(t *testing.T) {
 		clientState := generateRandomToken()
 
 		// Authorization request with resource A
-		_, err := srv.StartAuthorizationFlow(
+		flowURL, err := srv.StartAuthorizationFlow(
 			ctx,
 			client.ClientID,
 			mustParseURL(t, client.RedirectURIs[0]),
@@ -3557,7 +3580,7 @@ func TestResourceParameter_ConsistencyValidation(t *testing.T) {
 		}
 
 		// Extract provider state from auth state
-		authState, err := store.GetAuthorizationState(ctx, clientState)
+		authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 		if err != nil {
 			t.Fatalf("Failed to get authorization state: %v", err)
 		}
@@ -3792,7 +3815,7 @@ func TestResourceParameter_RateLimiting(t *testing.T) {
 	codeChallenge, codeVerifier := generatePKCEPair()
 	clientState := generateRandomToken()
 
-	_, err = srv.StartAuthorizationFlow(
+	flowURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		client.ClientID,
 		mustParseURL(t, client.RedirectURIs[0]),
@@ -3808,7 +3831,7 @@ func TestResourceParameter_RateLimiting(t *testing.T) {
 	}
 
 	// Extract provider state from auth state
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("Failed to get authorization state: %v", err)
 	}
@@ -3839,215 +3862,73 @@ func TestResourceParameter_RateLimiting(t *testing.T) {
 	t.Log("✓ First resource mismatch logged (within rate limit)")
 }
 
-// TestStartAuthorizationFlow_EmptyState tests authorization flow with empty state
-// when AllowNoStateParameter is enabled
-func TestStartAuthorizationFlow_EmptyState(t *testing.T) {
-	ctx := context.Background()
-	srv, store, _ := setupFlowTestServerWithNoStateParameter(t)
-
-	// Register a test client
-	client, _, err := srv.RegisterClient(
-		ctx,
-		"Test Client",
-		ClientTypePublic,
-		"", // tokenEndpointAuthMethod
-		[]string{"https://example.com/callback"},
-		[]string{"openid", "email"},
-		"192.168.1.100",
-		10,
-	)
-	if err != nil {
-		t.Fatalf("RegisterClient() error = %v", err)
-	}
-
-	validVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
-	hash := sha256.Sum256([]byte(validVerifier))
-	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
-
-	t.Run("empty state should succeed when AllowNoStateParameter=true", func(t *testing.T) {
-		authURL, err := srv.StartAuthorizationFlow(
-			ctx,
-			client.ClientID,
-			mustParseURL(t, client.RedirectURIs[0]),
-			"openid",
-			"", // resource
-			validChallenge,
-			"S256",
-			"",  // empty state - should succeed
-			nil, // authOpts
-		)
-		if err != nil {
-			t.Fatalf("StartAuthorizationFlow() error = %v", err)
-		}
-		if authURL == "" {
-			t.Fatal("Expected non-empty authorization URL")
-		}
-		t.Log("✓ Authorization flow started with empty state")
-	})
-
-	t.Run("authorization state should have empty OriginalClientState", func(t *testing.T) {
-		// Start a new flow
-		_, err := srv.StartAuthorizationFlow(
-			ctx,
-			client.ClientID,
-			mustParseURL(t, client.RedirectURIs[0]),
-			"openid",
-			"",
-			validChallenge,
-			"S256",
-			"",  // empty state
-			nil, // authOpts
-		)
-		if err != nil {
-			t.Fatalf("StartAuthorizationFlow() error = %v", err)
-		}
-
-		// Check that state was saved (by listing auth states)
-		// We can't directly access the state, but the flow succeeded means storage worked
-		t.Log("✓ Authorization state saved successfully with server-generated StateID")
-	})
-
-	t.Run("non-empty state should also work", func(t *testing.T) {
-		validState := testutil.GenerateRandomString(43)
-		authURL, err := srv.StartAuthorizationFlow(
-			ctx,
-			client.ClientID,
-			mustParseURL(t, client.RedirectURIs[0]),
-			"openid",
-			"",
-			validChallenge,
-			"S256",
-			validState, // non-empty state
-			nil,        // authOpts
-		)
-		if err != nil {
-			t.Fatalf("StartAuthorizationFlow() error = %v", err)
-		}
-		if authURL == "" {
-			t.Fatal("Expected non-empty authorization URL")
-		}
-		t.Log("✓ Authorization flow works with non-empty state too")
-	})
-
-	// Verify storage was used properly
-	_ = store // Use store to satisfy compiler
+// startAndCallBack starts an authorization flow with clientState and runs the
+// provider callback, returning the state the client is redirected with.
+func startAndCallBack(t *testing.T, srv *Server, clientID, clientState string) string {
+	t.Helper()
+	verifier := testutil.GenerateRandomString(testPKCEVerifierLength)
+	hash := sha256.Sum256([]byte(verifier))
+	authURL, err := srv.StartAuthorizationFlow(t.Context(), clientID, mustParseURL(t, "https://example.com/callback"), "openid", "",
+		base64.RawURLEncoding.EncodeToString(hash[:]), PKCEMethodS256, clientState, nil)
+	require.NoError(t, err)
+	authCode, redirectState, err := srv.HandleProviderCallback(t.Context(), providerStateOf(t, authURL), "provider-code")
+	require.NoError(t, err)
+	require.Equal(t, clientID, authCode.ClientID)
+	return redirectState
 }
 
-// TestHandleProviderCallback_EmptyState tests that the callback returns empty state
-// when the client originally didn't provide one
-func TestHandleProviderCallback_EmptyState(t *testing.T) {
-	ctx := context.Background()
-	srv, _, provider := setupFlowTestServerWithNoStateParameter(t)
+func registerCallbackClient(t *testing.T, srv *Server) string {
+	t.Helper()
+	client, _, err := srv.RegisterClient(t.Context(), "Test Client", ClientTypePublic, "",
+		[]string{"https://example.com/callback"}, []string{"openid"}, "192.168.1.100", 10)
+	require.NoError(t, err)
+	return client.ClientID
+}
 
-	// Register a test client
-	client, _, err := srv.RegisterClient(
-		ctx,
-		"Test Client",
-		ClientTypePublic,
-		"",
-		[]string{"https://example.com/callback"},
-		[]string{"openid", "email"},
-		"192.168.1.100",
-		10,
-	)
-	if err != nil {
-		t.Fatalf("RegisterClient() error = %v", err)
+// The client's state is OPTIONAL (OAuth 2.1 §4.1.1): a flow without it
+// completes, and the client is redirected without one.
+func TestAuthorizationFlow_WithoutClientState(t *testing.T) {
+	srv, _, _ := setupFlowTestServer(t)
+
+	require.Empty(t, startAndCallBack(t, srv, registerCallbackClient(t, srv), ""))
+}
+
+// The client's state never keys stored state, so clients sending the same
+// short value complete independently, each redirected with its own state.
+func TestAuthorizationFlow_SameShortClientStateDoesNotCollide(t *testing.T) {
+	srv, _, _ := setupFlowTestServer(t)
+	first := registerCallbackClient(t, srv)
+	second := registerCallbackClient(t, srv)
+
+	verifier := testutil.GenerateRandomString(testPKCEVerifierLength)
+	hash := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
+	start := func(clientID string) string {
+		authURL, err := srv.StartAuthorizationFlow(t.Context(), clientID, mustParseURL(t, "https://example.com/callback"), "openid", "",
+			challenge, PKCEMethodS256, "x", nil)
+		require.NoError(t, err)
+		return providerStateOf(t, authURL)
 	}
+	firstState, secondState := start(first), start(second)
 
-	validVerifier := testutil.GenerateRandomString(testPKCEVerifierLength)
-	hash := sha256.Sum256([]byte(validVerifier))
-	validChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
+	for clientID, providerState := range map[string]string{first: firstState, second: secondState} {
+		authCode, redirectState, err := srv.HandleProviderCallback(t.Context(), providerState, "provider-code")
+		require.NoError(t, err)
+		require.Equal(t, clientID, authCode.ClientID)
+		require.Equal(t, "x", redirectState)
+	}
+}
 
-	t.Run("callback should return empty state when client didn't provide one", func(t *testing.T) {
-		// Start flow with empty state
-		authURL, err := srv.StartAuthorizationFlow(
-			ctx,
-			client.ClientID,
-			mustParseURL(t, client.RedirectURIs[0]),
-			"openid",
-			"",
-			validChallenge,
-			"S256",
-			"",  // empty state
-			nil, // authOpts
-		)
-		if err != nil {
-			t.Fatalf("StartAuthorizationFlow() error = %v", err)
-		}
+// PKCE stays mandatory whether or not the client sends state.
+func TestAuthorizationFlow_RefusesMissingCodeChallenge(t *testing.T) {
+	srv, _, _ := setupFlowTestServer(t)
+	clientID := registerCallbackClient(t, srv)
 
-		// Extract provider state from auth URL
-		parsedURL, err := url.Parse(authURL)
-		if err != nil {
-			t.Fatalf("Failed to parse auth URL: %v", err)
-		}
-		providerState := parsedURL.Query().Get("state")
-		if providerState == "" {
-			t.Fatal("Expected provider state in auth URL")
-		}
-
-		// Simulate provider callback
-		authCode, returnedState, err := srv.HandleProviderCallback(ctx, providerState, "mock_code")
-		if err != nil {
-			t.Fatalf("HandleProviderCallback() error = %v", err)
-		}
-
-		// Verify returned state is empty (as client didn't provide one)
-		if returnedState != "" {
-			t.Errorf("Expected empty returnedState, got %q", returnedState)
-		}
-
-		if authCode == nil {
-			t.Fatal("Expected non-nil authorization code")
-		}
-
-		t.Log("✓ Callback correctly returns empty state when client didn't provide one")
-	})
-
-	t.Run("callback should return client state when provided", func(t *testing.T) {
-		originalState := testutil.GenerateRandomString(43)
-
-		// Start flow with non-empty state
-		authURL, err := srv.StartAuthorizationFlow(
-			ctx,
-			client.ClientID,
-			mustParseURL(t, client.RedirectURIs[0]),
-			"openid",
-			"",
-			validChallenge,
-			"S256",
-			originalState,
-			nil, // authOpts
-		)
-		if err != nil {
-			t.Fatalf("StartAuthorizationFlow() error = %v", err)
-		}
-
-		// Extract provider state from auth URL
-		parsedURL, err := url.Parse(authURL)
-		if err != nil {
-			t.Fatalf("Failed to parse auth URL: %v", err)
-		}
-		providerState := parsedURL.Query().Get("state")
-
-		// Simulate provider callback
-		authCode, returnedState, err := srv.HandleProviderCallback(ctx, providerState, "mock_code_2")
-		if err != nil {
-			t.Fatalf("HandleProviderCallback() error = %v", err)
-		}
-
-		// Verify returned state matches original
-		if returnedState != originalState {
-			t.Errorf("Expected returnedState=%q, got %q", originalState, returnedState)
-		}
-
-		if authCode == nil {
-			t.Fatal("Expected non-nil authorization code")
-		}
-
-		t.Log("✓ Callback correctly returns original client state when provided")
-	})
-
-	_ = provider // Use provider to satisfy compiler
+	for _, clientState := range []string{"", "x"} {
+		_, err := srv.StartAuthorizationFlow(t.Context(), clientID, mustParseURL(t, "https://example.com/callback"), "openid", "",
+			"", "", clientState, nil)
+		require.Error(t, err, "state %q", clientState)
+	}
 }
 
 // genTokensTestUserID is the user the generateAndStoreTokens expiry tests
@@ -4253,7 +4134,7 @@ func TestServer_ExchangeAuthorizationCode_FamilyIDInMetadata(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	flowURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		clientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -4268,7 +4149,7 @@ func TestServer_ExchangeAuthorizationCode_FamilyIDInMetadata(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -4361,7 +4242,7 @@ func TestServer_SessionCreationHandler_CalledOnExchange(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	flowURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		client.ClientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -4376,7 +4257,7 @@ func TestServer_SessionCreationHandler_CalledOnExchange(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
@@ -4442,7 +4323,7 @@ func TestServer_SessionCreationHandler_NotCalledWithoutHandler(t *testing.T) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
 
 	clientState := testutil.GenerateRandomString(43)
-	_, err = srv.StartAuthorizationFlow(
+	flowURL, err := srv.StartAuthorizationFlow(
 		ctx,
 		client.ClientID,
 		mustParseURL(t, "https://example.com/callback"),
@@ -4457,7 +4338,7 @@ func TestServer_SessionCreationHandler_NotCalledWithoutHandler(t *testing.T) {
 		t.Fatalf("StartAuthorizationFlow() error = %v", err)
 	}
 
-	authState, err := store.GetAuthorizationState(ctx, clientState)
+	authState, err := store.GetAuthorizationStateByProviderState(ctx, providerStateOf(t, flowURL))
 	if err != nil {
 		t.Fatalf("GetAuthorizationState() error = %v", err)
 	}
