@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -1354,23 +1355,27 @@ func (c *Config) GetResourceIdentifier() string {
 
 // PathResourceIdentifier returns the resource identifier advertised for the
 // Protected Resource Metadata path resourcePath: pathConfig.ResourceIdentifier
-// when set, else GetResourceIdentifier with resourcePath appended (the root
-// path appends nothing).
+// when set, else GetResourceIdentifier with the cleaned, slash-rooted
+// resourcePath appended (the root path appends nothing). A
+// ResourceMetadataByPath key and the request path it is served at therefore
+// yield the same identifier.
 func (c *Config) PathResourceIdentifier(resourcePath string, pathConfig ProtectedResourceConfig) string {
 	if pathConfig.ResourceIdentifier != "" {
 		return pathConfig.ResourceIdentifier
 	}
-	if resourcePath == "/" || resourcePath == "" {
+	cleanPath := path.Clean("/" + strings.TrimPrefix(resourcePath, "/"))
+	if cleanPath == "/" {
 		return c.GetResourceIdentifier()
 	}
-	return c.GetResourceIdentifier() + resourcePath
+	return c.GetResourceIdentifier() + cleanPath
 }
 
-// ServesResource reports whether resource names a protected resource this
+// servesResource reports whether resource names a protected resource this
 // server issues tokens for: GetResourceIdentifier or the identifier of a
 // ResourceMetadataByPath entry. URLs are compared after normalization
-// (scheme and host case, default port, trailing slash).
-func (c *Config) ServesResource(resource string) bool {
+// (scheme and host case, default port, trailing slash), as ValidateToken
+// compares a token's audience.
+func (c *Config) servesResource(resource string) bool {
 	normalizedResource := helpers.NormalizeURL(resource)
 	if normalizedResource == helpers.NormalizeURL(c.GetResourceIdentifier()) {
 		return true

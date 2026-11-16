@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
@@ -11,12 +12,14 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/providers/mock"
+	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
-func newResourceTargetServer(t *testing.T, resourceIdentifier string, pathResources map[string]ProtectedResourceConfig) (*Server, *memory.Store, *storage.Client) {
+func newResourceTargetServer(t *testing.T, resourceIdentifier string, pathResources map[string]ProtectedResourceConfig) (*Server, *memory.Store, *storage.Client, *bytes.Buffer) {
 	t.Helper()
+	logger, logs := captureLogger()
 	store := memory.New()
 	t.Cleanup(store.Stop)
 	srv, err := New(mock.NewProvider(), store, store, store, &Config{
@@ -25,18 +28,20 @@ func newResourceTargetServer(t *testing.T, resourceIdentifier string, pathResour
 		ResourceMetadataByPath:      pathResources,
 		RequirePKCE:                 true,
 		DisableNonceEchoRequirement: true,
-	}, nil)
+	}, logger)
 	require.NoError(t, err)
+	srv.Auditor = security.NewAuditor(logger, true)
 	client, _, err := srv.RegisterClient(t.Context(), "Test Client", ClientTypePublic, "",
 		[]string{"https://example.com/callback"}, []string{"openid"}, "192.168.1.100", 10)
 	require.NoError(t, err)
-	return srv, store, client
+	return srv, store, client, logs
 }
 
 func TestStartAuthorizationFlow_ResourceTarget(t *testing.T) {
 	pathResources := map[string]ProtectedResourceConfig{
 		"/mcp/files": {},
 		"/mcp/admin": {ResourceIdentifier: "https://admin.example.com/mcp"},
+		"mcp/notes":  {},
 	}
 	tests := []struct {
 		name               string
@@ -49,6 +54,7 @@ func TestStartAuthorizationFlow_ResourceTarget(t *testing.T) {
 		{name: "configured identifier with upper-case host", resourceIdentifier: "https://mcp.example.com/mcp", resource: "https://MCP.example.com/mcp"},
 		{name: "issuer when no identifier is configured", resource: "https://auth.example.com"},
 		{name: "path resource derived from the identifier", resourceIdentifier: "https://mcp.example.com", resource: "https://mcp.example.com/mcp/files"},
+		{name: "path resource whose key has no leading slash", resourceIdentifier: "https://mcp.example.com", resource: "https://mcp.example.com/mcp/notes"},
 		{name: "path resource with its own identifier", resourceIdentifier: "https://mcp.example.com", resource: "https://admin.example.com/mcp"},
 		{name: "another server", resourceIdentifier: "https://mcp.example.com/mcp", resource: "https://other.example.com/mcp", wantRefused: true},
 		{name: "another path on this host", resourceIdentifier: "https://mcp.example.com/mcp", resource: "https://mcp.example.com/other", wantRefused: true},
@@ -57,7 +63,7 @@ func TestStartAuthorizationFlow_ResourceTarget(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv, _, client := newResourceTargetServer(t, tt.resourceIdentifier, pathResources)
+			srv, _, client, logs := newResourceTargetServer(t, tt.resourceIdentifier, pathResources)
 			codeChallenge, _ := generatePKCEPair()
 
 			_, err := srv.StartAuthorizationFlow(t.Context(), client.ClientID,
@@ -71,6 +77,7 @@ func TestStartAuthorizationFlow_ResourceTarget(t *testing.T) {
 			var authErr *AuthorizationRequestError
 			require.True(t, errors.As(err, &authErr), "got %v", err)
 			require.Equal(t, ErrorCodeInvalidTarget, authErr.Code)
+			require.True(t, containsAuthFailure(logs.String(), "invalid_resource"), "audit log: %s", logs.String())
 		})
 	}
 }
@@ -91,7 +98,7 @@ func TestExchangeAuthorizationCode_ResourceTarget(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv, store, client := newResourceTargetServer(t, servedResource,
+			srv, store, client, logs := newResourceTargetServer(t, servedResource,
 				map[string]ProtectedResourceConfig{"/": {ResourceIdentifier: "https://mcp.example.com"}})
 			verifier := testutil.GenerateRandomString(50)
 			challengeHash := sha256.Sum256([]byte(verifier))
@@ -118,6 +125,9 @@ func TestExchangeAuthorizationCode_ResourceTarget(t *testing.T) {
 				return
 			}
 			require.ErrorIs(t, err, tt.wantErr)
+			if errors.Is(tt.wantErr, ErrInvalidTarget) {
+				require.True(t, containsAuthFailure(logs.String(), "invalid_resource"), "audit log: %s", logs.String())
+			}
 		})
 	}
 }

@@ -555,7 +555,7 @@ func validateHTTPAgainstServerIssuer(scheme, serverIssuer string) error {
 
 // validateResourceParameter validates the resource parameter per RFC 8707:
 // an absolute HTTPS URI (HTTP on localhost) that names a resource this server
-// serves (Config.ServesResource). A token for any other resource would let a
+// serves (Config.servesResource). A token for any other resource would let a
 // client present it to that resource server (RFC 8707 §2, invalid_target).
 // Note: Caller must ensure resource is non-empty before calling this function
 func (s *Server) validateResourceParameter(resource string) error {
@@ -602,7 +602,7 @@ func (s *Server) validateResourceParameter(resource string) error {
 		return fmt.Errorf("resource must not contain fragment identifier")
 	}
 
-	if !s.Config.ServesResource(resource) {
+	if !s.Config.servesResource(resource) {
 		return fmt.Errorf("resource %q is not served by this authorization server", resource)
 	}
 
