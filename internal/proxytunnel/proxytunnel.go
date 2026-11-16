@@ -1,0 +1,132 @@
+// Package proxytunnel connects to an address the caller has already validated,
+// through the HTTP proxy the environment names for its host.
+//
+// A guarded dialer resolves a hostname, checks every address, and must then
+// reach exactly the address it checked. Handing the hostname to a proxy would
+// let the proxy resolve it again, so the check would no longer cover the
+// connection. Dial instead asks the proxy for a CONNECT tunnel to the checked
+// IP; TLS on top of the tunnel still verifies the original hostname.
+package proxytunnel
+
+import (
+	"bufio"
+	"context"
+	"crypto/tls"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/url"
+
+	"golang.org/x/net/http/httpproxy"
+)
+
+// Selector returns the proxy for a connection to host and port, or nil to
+// connect directly.
+type Selector func(host, port string) (*url.URL, error)
+
+// FromEnvironment reads HTTPS_PROXY and NO_PROXY (and their lowercase forms)
+// once and returns the Selector they describe. The target is treated as an
+// HTTPS URL: the guarded clients fetch HTTPS endpoints, and a CONNECT tunnel
+// is what HTTPS_PROXY means for them. NO_PROXY is matched against the
+// hostname, as net/http does.
+func FromEnvironment() Selector {
+	proxyFunc := httpproxy.FromEnvironment().ProxyFunc()
+	return func(host, port string) (*url.URL, error) {
+		return proxyFunc(&url.URL{Scheme: "https", Host: net.JoinHostPort(host, port)})
+	}
+}
+
+// Dial connects to ip:port: directly when proxyURL is nil, otherwise through a
+// CONNECT tunnel opened on the proxy. The proxy address itself is operator
+// configuration and is dialed without any address check.
+func Dial(ctx context.Context, dialer *net.Dialer, network string, proxyURL *url.URL, ip net.IP, port string) (net.Conn, error) {
+	target := net.JoinHostPort(ip.String(), port)
+	if proxyURL == nil {
+		return dialer.DialContext(ctx, network, target)
+	}
+
+	conn, err := dialProxy(ctx, dialer, network, proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	if err := connect(ctx, conn, proxyURL, target); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+func dialProxy(ctx context.Context, dialer *net.Dialer, network string, proxyURL *url.URL) (net.Conn, error) {
+	addr := proxyURL.Host
+	if proxyURL.Port() == "" {
+		port := "80"
+		if proxyURL.Scheme == "https" {
+			port = "443"
+		}
+		addr = net.JoinHostPort(proxyURL.Hostname(), port)
+	}
+
+	switch proxyURL.Scheme {
+	case "http":
+		conn, err := dialer.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to proxy %s: %w", addr, err)
+		}
+		return conn, nil
+	case "https":
+		tlsDialer := &tls.Dialer{
+			NetDialer: dialer,
+			Config:    &tls.Config{ServerName: proxyURL.Hostname(), MinVersion: tls.VersionTLS12},
+		}
+		conn, err := tlsDialer.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to proxy %s: %w", addr, err)
+		}
+		return conn, nil
+	default:
+		return nil, fmt.Errorf("unsupported proxy scheme %q: only http and https proxies can open a CONNECT tunnel", proxyURL.Scheme)
+	}
+}
+
+// connect sends CONNECT target on conn and reads the proxy's answer. The
+// connection is closed if ctx ends first, which unblocks the read.
+func connect(ctx context.Context, conn net.Conn, proxyURL *url.URL, target string) (err error) {
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer func() {
+		if !stop() && err == nil {
+			err = ctx.Err()
+		}
+	}()
+
+	header := make(http.Header)
+	if user := proxyURL.User; user != nil {
+		password, _ := user.Password()
+		credentials := base64.StdEncoding.EncodeToString([]byte(user.Username() + ":" + password))
+		header.Set("Proxy-Authorization", "Basic "+credentials)
+	}
+	request := &http.Request{
+		Method: http.MethodConnect,
+		URL:    &url.URL{Opaque: target},
+		Host:   target,
+		Header: header,
+	}
+	if err := request.Write(conn); err != nil {
+		return errors.Join(fmt.Errorf("failed to send CONNECT %s to proxy", target), err, ctx.Err())
+	}
+
+	reader := bufio.NewReader(conn)
+	response, err := http.ReadResponse(reader, request)
+	if err != nil {
+		return errors.Join(fmt.Errorf("failed to read the proxy's answer to CONNECT %s", target), err, ctx.Err())
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("proxy refused CONNECT %s: %s", target, response.Status)
+	}
+	if reader.Buffered() > 0 {
+		return fmt.Errorf("proxy sent data after its answer to CONNECT %s", target)
+	}
+	return nil
+}

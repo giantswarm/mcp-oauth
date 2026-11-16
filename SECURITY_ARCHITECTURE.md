@@ -258,6 +258,16 @@ Transport: &http.Transport{
 
 **Implementation**: `server/cimd.go` - `isPrivateIP()`, `createSSRFProtectedTransport()`
 
+#### Egress Proxies
+
+The guarded dialers (CIMD metadata, and the `providers/oidc` SSRF-safe and host-scoped clients) honor `HTTPS_PROXY` and `NO_PROXY`. A proxied connection is a `CONNECT` tunnel to the IP the guard validated, never to the hostname, so the proxy does not resolve the host again and the connection-time check still covers the address reached. TLS through the tunnel verifies the original hostname.
+
+- The host is still resolved locally, so the server needs DNS for the hosts it fetches from.
+- A proxy that only admits listed domain names refuses a `CONNECT` to an IP; the fetch then fails closed.
+- Only `http://` and `https://` proxies are supported. The proxy address itself is operator configuration and is not checked.
+
+**Implementation**: `internal/proxytunnel`
+
 ### DoS Protection (Multi-Level)
 
 #### Rate Limiting (Per-Domain)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -12,6 +13,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/giantswarm/mcp-oauth/internal/proxytunnel"
+	"github.com/giantswarm/mcp-oauth/internal/proxytunnel/proxytunneltest"
 )
 
 const errPrivateIP = "private/internal IP"
@@ -55,7 +59,7 @@ func TestSSRFProtectedTransport_AllowedPrivateHosts(t *testing.T) {
 	_, port, err := net.SplitHostPort(srv.Listener.Addr().String())
 	require.NoError(t, err)
 
-	transport := createSSRFProtectedTransport(false, []string{"localhost"}, nil)
+	transport := createSSRFProtectedTransport(false, []string{"localhost"}, nil, noProxy)
 
 	conn, err := transport.DialContext(t.Context(), "tcp", net.JoinHostPort("localhost", port))
 	require.NoError(t, err)
@@ -132,4 +136,53 @@ func TestFetchClientMetadata_AllowedPrivateHostsAndRootCAs(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "Private Host Client", md.ClientName)
 	})
+}
+
+func noProxy(string, string) (*url.URL, error) { return nil, nil }
+
+func proxyAlways(proxyURL *url.URL) proxytunnel.Selector {
+	return func(string, string) (*url.URL, error) { return proxyURL, nil }
+}
+
+// TestSSRFProtectedTransport_TunnelsTheCheckedIPThroughTheProxy fetches over
+// HTTPS through a CONNECT proxy: the proxy is asked for the validated IP, not
+// the hostname, and TLS still verifies the hostname.
+func TestSSRFProtectedTransport_TunnelsTheCheckedIPThroughTheProxy(t *testing.T) {
+	srv := newTLSServerWithFreshCert(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("metadata"))
+	}))
+	_, port, err := net.SplitHostPort(srv.Listener.Addr().String())
+	require.NoError(t, err)
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+	proxy := proxytunneltest.New(t, http.StatusOK)
+
+	client := &http.Client{Transport: createSSRFProtectedTransport(false, []string{"localhost"}, pool, proxyAlways(proxy.URL()))}
+	resp, err := client.Get("https://" + net.JoinHostPort("localhost", port) + "/client.json")
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	require.Equal(t, "metadata", string(body))
+
+	// localhost may resolve to ::1 and 127.0.0.1; each checked address the
+	// dialer tries is its own CONNECT, and none names the host.
+	requests := proxy.Requests()
+	require.NotEmpty(t, requests)
+	for _, request := range requests {
+		host, _, err := net.SplitHostPort(request.Host)
+		require.NoError(t, err)
+		require.True(t, net.ParseIP(host).IsLoopback(), "CONNECT target %q must be a checked IP", request.Host)
+	}
+}
+
+// TestSSRFProtectedTransport_RefusesPrivateTargetBeforeTheProxy pins that the
+// guard runs before any proxy is contacted.
+func TestSSRFProtectedTransport_RefusesPrivateTargetBeforeTheProxy(t *testing.T) {
+	proxy := proxytunneltest.New(t, http.StatusOK)
+	transport := createSSRFProtectedTransport(false, nil, nil, proxyAlways(proxy.URL()))
+
+	_, err := transport.DialContext(t.Context(), "tcp", net.JoinHostPort("localhost", "443"))
+	require.ErrorContains(t, err, errPrivateIP)
+	require.Empty(t, proxy.Requests())
 }
