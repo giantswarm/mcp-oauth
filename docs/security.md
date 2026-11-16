@@ -818,9 +818,9 @@ endpoint, a JWKS or token exchange client with `AllowPrivateIP`) honor
 so a proxy bypasses nothing. A host in `NO_PROXY` is dialed directly.
 
 The SSRF-safe clients (the default JWKS and token exchange clients, and the
-host-scoped private-IP clients) ignore the proxy environment: their guard
-checks the address they dial, and behind a proxy that is the proxy, not the
-target. `dex.Config.AllowPrivateIP` is deprecated and has no effect; the Dex
+host-scoped private-IP clients) keep their own dial guard; SECURITY_ARCHITECTURE.md
+"Egress Proxies" describes how they use a proxy.
+`dex.Config.AllowPrivateIP` is deprecated and has no effect; the Dex
 client reaches private addresses without it.
 
 ### Example YAML Configuration
