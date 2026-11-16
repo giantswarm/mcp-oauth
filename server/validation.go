@@ -553,9 +553,10 @@ func validateHTTPAgainstServerIssuer(scheme, serverIssuer string) error {
 	return nil
 }
 
-// validateResourceParameter validates the resource parameter per RFC 8707
-// The resource parameter must be an absolute HTTPS URI identifying the target resource server
-// This prevents token theft and replay attacks across different resource servers
+// validateResourceParameter validates the resource parameter per RFC 8707:
+// an absolute HTTPS URI (HTTP on localhost) that names a resource this server
+// serves (Config.servesResource). A token for any other resource would let a
+// client present it to that resource server (RFC 8707 §2, invalid_target).
 // Note: Caller must ensure resource is non-empty before calling this function
 func (s *Server) validateResourceParameter(resource string) error {
 	// SECURITY: Validate resource length to prevent DoS via extremely long URIs
@@ -601,6 +602,10 @@ func (s *Server) validateResourceParameter(resource string) error {
 		return fmt.Errorf("resource must not contain fragment identifier")
 	}
 
+	if !s.Config.servesResource(resource) {
+		return fmt.Errorf("resource %q is not served by this authorization server", resource)
+	}
+
 	return nil
 }
 
@@ -616,7 +621,8 @@ func (s *Server) validateResourceConsistency(ctx context.Context, resource strin
 	// Validate resource format if provided in token request
 	if resource != "" {
 		if err := s.validateResourceParameter(resource); err != nil {
-			return s.logAuthCodeValidationFailure(ctx, "invalid_resource_format", clientID, authCode.UserID, helpers.SafeTruncate(code, 8))
+			_ = s.logAuthCodeValidationFailure(ctx, "invalid_resource", clientID, authCode.UserID, helpers.SafeTruncate(code, 8))
+			return fmt.Errorf("%w: %w", ErrInvalidTarget, err)
 		}
 	}
 

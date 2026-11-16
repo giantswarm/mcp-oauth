@@ -21,6 +21,13 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
+// RFC 8707 §2 allows several resource parameters; this server issues tokens
+// with a single audience, so it cannot honor more than one and refuses them.
+const (
+	auditReasonMultipleResources = "multiple_resources"
+	multipleResourcesDescription = "Only one resource parameter is supported: this server issues single-audience tokens"
+)
+
 // ServeToken handles the OAuth token endpoint
 func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
@@ -56,6 +63,15 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	grantType := r.Form.Get("grant_type")
+
+	if len(r.Form["resource"]) > 1 {
+		h.logAuthFailure(r.Context(), "", clientIP, auditReasonMultipleResources, "Token request rejected: more than one resource parameter")
+		h.recordTokenFailure(r.Context(), grantType, constants.ErrorCodeInvalidTarget)
+		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "multiple resources")
+		h.writeError(w, constants.ErrorCodeInvalidTarget, multipleResourcesDescription, http.StatusBadRequest)
+		return
+	}
 
 	switch grantType {
 	case grantTypeAuthorizationCode:
@@ -165,18 +181,7 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	// Exchange authorization code for tokens
 	tokenResponse, scope, err := h.server.ExchangeAuthorizationCode(r.Context(), code, client.ClientID, redirectURI, resource, codeVerifier, dpopJKT)
 	if err != nil {
-		if errors.Is(err, server.ErrStorageUnavailable) {
-			h.writeTokenStorageUnavailable(w, r, grantTypeAuthorizationCode, span, startTime, err)
-			return
-		}
-		h.logger.Error("Failed to exchange authorization code", "client_id", client.ClientID, "ip", clientIP, paramError, err)
-		h.recordTokenFailure(r.Context(), grantTypeAuthorizationCode, constants.ErrorCodeInvalidGrant)
-		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
-		instrumentation.RecordError(span, err)
-		instrumentation.SetSpanError(span, "code exchange failed")
-		// SECURITY: Don't leak internal error details to client
-		// Audit logging is done in ExchangeAuthorizationCode
-		h.writeError(w, constants.ErrorCodeInvalidGrant, "Authorization code is invalid or expired", http.StatusBadRequest)
+		h.writeAuthorizationCodeExchangeError(w, r, span, startTime, client.ClientID, clientIP, err)
 		return
 	}
 
@@ -196,6 +201,30 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	h.writeTokenResponse(w, tokenResponse, scope)
 }
 
+// writeAuthorizationCodeExchangeError answers a failed authorization code
+// exchange: invalid_target for a resource this server does not serve, 503
+// for unavailable storage, and a generic invalid_grant otherwise so the
+// response does not reveal which check failed (details are audited by
+// ExchangeAuthorizationCode).
+func (h *Handler) writeAuthorizationCodeExchangeError(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, clientID, clientIP string, err error) {
+	if errors.Is(err, server.ErrStorageUnavailable) {
+		h.writeTokenStorageUnavailable(w, r, grantTypeAuthorizationCode, span, startTime, err)
+		return
+	}
+	instrumentation.RecordError(span, err)
+	h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+	if errors.Is(err, server.ErrInvalidTarget) {
+		h.recordTokenFailure(r.Context(), grantTypeAuthorizationCode, constants.ErrorCodeInvalidTarget)
+		instrumentation.SetSpanError(span, "invalid resource")
+		h.writeError(w, constants.ErrorCodeInvalidTarget, "The resource parameter does not name a resource this server issues tokens for", http.StatusBadRequest)
+		return
+	}
+	h.logger.Error("Failed to exchange authorization code", "client_id", clientID, "ip", clientIP, paramError, err)
+	h.recordTokenFailure(r.Context(), grantTypeAuthorizationCode, constants.ErrorCodeInvalidGrant)
+	instrumentation.SetSpanError(span, "code exchange failed")
+	h.writeError(w, constants.ErrorCodeInvalidGrant, "Authorization code is invalid or expired", http.StatusBadRequest)
+}
+
 func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request, clientIP string) {
 	startTime := time.Now()
 
@@ -205,6 +234,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	// Read from already-parsed form (ParseForm called by ServeToken)
 	refreshToken := r.Form.Get(grantTypeRefreshToken)
 	clientID := r.Form.Get("client_id")
+	resource := r.Form.Get("resource")
 
 	if refreshToken == "" {
 		h.recordTokenFailure(r.Context(), grantTypeRefreshToken, constants.ErrorCodeInvalidRequest)
@@ -240,7 +270,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	}
 
 	// Refresh token
-	tokenResponse, err := h.server.RefreshAccessToken(r.Context(), refreshToken, clientID)
+	tokenResponse, err := h.server.RefreshAccessTokenForResource(r.Context(), refreshToken, clientID, resource)
 	if err != nil {
 		if errors.Is(err, server.ErrStorageUnavailable) {
 			h.writeTokenStorageUnavailable(w, r, grantTypeRefreshToken, span, startTime, err)
@@ -248,6 +278,14 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 		}
 		if errors.Is(err, server.ErrProviderUnavailable) {
 			h.writeTokenProviderUnavailable(w, r, grantTypeRefreshToken, span, startTime, err)
+			return
+		}
+		if errors.Is(err, server.ErrInvalidTarget) {
+			h.recordTokenFailure(r.Context(), grantTypeRefreshToken, constants.ErrorCodeInvalidTarget)
+			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+			instrumentation.RecordError(span, err)
+			instrumentation.SetSpanError(span, "invalid resource")
+			h.writeError(w, constants.ErrorCodeInvalidTarget, "The resource parameter does not name the resource this refresh token was issued for", http.StatusBadRequest)
 			return
 		}
 		h.logger.Error("Failed to refresh token", "client_id", clientID, "ip", clientIP, paramError, err)
