@@ -345,12 +345,11 @@ func (s *Server) storeRefreshedProviderToken(ctx context.Context, userID, newAcc
 //
 // Client binding (OAuth 2.1 §6) is validated before the shared provider entry is
 // read, so a token presented by the wrong client never reads it, acquires the
-// refresh lock, or triggers an upstream call. metaClientID is the stored client
-// binding read non-destructively from the token metadata — the same value the
-// atomic consume returns. metaAudience is the grant's stored audience; a grant
-// bound to a resource this server no longer serves is refused at the same
-// point.
-func (s *Server) resolveRefreshGrant(ctx context.Context, refreshToken, clientID, metaClientID, metaAudience string, familyStore storage.RefreshTokenFamilyStore, supportsFamilies bool) (userID string, providerToken *oauth2.Token, unified bool, err error) {
+// refresh lock, or triggers an upstream call. metadata is read
+// non-destructively; its ClientID is the same binding the atomic consume
+// returns. A grant whose Audience this server no longer serves, or a request
+// whose resource is not that Audience, is refused at the same point.
+func (s *Server) resolveRefreshGrant(ctx context.Context, refreshToken, clientID, resource string, metadata *storage.TokenMetadata, familyStore storage.RefreshTokenFamilyStore, supportsFamilies bool) (userID string, providerToken *oauth2.Token, unified bool, err error) {
 	_, unified = s.userProviderTokenStore()
 
 	var storedClientID string
@@ -358,7 +357,7 @@ func (s *Server) resolveRefreshGrant(ctx context.Context, refreshToken, clientID
 	if err != nil {
 		return "", nil, unified, s.handleRefreshTokenError(ctx, err, refreshToken, clientID, familyStore, supportsFamilies)
 	}
-	storedClientID = metaClientID
+	storedClientID = metadata.ClientID
 
 	// OAUTH 2.1 SECURITY: Validate client binding (Section 6) BEFORE any provider
 	// refresh or lock acquisition. The refresh token MUST only be accepted by the
@@ -366,7 +365,10 @@ func (s *Server) resolveRefreshGrant(ctx context.Context, refreshToken, clientID
 	if err = s.validateRefreshTokenClientBinding(ctx, storedClientID, clientID, userID); err != nil {
 		return "", nil, unified, err
 	}
-	if err = s.refuseUnservedRefreshAudience(ctx, metaAudience, userID, clientID); err != nil {
+	if err = s.refuseUnservedRefreshAudience(ctx, metadata.Audience, userID, clientID); err != nil {
+		return "", nil, unified, err
+	}
+	if err = s.refuseRefreshResourceMismatch(ctx, resource, metadata.Audience, userID, clientID); err != nil {
 		return "", nil, unified, err
 	}
 
@@ -396,6 +398,16 @@ func (s *Server) resolveRefreshGrant(ctx context.Context, refreshToken, clientID
 // Implements OAuth 2.1 refresh token reuse detection for enhanced security
 // Implements OAuth 2.1 Section 6 client binding validation
 func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID string) (*oauth2.Token, error) {
+	return s.RefreshAccessTokenForResource(ctx, refreshToken, clientID, "")
+}
+
+// RefreshAccessTokenForResource is RefreshAccessToken for a refresh request
+// that carries the RFC 8707 resource parameter. A non-empty resource must name
+// the grant's audience (GetResourceIdentifier when the grant has none),
+// compared after normalization; any other value is refused with an error
+// wrapping ErrInvalidTarget (RFC 8707 §2.2) and the refresh token stays
+// usable. An empty resource behaves as RefreshAccessToken.
+func (s *Server) RefreshAccessTokenForResource(ctx context.Context, refreshToken, clientID, resource string) (*oauth2.Token, error) {
 	// Check if storage supports token family tracking (OAuth 2.1 reuse detection)
 	familyStore, supportsFamilies := s.tokenStore.(storage.RefreshTokenFamilyStore)
 
@@ -407,7 +419,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 		metadata = &storage.TokenMetadata{}
 	}
 
-	userID, providerToken, unified, err := s.resolveRefreshGrant(ctx, refreshToken, clientID, metadata.ClientID, metadata.Audience, familyStore, supportsFamilies)
+	userID, providerToken, unified, err := s.resolveRefreshGrant(ctx, refreshToken, clientID, resource, metadata, familyStore, supportsFamilies)
 	if err != nil {
 		return nil, err
 	}
@@ -419,7 +431,7 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 	newProviderToken, err := s.refreshProviderTokenForGrant(ctx, userID, refreshToken, providerToken)
 	if err != nil {
 		if !unified && storage.IsNotFoundError(err) {
-			_, _, _, grantErr := s.resolveRefreshGrant(ctx, refreshToken, clientID, metadata.ClientID, metadata.Audience, familyStore, supportsFamilies)
+			_, _, _, grantErr := s.resolveRefreshGrant(ctx, refreshToken, clientID, resource, metadata, familyStore, supportsFamilies)
 			if grantErr != nil {
 				return nil, grantErr
 			}
@@ -455,6 +467,30 @@ func (s *Server) refuseUnservedRefreshAudience(ctx context.Context, audience, us
 		paramAudience, audience, paramClientID, clientID, "user_id", userID)
 	s.Auditor.LogAuthFailure(ctx, userID, clientID, "", auditReasonRefreshResourceNotServed)
 	return errInvalidGrant
+}
+
+const auditReasonRefreshResourceMismatch = "refresh_resource_mismatch"
+
+// refuseRefreshResourceMismatch answers invalid_target (RFC 8707 §2.2) when a
+// refresh request names a resource other than the grant's audience, or
+// GetResourceIdentifier for a grant without one: the token would be issued
+// for the grant's audience, not the requested resource. Values are compared
+// after the same normalization as servesResource. The refresh token is left in
+// place for the same reason as in refuseUnservedRefreshAudience.
+func (s *Server) refuseRefreshResourceMismatch(ctx context.Context, resource, audience, userID, clientID string) error {
+	if resource == "" {
+		return nil
+	}
+	if audience == "" {
+		audience = s.Config.GetResourceIdentifier()
+	}
+	if helpers.NormalizeURL(resource) == helpers.NormalizeURL(audience) {
+		return nil
+	}
+	s.Logger.Debug("Refresh refused: resource is not the grant's audience",
+		paramAudience, audience, "resource", resource, paramClientID, clientID, "user_id", userID)
+	s.Auditor.LogAuthFailure(ctx, userID, clientID, "", auditReasonRefreshResourceMismatch)
+	return fmt.Errorf("%w: resource %q is not the refresh grant's audience", ErrInvalidTarget, resource)
 }
 
 func (s *Server) issueRefreshedTokens(ctx context.Context, refreshToken string, newProviderToken *oauth2.Token, metadata storage.TokenMetadata) (*oauth2.Token, error) {

@@ -151,3 +151,76 @@ func TestServeToken_MultipleResourcesInvalidTarget(t *testing.T) {
 		})
 	}
 }
+
+func TestServeToken_RefreshResource(t *testing.T) {
+	tests := []struct {
+		name       string
+		resource   []string
+		wantStatus int
+		wantError  string
+	}{
+		{name: "absent", wantStatus: http.StatusOK},
+		{name: "the grant's audience", resource: []string{testIssuer}, wantStatus: http.StatusOK},
+		{name: "the grant's audience in another case with a trailing slash", resource: []string{strings.ToUpper(testIssuer) + "/"}, wantStatus: http.StatusOK},
+		{name: "another server", resource: []string{"https://other.example.com/mcp"}, wantStatus: http.StatusBadRequest, wantError: constants.ErrorCodeInvalidTarget},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler, store := setupTestHandler(t)
+			t.Cleanup(store.Stop)
+			audit := installAuditCapture(handler)
+			client, secret, err := handler.server.RegisterClient(t.Context(), "Test Client", "confidential", "",
+				[]string{refusalRedirectURI}, []string{"openid"}, "192.168.1.100", 10)
+			require.NoError(t, err)
+
+			verifier := testutil.GenerateRandomString(50)
+			challengeHash := sha256.Sum256([]byte(verifier))
+			authCode := &storage.AuthorizationCode{
+				Code:                testutil.GenerateRandomString(32),
+				ClientID:            client.ClientID,
+				RedirectURI:         refusalRedirectURI,
+				Scope:               "openid",
+				Resource:            testIssuer,
+				CodeChallenge:       base64.RawURLEncoding.EncodeToString(challengeHash[:]),
+				CodeChallengeMethod: "S256",
+				UserID:              "test-user-123",
+				ProviderToken:       testutil.GenerateTestToken(),
+				CreatedAt:           time.Now(),
+				ExpiresAt:           time.Now().Add(10 * time.Minute),
+			}
+			require.NoError(t, store.SaveAuthorizationCode(t.Context(), authCode))
+			tokens, _, err := handler.server.ExchangeAuthorizationCode(t.Context(), authCode.Code, client.ClientID,
+				refusalRedirectURI, testIssuer, verifier, "")
+			require.NoError(t, err)
+			require.NoError(t, store.SaveUserProviderToken(t.Context(), authCode.UserID, authCode.ProviderToken))
+
+			refresh := func(resource []string) *httptest.ResponseRecorder {
+				form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {tokens.RefreshToken}}
+				if resource != nil {
+					form["resource"] = resource
+				}
+				request := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+				request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				request.SetBasicAuth(client.ClientID, secret)
+				recorder := httptest.NewRecorder()
+				handler.ServeToken(recorder, request)
+				return recorder
+			}
+
+			recorder := refresh(tt.resource)
+
+			require.Equal(t, tt.wantStatus, recorder.Code, "body: %s", recorder.Body.String())
+			if tt.wantError == "" {
+				return
+			}
+			var errorResponse oauth.ErrorResponse
+			require.NoError(t, json.NewDecoder(recorder.Body).Decode(&errorResponse))
+			require.Equal(t, tt.wantError, errorResponse.Error)
+			require.Contains(t, audit.String(), "refresh_resource_mismatch")
+			require.NotContains(t, audit.String(), "reuse_detected")
+
+			retry := refresh(nil)
+			require.Equal(t, http.StatusOK, retry.Code, "the refused refresh token stays usable: %s", retry.Body.String())
+		})
+	}
+}

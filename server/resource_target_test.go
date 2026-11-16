@@ -202,3 +202,14 @@ func TestSelfIssuedExchange_AllowedResourceComparedNormalized(t *testing.T) {
 		})
 	}
 }
+
+func TestRefuseRefreshResourceMismatch_GrantWithoutAudience(t *testing.T) {
+	srv, _, client, logs := newResourceTargetServer(t, "https://mcp.example.com/mcp", nil)
+
+	require.NoError(t, srv.refuseRefreshResourceMismatch(t.Context(), "https://MCP.example.com/mcp/", "", "user-123", client.ClientID))
+	require.NoError(t, srv.refuseRefreshResourceMismatch(t.Context(), "", "", "user-123", client.ClientID))
+
+	err := srv.refuseRefreshResourceMismatch(t.Context(), "https://other.example.com/mcp", "", "user-123", client.ClientID)
+	require.ErrorIs(t, err, ErrInvalidTarget)
+	require.True(t, containsAuthFailure(logs.String(), auditReasonRefreshResourceMismatch), "audit log: %s", logs.String())
+}

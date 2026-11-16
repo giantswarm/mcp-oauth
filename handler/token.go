@@ -234,6 +234,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	// Read from already-parsed form (ParseForm called by ServeToken)
 	refreshToken := r.Form.Get(grantTypeRefreshToken)
 	clientID := r.Form.Get("client_id")
+	resource := r.Form.Get("resource")
 
 	if refreshToken == "" {
 		h.recordTokenFailure(r.Context(), grantTypeRefreshToken, constants.ErrorCodeInvalidRequest)
@@ -269,7 +270,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	}
 
 	// Refresh token
-	tokenResponse, err := h.server.RefreshAccessToken(r.Context(), refreshToken, clientID)
+	tokenResponse, err := h.server.RefreshAccessTokenForResource(r.Context(), refreshToken, clientID, resource)
 	if err != nil {
 		if errors.Is(err, server.ErrStorageUnavailable) {
 			h.writeTokenStorageUnavailable(w, r, grantTypeRefreshToken, span, startTime, err)
@@ -277,6 +278,14 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 		}
 		if errors.Is(err, server.ErrProviderUnavailable) {
 			h.writeTokenProviderUnavailable(w, r, grantTypeRefreshToken, span, startTime, err)
+			return
+		}
+		if errors.Is(err, server.ErrInvalidTarget) {
+			h.recordTokenFailure(r.Context(), grantTypeRefreshToken, constants.ErrorCodeInvalidTarget)
+			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+			instrumentation.RecordError(span, err)
+			instrumentation.SetSpanError(span, "invalid resource")
+			h.writeError(w, constants.ErrorCodeInvalidTarget, "The resource parameter does not name the resource this refresh token was issued for", http.StatusBadRequest)
 			return
 		}
 		h.logger.Error("Failed to refresh token", "client_id", clientID, "ip", clientIP, paramError, err)
