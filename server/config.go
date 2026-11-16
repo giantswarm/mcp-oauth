@@ -592,19 +592,13 @@ type Config struct {
 	// Default: false
 	DisableProductionMode bool
 
-	// AllowLocalhostRedirectURIs accepts loopback redirect URIs
-	// (http://localhost, http://127.0.0.0/8, http://[::1]) over plain HTTP and
-	// on any port, as RFC 8252 §7.3 requires for native clients. A registered
-	// loopback redirect URI matches a request on any port.
-	// New sets it to !DisableLocalhostRedirectURIs, so a value set here is
-	// overwritten: set DisableLocalhostRedirectURIs to refuse loopback.
-	// Default: true
+	// AllowLocalhostRedirectURIs has no effect. Loopback redirect URIs
+	// (http://localhost, http://127.0.0.0/8, http://[::1]) are always accepted
+	// over plain HTTP, and a registered one matches a request on any port, as
+	// RFC 8252 §7.3 requires for native clients.
+	//
+	// Deprecated: remove it; it is ignored whatever its value.
 	AllowLocalhostRedirectURIs bool
-
-	// DisableLocalhostRedirectURIs refuses loopback redirect URIs, for a
-	// server whose clients never run on the user's machine.
-	// Default: false
-	DisableLocalhostRedirectURIs bool
 
 	// AllowPrivateIPRedirectURIs allows redirect URIs that resolve to private IP addresses
 	// (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 per RFC 1918,

@@ -29,7 +29,6 @@ func (s *Server) LogValue() slog.Value {
 			slog.Bool("dns_validation_strict", cfg.DNSValidationStrict),
 			slog.Bool("authorization_time_validation", cfg.ValidateRedirectURIAtAuthorization),
 			slog.Duration("dns_timeout", cfg.DNSValidationTimeout),
-			slog.Bool("allow_localhost", cfg.AllowLocalhostRedirectURIs),
 			slog.Bool("allow_private_ip", cfg.AllowPrivateIPRedirectURIs),
 			slog.Any("allow_private_ip_hosts", cfg.AllowPrivateIPRedirectURIHosts),
 			slog.Bool("allow_link_local", cfg.AllowLinkLocalRedirectURIs),

@@ -158,8 +158,8 @@ func (s *Server) validateRedirectURI(client *storage.Client, redirectURI string)
 
 // resolveRegisteredRedirectURI returns the canonical URI from
 // client.RedirectURIs that matches redirectURI under the same rules as
-// validateRedirectURI: exact match by default, plus optional RFC 8252 §7.3
-// port-agnostic loopback match when AllowLocalhostRedirectURIs is set. For
+// validateRedirectURI: exact match, plus the RFC 8252 §7.3 port-agnostic
+// loopback match. For
 // loopback the canonical URI substitutes the request's port into the
 // registered scheme/host/path so the bound native-app port survives the
 // round-trip; for non-loopback the canonical URI is the registered element
@@ -176,13 +176,11 @@ func (s *Server) resolveRegisteredRedirectURI(client *storage.Client, redirectUR
 		}
 	}
 
-	if s.Config.AllowLocalhostRedirectURIs {
-		if canonical, ok := canonicalLoopbackRedirectURI(redirectURI, client.RedirectURIs); ok {
-			if err := validateRedirectURISecurityEnhanced(canonical, s.Config.Issuer, s.Config.AllowedCustomSchemes); err != nil {
-				return "", err
-			}
-			return canonical, nil
+	if canonical, ok := canonicalLoopbackRedirectURI(redirectURI, client.RedirectURIs); ok {
+		if err := validateRedirectURISecurityEnhanced(canonical, s.Config.Issuer, s.Config.AllowedCustomSchemes); err != nil {
+			return "", err
 		}
+		return canonical, nil
 	}
 
 	return "", fmt.Errorf("redirect URI not registered for client")

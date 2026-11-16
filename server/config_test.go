@@ -260,7 +260,6 @@ func TestLogSecurityWarnings(t *testing.T) {
 				AllowPublicClientRegistration: false,
 				RegistrationAccessToken:       "secure-token",
 				ProductionMode:                true, // Secure default: production mode enabled
-				AllowLocalhostRedirectURIs:    true, // RFC 8252 native app support
 			},
 			notExpectedWarnings: []string{
 				"WARNING",

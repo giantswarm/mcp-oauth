@@ -923,57 +923,51 @@ func TestCanonicalLoopbackRedirectURI_Match(t *testing.T) {
 }
 
 // TestValidateRedirectURI_RFC8252LoopbackPort tests the full validateRedirectURI
-// flow with RFC 8252 port-agnostic matching enabled via AllowLocalhostRedirectURIs.
+// flow with RFC 8252 port-agnostic loopback matching.
 func TestValidateRedirectURI_RFC8252LoopbackPort(t *testing.T) {
 	tests := []struct {
-		name                       string
-		redirectURI                string
-		registeredURIs             []string
-		allowLocalhostRedirectURIs bool
-		wantErr                    bool
+		name           string
+		redirectURI    string
+		registeredURIs []string
+		wantErr        bool
 	}{
 		{
-			name:                       "loopback port matching enabled - matches",
-			redirectURI:                "http://localhost:49567/callback",
-			registeredURIs:             []string{"http://localhost/callback"},
-			allowLocalhostRedirectURIs: true,
-			wantErr:                    false,
+			name:           "loopback on another port matches",
+			redirectURI:    "http://localhost:49567/callback",
+			registeredURIs: []string{"http://localhost/callback"},
 		},
 		{
-			name:                       "loopback port matching disabled - rejects",
-			redirectURI:                "http://localhost:49567/callback",
-			registeredURIs:             []string{"http://localhost/callback"},
-			allowLocalhostRedirectURIs: false,
-			wantErr:                    true,
+			name:           "loopback with the registered query on another port matches",
+			redirectURI:    "http://127.0.0.1:49567/callback?tenant=a",
+			registeredURIs: []string{"http://127.0.0.1/callback?tenant=a"},
 		},
 		{
-			name:                       "non-loopback is never port-agnostic even when enabled",
-			redirectURI:                "https://example.com:8080/callback",
-			registeredURIs:             []string{"https://example.com/callback"},
-			allowLocalhostRedirectURIs: true,
-			wantErr:                    true,
+			name:           "loopback with a different query is refused",
+			redirectURI:    "http://127.0.0.1:49567/callback?tenant=b",
+			registeredURIs: []string{"http://127.0.0.1/callback?tenant=a"},
+			wantErr:        true,
 		},
 		{
-			name:                       "exact match works regardless of setting",
-			redirectURI:                "http://localhost/callback",
-			registeredURIs:             []string{"http://localhost/callback"},
-			allowLocalhostRedirectURIs: false,
-			wantErr:                    false,
+			name:           "non-loopback is never port-agnostic",
+			redirectURI:    "https://example.com:8080/callback",
+			registeredURIs: []string{"https://example.com/callback"},
+			wantErr:        true,
+		},
+		{
+			name:           "exact match",
+			redirectURI:    "http://localhost/callback",
+			registeredURIs: []string{"http://localhost/callback"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			setup := newTestServerSetup(false)
-			config := &Config{
-				DisableLocalhostRedirectURIs: !tt.allowLocalhostRedirectURIs,
-				AllowInsecureHTTP:            true,
-				Issuer:                       "http://localhost:8080",
-			}
-			srv, err := setup.createServer(config)
-			if err != nil {
-				t.Fatalf("Failed to create server: %v", err)
-			}
+			srv, err := setup.createServer(&Config{
+				AllowInsecureHTTP: true,
+				Issuer:            "http://localhost:8080",
+			})
+			require.NoError(t, err)
 
 			client := &storage.Client{
 				ClientID:     "test-client",
@@ -981,11 +975,10 @@ func TestValidateRedirectURI_RFC8252LoopbackPort(t *testing.T) {
 			}
 
 			err = srv.validateRedirectURI(client, tt.redirectURI)
-			if tt.wantErr && err == nil {
-				t.Error("Expected error but got none")
-			}
-			if !tt.wantErr && err != nil {
-				t.Errorf("Expected no error but got: %v", err)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
 			}
 		})
 	}

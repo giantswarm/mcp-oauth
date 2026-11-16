@@ -22,7 +22,6 @@ func newRedirectDefaultsServer(t *testing.T, config *Config) (*Server, error) {
 func TestRedirectURIDefaults_LoopbackAllowedOnAnyPort(t *testing.T) {
 	srv, err := newRedirectDefaultsServer(t, &Config{Issuer: "https://auth.example.com"})
 	require.NoError(t, err)
-	require.True(t, srv.Config.AllowLocalhostRedirectURIs)
 
 	for _, redirectURI := range []string{
 		"http://127.0.0.1:49152/callback",
@@ -41,24 +40,18 @@ func TestRedirectURIDefaults_LoopbackAllowedOnAnyPort(t *testing.T) {
 	require.NoError(t, srv.validateRedirectURI(client, "http://127.0.0.1:61234/callback"))
 }
 
-func TestRedirectURIDefaults_DisableLocalhostRedirectURIs(t *testing.T) {
-	srv, err := newRedirectDefaultsServer(t, &Config{
-		Issuer:                       "https://auth.example.com",
-		DisableLocalhostRedirectURIs: true,
-	})
-	require.NoError(t, err)
-	require.False(t, srv.Config.AllowLocalhostRedirectURIs)
-	require.Error(t, srv.ValidateRedirectURIForRegistration(t.Context(), "http://127.0.0.1:49152/callback"))
-}
-
-func TestRedirectURIDefaults_AllowLocalhostRedirectURIsFalseIsOverwritten(t *testing.T) {
+func TestRedirectURIDefaults_AllowLocalhostRedirectURIsFalseHasNoEffect(t *testing.T) {
 	srv, err := newRedirectDefaultsServer(t, &Config{
 		Issuer:                     "https://auth.example.com",
 		AllowLocalhostRedirectURIs: false,
 	})
 	require.NoError(t, err)
-	require.True(t, srv.Config.AllowLocalhostRedirectURIs)
-	require.NoError(t, srv.ValidateRedirectURIForRegistration(t.Context(), "http://127.0.0.1:49152/callback"))
+	require.NoError(t, srv.ValidateRedirectURIForRegistration(t.Context(), "http://[::1]:49152/callback"))
+
+	client, _, err := srv.RegisterClient(t.Context(), "Native", ClientTypePublic, "",
+		[]string{"http://[::1]/callback"}, []string{"openid"}, "192.168.1.100", 10)
+	require.NoError(t, err)
+	require.NoError(t, srv.validateRedirectURI(client, "http://[::1]:61234/callback"))
 }
 
 func TestRedirectURIDefaults_PlainHTTPOnPublicHostRefused(t *testing.T) {
@@ -107,7 +100,7 @@ func TestRedirectURIDefaults_DisableProductionMode(t *testing.T) {
 			deprecated := strings.Contains(logs.String(), "DEPRECATED: DisableProductionMode")
 			require.Equal(t, tt.wantDeprecation, deprecated, logs.String())
 			if tt.wantDeprecation {
-				require.Contains(t, logs.String(), "AllowLocalhostRedirectURIs")
+				require.Contains(t, logs.String(), "loopback redirect URIs of native clients are always allowed")
 			}
 		})
 	}

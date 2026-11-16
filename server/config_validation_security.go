@@ -17,7 +17,6 @@ import (
 //   - RequirePKCE=true (OAuth 2.1 compliance)
 //   - AllowRefreshTokenRotation=true (prevents refresh token theft)
 //   - ProductionMode=true (HTTPS required for non-loopback)
-//   - AllowLocalhostRedirectURIs=true (RFC 8252 §7.3 loopback redirects)
 //   - DNSValidation=true (SSRF protection)
 //   - DNSValidationStrict=true (fail-closed DNS validation)
 //   - ValidateRedirectURIAtAuthorization=true (TOCTOU protection)
@@ -50,7 +49,6 @@ func applySecurityDefaults(config *Config, logger *slog.Logger) {
 	if !config.DisableProductionMode {
 		config.ProductionMode = true
 	}
-	config.AllowLocalhostRedirectURIs = !config.DisableLocalhostRedirectURIs
 	if !config.DisableDNSValidation {
 		config.DNSValidation = true
 	}
@@ -265,7 +263,7 @@ func logRedirectURISecurityStatus(config *Config, logger *slog.Logger) {
 			"recommendation", "Only for a loopback issuer in local development",
 			"learn_more", "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics#section-4.1")
 		if !isLoopbackIssuer(config.Issuer) {
-			logger.Warn("DEPRECATED: DisableProductionMode with a non-loopback Issuer will be refused in a future release; remove it, loopback redirect URIs of native clients are allowed by AllowLocalhostRedirectURIs (default true)",
+			logger.Warn("DEPRECATED: DisableProductionMode with a non-loopback Issuer will be refused in a future release; remove it, loopback redirect URIs of native clients are always allowed",
 				"issuer", config.Issuer)
 		}
 	}
@@ -292,11 +290,6 @@ func logRedirectURISecurityStatus(config *Config, logger *slog.Logger) {
 			"learn_more", "https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation")
 	}
 
-	if config.AllowLocalhostRedirectURIs {
-		logger.Debug("Localhost redirect URIs are ALLOWED (RFC 8252 native app support)",
-			"note", "HTTP allowed on loopback for native apps",
-			"learn_more", "https://datatracker.ietf.org/doc/html/rfc8252#section-7.3")
-	}
 	if config.AllowPrivateIPRedirectURIs {
 		logger.Warn("SECURITY WARNING: Private IP redirect URIs are ALLOWED",
 			"risk", "SSRF attacks to internal networks (10.x, 172.16.x, 192.168.x)",

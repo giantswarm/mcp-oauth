@@ -434,12 +434,11 @@ The following security controls are **automatically enabled**:
 | `DNSValidation` | `true` | Resolve hostnames to check IPs |
 | `DNSValidationStrict` | `true` | Fail-closed on DNS failures |
 | `ValidateRedirectURIAtAuthorization` | `true` | Re-validate at authorization time (TOCTOU protection) |
-| `AllowLocalhostRedirectURIs` | `true` | Loopback redirects over HTTP on any port (RFC 8252 §7.3); set `DisableLocalhostRedirectURIs` to refuse them |
 | `AllowPrivateIPRedirectURIs` | `false` | RFC 1918 private IPv4 and RFC 4193 IPv6 unique-local IPs blocked |
 | `AllowPrivateIPRedirectURIHosts` | empty | Hostnames whose redirect URIs may resolve to RFC 1918 private IPv4 or RFC 4193 IPv6 unique-local IPs; every other host keeps the private-IP guard |
 | `AllowLinkLocalRedirectURIs` | `false` | 169.254.x.x/fe80:: blocked (cloud SSRF) |
 
-**Note for Native/CLI App Support:** Loopback redirect URIs (`localhost`, `127.x.x.x`, `::1`) are accepted over HTTP and on any port by default, as [RFC 8252 Section 7.3](https://datatracker.ietf.org/doc/html/rfc8252#section-7.3) requires for native applications. A server without native clients can refuse them with `DisableLocalhostRedirectURIs: true`.
+**Note for Native/CLI App Support:** Loopback redirect URIs (`localhost`, `127.x.x.x`, `::1`) are always accepted over HTTP, as [RFC 8252 Section 7.3](https://datatracker.ietf.org/doc/html/rfc8252#section-7.3) requires for native applications. A registered loopback redirect URI matches a request on any port; every other component, query included, must match exactly. `AllowLocalhostRedirectURIs` is deprecated and has no effect; `OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS=false` logs a deprecation warning.
 
 ### Escape Hatches for Less Strict Validation
 
@@ -519,13 +518,7 @@ config := &server.Config{
 
 ### Native App Support (RFC 8252)
 
-Native/CLI apps need no setting: loopback redirects (`http://localhost`, `http://127.0.0.1`, `http://[::1]`) are allowed by default. To refuse them:
-
-```go
-config := &server.Config{
-    DisableLocalhostRedirectURIs: true,
-}
-```
+Native/CLI apps need no setting: loopback redirects (`http://localhost`, `http://127.0.0.1`, `http://[::1]`) are always allowed, and only the port may differ from the registered URI.
 
 ### DNS Validation Details
 

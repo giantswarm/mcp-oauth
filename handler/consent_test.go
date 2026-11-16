@@ -225,7 +225,7 @@ func TestConsent_ChangedRedirectURIAsksAgain(t *testing.T) {
 }
 
 func TestConsent_LoopbackAlwaysRequiresConsent(t *testing.T) {
-	f := newConsentFlow(t, func(c *server.Config) { c.AllowLocalhostRedirectURIs = true }, "http://127.0.0.1/callback")
+	f := newConsentFlow(t, nil, "http://127.0.0.1/callback")
 
 	page := f.get(f.authorizeTarget("http://127.0.0.1:50001/callback", testutil.GenerateRandomString(43), nil))
 	requireConsentPage(t, page)
@@ -252,7 +252,7 @@ func TestConsent_LoopbackAlwaysRequiresConsent(t *testing.T) {
 }
 
 func TestConsent_NoWarningWithAPublicRedirectURI(t *testing.T) {
-	f := newConsentFlow(t, func(c *server.Config) { c.AllowLocalhostRedirectURIs = true }, "http://127.0.0.1/callback", consentTestRedirect)
+	f := newConsentFlow(t, nil, "http://127.0.0.1/callback", consentTestRedirect)
 
 	page := f.get(f.authorizeTarget(consentTestRedirect, testutil.GenerateRandomString(43), nil))
 	requireConsentPage(t, page)
