@@ -107,8 +107,7 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 }
 
 // loadTrustedAllowlistsFromEnv loads the comma-separated allowlist env vars
-// (TRUSTED_AUDIENCES, TRUSTED_REDIRECT_SCHEMES, TRUSTED_REDIRECT_URIS and the
-// <OPERATION>_PRIVATE_IP_HOSTS lists) into cfg.
+// (TRUSTED_AUDIENCES, TRUSTED_REDIRECT_SCHEMES, TRUSTED_REDIRECT_URIS) into cfg.
 func loadTrustedAllowlistsFromEnv(prefix string, cfg *server.Config) error {
 	loadCSVIfSet(prefix+"TRUSTED_AUDIENCES", &cfg.TrustedAudiences)
 	if err := dex.ValidateAudiences(cfg.TrustedAudiences); err != nil {
@@ -116,9 +115,6 @@ func loadTrustedAllowlistsFromEnv(prefix string, cfg *server.Config) error {
 	}
 	loadCSVIfSet(prefix+"TRUSTED_REDIRECT_SCHEMES", &cfg.TrustedPublicRegistrationSchemes)
 	loadCSVIfSet(prefix+"TRUSTED_REDIRECT_URIS", &cfg.TrustedPublicRegistrationRedirectURIs)
-	loadCSVIfSet(prefix+"CLIENT_METADATA_PRIVATE_IP_HOSTS", &cfg.ClientMetadataPrivateIPHosts)
-	loadCSVIfSet(prefix+"REDIRECT_URI_PRIVATE_IP_HOSTS", &cfg.RedirectURIPrivateIPHosts)
-	loadCSVIfSet(prefix+"JWKS_PRIVATE_IP_HOSTS", &cfg.JWKSPrivateIPHosts)
 	return nil
 }
 

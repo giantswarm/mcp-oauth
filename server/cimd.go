@@ -127,7 +127,7 @@ func isPrivateIP(ip net.IP) bool {
 //
 // allowPrivateIP lifts the private-IP check for every host, allowedPrivateHosts
 // for the listed hostnames only; see Config.AllowPrivateIPClientMetadata and
-// Config.ClientMetadataPrivateIPHosts.
+// Config.AllowPrivateIPClientMetadataHosts.
 func validateAndSanitizeMetadataURL(clientID string, allowPrivateIP bool, allowedPrivateHosts []string) (string, error) {
 	u, err := url.Parse(clientID)
 	if err != nil {
@@ -245,7 +245,7 @@ func dialFirstReachable(ctx context.Context, dialer *net.Dialer, network, host, 
 //
 // Security considerations per Section 6:
 //   - SSRF protection: blocks private/internal IP addresses at connection time (prevents DNS rebinding)
-//     unless AllowPrivateIPClientMetadata or ClientMetadataPrivateIPHosts lifts it
+//     unless AllowPrivateIPClientMetadata or AllowPrivateIPClientMetadataHosts lifts it
 //   - HTTPS only: rejects HTTP URLs
 //   - Timeout protection: enforces reasonable timeout
 //   - Size limit: prevents memory exhaustion and validates full document read
@@ -259,7 +259,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 			"config", "AllowPrivateIPClientMetadata=true")
 	}
 
-	sanitizedURL, err := validateAndSanitizeMetadataURL(clientID, allowPrivateIP, s.Config.clientMetadataPrivateIPHosts())
+	sanitizedURL, err := validateAndSanitizeMetadataURL(clientID, allowPrivateIP, s.Config.AllowPrivateIPClientMetadataHosts)
 	if err != nil {
 		s.recordCIMDFetchMetric(ctx, "blocked", fetchStart)
 		s.logMetadataFetchEvent(ctx, "client_metadata_fetch_blocked", clientID, map[string]any{
@@ -567,7 +567,7 @@ func (s *Server) createMetadataHTTPClient(timeout time.Duration) *http.Client {
 		Timeout: timeout,
 		Transport: createSSRFProtectedTransport(
 			s.Config.AllowPrivateIPClientMetadata,
-			s.Config.clientMetadataPrivateIPHosts(),
+			s.Config.AllowPrivateIPClientMetadataHosts,
 			s.Config.ClientMetadataRootCAs,
 		),
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {

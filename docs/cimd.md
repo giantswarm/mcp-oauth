@@ -234,7 +234,7 @@ The server implements multiple layers of SSRF (Server-Side Request Forgery) prot
    - Every IANA special-purpose IPv4 range: loopback, private, link-local (cloud metadata), shared address space (`100.64.0.0/10`), benchmarking, documentation, multicast and reserved
    - IPv6 only inside `2000::/3`, without the special-purpose ranges in it (6to4, Teredo, documentation)
    - An IPv4 address in IPv6 form is checked as IPv4
-   - `ClientMetadataPrivateIPHosts` lifts the guard for the listed hostnames; the deprecated `AllowPrivateIPClientMetadata` lifts it for every host
+   - `AllowPrivateIPClientMetadata` (every host) and `AllowPrivateIPClientMetadataHosts` (listed hostnames) lift the guard
 
 4. **No Redirects**: HTTP redirects are not followed
 

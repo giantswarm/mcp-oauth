@@ -16,8 +16,6 @@ import (
 // This is the main entry point for configuration validation and default application.
 // It delegates to specialized validation functions for different configuration areas.
 func applySecureDefaults(config *Config, logger *slog.Logger) *Config {
-	logPrivateIPHostDeprecations(config, logger)
-
 	// Validate provider revocation config BEFORE applying defaults (to detect invalid values)
 	validateProviderRevocationConfig(config, logger)
 

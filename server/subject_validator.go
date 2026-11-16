@@ -151,29 +151,28 @@ type TrustedIssuer struct {
 	// downstream relies on. Fail-closed: if set and the claim is absent or not a
 	// non-empty string, the token is rejected.
 	SubjectClaim string
-	// AllowPrivateIPJWKS lets JwksURL resolve to any private, loopback or
-	// link-local address.
+	// AllowPrivateIPJWKS allows JwksURL to resolve to a private or loopback IP
+	// address. Set this when the JWKS endpoint is an in-cluster service (e.g.
+	// the Kubernetes API server's /openid/v1/jwks) that is not reachable via a
+	// public address.
 	//
-	// Deprecated: list the host in JWKSPrivateIPHosts. It still lifts the
-	// guard for this issuer, and WithTrustedIssuers logs a deprecation warning.
+	// WARNING: Disables SSRF protection for this issuer's JWKS fetch. Only set
+	// when JwksURL is a known, controlled in-cluster endpoint. Prefer
+	// AllowPrivateIPJWKSHosts when the endpoint is a specific known service.
 	AllowPrivateIPJWKS bool
 
-	// JWKSPrivateIPHosts lists the hostnames whose JWKS URL may resolve to a
-	// private, loopback or link-local address (e.g. an in-cluster service such
-	// as muster.agent-platform.svc.cluster.local). Every other host keeps the
-	// SSRF guard at connection time. Entries match exactly.
-	JWKSPrivateIPHosts []string
-
-	// AllowPrivateIPJWKSHosts is the former name of JWKSPrivateIPHosts; both
-	// lists are honored.
-	//
-	// Deprecated: use JWKSPrivateIPHosts.
+	// AllowPrivateIPJWKSHosts lists the specific hostnames whose JWKS URL is
+	// permitted to resolve to a private IP. All other hosts retain SSRF
+	// protection. Use this instead of AllowPrivateIPJWKS when the private
+	// endpoint is a known in-cluster service (e.g.
+	// muster.agent-platform.svc.cluster.local). Ignored when
+	// AllowPrivateIPJWKS is true.
 	AllowPrivateIPJWKSHosts []string
 
 	// RootCAs is the CA pool used to verify this issuer's JWKS endpoint TLS
-	// certificate (e.g. an internal-CA Dex). It applies with or without a
-	// private-IP allowance. The pool replaces the system roots rather than
-	// extending them. nil uses the system pool.
+	// certificate (e.g. an internal-CA Dex). It applies with or without
+	// AllowPrivateIPJWKS / AllowPrivateIPJWKSHosts. The pool replaces the system
+	// roots rather than extending them. nil uses the system pool.
 	RootCAs *x509.CertPool
 	// AcceptedTypHeaders lists the JWT typ header values accepted when a
 	// Bearer token from this issuer is presented to the resource server.
@@ -233,12 +232,13 @@ const auditReasonTrustedIssuerActorNotTrusted = "trusted_issuer_actor_not_truste
 type OIDCValidator struct {
 	issuers       map[string]TrustedIssuer
 	safeClient    *oidc.JWKSClient
-	issuerClients map[string]*oidc.JWKSClient // per-issuer clients with a private-IP allowance or a CA pool
+	issuerClients map[string]*oidc.JWKSClient // per-issuer permissive clients (AllowPrivateIPJWKS / AllowPrivateIPJWKSHosts)
 }
 
 // NewOIDCValidator constructs an OIDCValidator for the given trusted issuers.
-// SSRF-safe JWKS fetches are the default; set JWKSPrivateIPHosts on an issuer
-// to allow private-IP JWKS only for the listed hostnames.
+// SSRF-safe JWKS fetches are the default; set AllowPrivateIPJWKSHosts on an
+// issuer to allow private-IP JWKS only for the listed hostnames, or
+// AllowPrivateIPJWKS to disable SSRF protection entirely for that issuer.
 //
 // An issuer gets its own JWKS client whenever it sets either of those flags or
 // a RootCAs pool. Reachability and trust anchor are independent settings.
@@ -246,8 +246,7 @@ func NewOIDCValidator(issuers []TrustedIssuer) (*OIDCValidator, error) {
 	safe := oidc.NewJWKSClient(nil, 0, nil)
 	issuerClients := map[string]*oidc.JWKSClient{}
 	for _, ti := range issuers {
-		privateHosts := mergeHosts(ti.JWKSPrivateIPHosts, ti.AllowPrivateIPJWKSHosts)
-		if !ti.AllowPrivateIPJWKS && len(privateHosts) == 0 && ti.RootCAs == nil {
+		if !ti.AllowPrivateIPJWKS && len(ti.AllowPrivateIPJWKSHosts) == 0 && ti.RootCAs == nil {
 			continue
 		}
 		// NewJWKSClientWithOptions applies the same precedence: AllowPrivateIP,
@@ -255,7 +254,7 @@ func NewOIDCValidator(issuers []TrustedIssuer) (*OIDCValidator, error) {
 		// therefore yields an SSRF-safe client pinned to that pool.
 		issuerClients[ti.Issuer] = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
 			AllowPrivateIP:      ti.AllowPrivateIPJWKS,
-			AllowPrivateIPHosts: privateHosts,
+			AllowPrivateIPHosts: ti.AllowPrivateIPJWKSHosts,
 			RootCAs:             ti.RootCAs,
 		})
 	}

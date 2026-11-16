@@ -31,7 +31,7 @@ func (s *Server) LogValue() slog.Value {
 			slog.Duration("dns_timeout", cfg.DNSValidationTimeout),
 			slog.Bool("allow_localhost", cfg.AllowLocalhostRedirectURIs),
 			slog.Bool("allow_private_ip", cfg.AllowPrivateIPRedirectURIs),
-			slog.Any("private_ip_hosts", cfg.redirectURIPrivateIPHosts()),
+			slog.Any("allow_private_ip_hosts", cfg.AllowPrivateIPRedirectURIHosts),
 			slog.Bool("allow_link_local", cfg.AllowLinkLocalRedirectURIs),
 		),
 	}
