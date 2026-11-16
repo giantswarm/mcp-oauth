@@ -15,9 +15,11 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"time"
 
 	"golang.org/x/net/http/httpproxy"
 )
@@ -25,6 +27,10 @@ import (
 const (
 	schemeHTTP  = "http"
 	schemeHTTPS = "https"
+
+	// defaultTunnelTimeout bounds a tunnel set-up when the dialer has no
+	// Timeout, the same bound net/http puts on its own CONNECT exchange.
+	defaultTunnelTimeout = time.Minute
 )
 
 // Selector returns the proxy for a connection to host and port, or nil to
@@ -46,11 +52,22 @@ func FromEnvironment() Selector {
 // Dial connects to ip:port: directly when proxyURL is nil, otherwise through a
 // CONNECT tunnel opened on the proxy. The proxy address itself is operator
 // configuration and is dialed without any address check.
+//
+// Reaching the proxy and the CONNECT exchange together are bounded by
+// dialer.Timeout (one minute when it is zero), because net/http dials with a
+// context that neither the request's cancellation nor its deadline ends.
 func Dial(ctx context.Context, dialer *net.Dialer, network string, proxyURL *url.URL, ip net.IP, port string) (net.Conn, error) {
 	target := net.JoinHostPort(ip.String(), port)
 	if proxyURL == nil {
 		return dialer.DialContext(ctx, network, target)
 	}
+
+	timeout := dialer.Timeout
+	if timeout <= 0 {
+		timeout = defaultTunnelTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	conn, err := dialProxy(ctx, dialer, network, proxyURL)
 	if err != nil {
@@ -97,6 +114,11 @@ func dialProxy(ctx context.Context, dialer *net.Dialer, network string, proxyURL
 
 // connect sends CONNECT target on conn and reads the proxy's answer. The
 // connection is closed if ctx ends first, which unblocks the read.
+//
+// A 200 answer carries no body: RFC 9110 section 9.3.6 has the client ignore
+// Content-Length and Transfer-Encoding on it, so every byte after the header
+// belongs to the tunnel and the body is never read. The header is capped at
+// http.DefaultMaxHeaderBytes.
 func connect(ctx context.Context, conn net.Conn, proxyURL *url.URL, target string) (err error) {
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer func() {
@@ -121,12 +143,11 @@ func connect(ctx context.Context, conn net.Conn, proxyURL *url.URL, target strin
 		return errors.Join(fmt.Errorf("failed to send CONNECT %s to proxy", target), err, ctx.Err())
 	}
 
-	reader := bufio.NewReader(conn)
+	reader := bufio.NewReader(&io.LimitedReader{R: conn, N: http.DefaultMaxHeaderBytes})
 	response, err := http.ReadResponse(reader, request)
 	if err != nil {
 		return errors.Join(fmt.Errorf("failed to read the proxy's answer to CONNECT %s", target), err, ctx.Err())
 	}
-	_ = response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("proxy refused CONNECT %s: %s", target, response.Status)
 	}
