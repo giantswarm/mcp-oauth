@@ -164,26 +164,16 @@ func TestDiscoveryClient_Discover(t *testing.T) {
 		}
 	})
 
-	t.Run("SECURITY: reject private IP", func(t *testing.T) {
+	t.Run("reject issuer query component", func(t *testing.T) {
 		client := NewDiscoveryClient(nil, 1*time.Hour, slog.Default())
-		_, err := client.Discover(context.Background(), "https://10.0.0.1")
-		if err == nil {
-			t.Error("Discover() should reject private IP")
-		}
-		if !strings.Contains(err.Error(), "private IP") {
-			t.Errorf("error should mention private IP, got: %v", err)
-		}
+		_, err := client.Discover(t.Context(), "https://dex.example.com/dex?x=1")
+		require.ErrorContains(t, err, "query component")
 	})
 
-	t.Run("SECURITY: reject localhost", func(t *testing.T) {
+	t.Run("reject issuer fragment component", func(t *testing.T) {
 		client := NewDiscoveryClient(nil, 1*time.Hour, slog.Default())
-		_, err := client.Discover(context.Background(), "https://127.0.0.1")
-		if err == nil {
-			t.Error("Discover() should reject loopback address")
-		}
-		if !strings.Contains(err.Error(), "loopback") {
-			t.Errorf("error should mention loopback, got: %v", err)
-		}
+		_, err := client.Discover(t.Context(), "https://dex.example.com/dex#fragment")
+		require.ErrorContains(t, err, "fragment component")
 	})
 
 	t.Run("SECURITY: reject HTTP endpoints in discovery", func(t *testing.T) {

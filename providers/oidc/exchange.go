@@ -417,7 +417,7 @@ func validateResourceParameter(resource string) error {
 	}
 
 	// Should use HTTPS (or HTTP for localhost development)
-	if u.Scheme != "https" && u.Scheme != "http" {
+	if u.Scheme != schemeHTTPS && u.Scheme != "http" {
 		return fmt.Errorf("resource must use HTTP or HTTPS scheme")
 	}
 

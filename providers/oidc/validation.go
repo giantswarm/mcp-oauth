@@ -19,6 +19,8 @@ import (
 // Pre-compiled at package initialization for performance.
 var connectorIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
+const schemeHTTPS = "https"
+
 // ValidateHTTPSURL validates that a URL uses HTTPS scheme.
 // This is a reusable helper to enforce HTTPS across all endpoints.
 //
@@ -32,35 +34,42 @@ func ValidateHTTPSURL(rawURL, context string) error {
 	if err != nil {
 		return fmt.Errorf("invalid %s URL: %w", context, err)
 	}
-	if u.Scheme != "https" {
+	if u.Scheme != schemeHTTPS {
 		return fmt.Errorf("%s must use HTTPS, got %s", context, u.Scheme)
 	}
 	return nil
 }
 
-// ValidateIssuerURL validates an OIDC issuer URL with SSRF protection.
-// It enforces HTTPS and blocks private IP ranges to prevent Server-Side Request Forgery attacks.
-//
-// This is a convenience wrapper around ValidateExternalURL with "issuer URL" as the context.
-//
-// Security Considerations:
-//   - HTTPS Enforcement: Prevents credential interception
-//   - Private IP Blocking: Prevents SSRF against internal services (Kubernetes API, metadata services, etc.)
-//   - Loopback Blocking: Prevents attacks against localhost services
-//   - Link-local Blocking: Prevents metadata service attacks (169.254.169.254)
-//
-// Example:
-//
-//	if err := ValidateIssuerURL("https://dex.example.com"); err != nil {
-//	    return fmt.Errorf("invalid issuer: %w", err)
-//	}
+// ValidateIssuerURL validates an operator-configured OIDC issuer identifier.
+// OpenID Connect Discovery 1.0 section 3 requires HTTPS without query or
+// fragment components. Private addresses are permitted because the operator
+// chooses the issuer; TLS and exact discovery-issuer matching establish trust.
 func ValidateIssuerURL(issuerURL string) error {
-	return ValidateExternalURL(issuerURL, "issuer URL")
+	parsedURL, err := url.Parse(issuerURL)
+	if err != nil {
+		return fmt.Errorf("invalid issuer URL: %w", err)
+	}
+	if parsedURL.Scheme != schemeHTTPS {
+		return fmt.Errorf("issuer URL must use HTTPS")
+	}
+	if parsedURL.Hostname() == "" {
+		return fmt.Errorf("issuer URL must have a hostname")
+	}
+	if parsedURL.User != nil {
+		return fmt.Errorf("issuer URL must not contain user information")
+	}
+	if parsedURL.RawQuery != "" || parsedURL.ForceQuery {
+		return fmt.Errorf("issuer URL must not contain a query component")
+	}
+	if strings.Contains(issuerURL, "#") {
+		return fmt.Errorf("issuer URL must not contain a fragment component")
+	}
+	return nil
 }
 
 // ValidateExternalURL validates an external URL with SSRF protection.
 // It enforces HTTPS and blocks private IP ranges to prevent Server-Side Request Forgery attacks.
-// This is a generic version of ValidateIssuerURL that accepts a context parameter for error messages.
+// The context parameter identifies the endpoint in validation errors.
 //
 // Security Considerations:
 //   - HTTPS Enforcement: Prevents credential interception

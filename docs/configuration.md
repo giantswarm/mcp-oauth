@@ -16,6 +16,19 @@ This guide covers all configuration options for the mcp-oauth library.
 
 ## Server Configuration
 
+### Configured Dex issuer
+
+`dex.Config.IssuerURL` identifies the operator-selected OpenID Provider. It must
+use HTTPS with a hostname and may include a port and path. User information,
+query components and fragments are refused, including empty `?` and `#`
+delimiters. Private, loopback and link-local addresses are permitted without a
+separate setting. Validation does not resolve DNS.
+
+Discovery verifies the provider's TLS certificate using the system trust store
+or `dex.Config.RootCAs`, and the returned `issuer` must match `IssuerURL` exactly.
+`oidc.ValidateExternalURL` and the SSRF-safe HTTP clients apply separate network
+restrictions to endpoints selected by a request or token.
+
 The `ServerConfig` struct controls the OAuth server behavior:
 
 ```go

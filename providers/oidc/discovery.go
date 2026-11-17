@@ -95,7 +95,7 @@ func NewDiscoveryClient(httpClient *http.Client, cacheTTL time.Duration, logger 
 					return fmt.Errorf("stopped after %d redirects", maxRedirects)
 				}
 				// SECURITY: Validate redirect target URL for SSRF protection
-				if err := ValidateIssuerURL(req.URL.String()); err != nil {
+				if err := ValidateExternalURL(req.URL.String(), "redirect target"); err != nil {
 					return fmt.Errorf("invalid redirect target: %w", err)
 				}
 				return nil
@@ -139,10 +139,10 @@ func NewDiscoveryClientWithOptions(httpClient *http.Client, cacheTTL time.Durati
 }
 
 // Discover fetches the OIDC discovery document for an issuer.
-// It validates the issuer URL for security (SSRF protection) and caches results.
+// It validates the operator-configured issuer identifier and caches results.
 //
 // Security Features:
-//   - SSRF protection via ValidateIssuerURL
+//   - Issuer identifier syntax validation via ValidateIssuerURL
 //   - HTTPS enforcement for issuer and all discovered endpoints
 //   - The document's issuer must be identical to issuerURL (no normalization)
 //   - Document caching with TTL to reduce attack surface
@@ -155,8 +155,7 @@ func NewDiscoveryClientWithOptions(httpClient *http.Client, cacheTTL time.Durati
 //	}
 //	// Use doc.AuthorizationEndpoint, doc.TokenEndpoint, etc.
 func (c *DiscoveryClient) Discover(ctx context.Context, issuerURL string) (*DiscoveryDocument, error) {
-	// SECURITY: Validate issuer URL before making request
-	// Skip validation only in tests (skipValidation is internal and not exported)
+	// Test clients may use HTTP listeners; production issuers require HTTPS.
 	if !c.skipValidation {
 		if err := ValidateIssuerURL(issuerURL); err != nil {
 			return nil, fmt.Errorf("invalid issuer URL: %w", err)

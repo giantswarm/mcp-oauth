@@ -230,9 +230,7 @@ func validateRequiredConfig(cfg *Config) error {
 		return fmt.Errorf("discovery timeout must not be negative, got %v", cfg.DiscoveryTimeout)
 	}
 
-	// SECURITY: Validate issuer URL with SSRF protection.
-	// When a discovery client is injected (tests only), skip URL validation:
-	// the injected client is already bound to a trusted server.
+	// An injected discovery client is bound to a test server and may use HTTP.
 	if cfg.discoveryClient == nil {
 		if err := oidc.ValidateIssuerURL(cfg.IssuerURL); err != nil {
 			return fmt.Errorf("invalid issuer URL: %w", err)
