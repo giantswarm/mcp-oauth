@@ -38,14 +38,13 @@ func TestServer_StartAuthorizationFlow_EmptyScope(t *testing.T) {
 	}
 
 	config := &Config{
-		Issuer:                     "https://auth.example.com",
-		SupportedScopes:            []string{"openid", "email", "profile", "https://www.googleapis.com/auth/gmail.readonly"},
-		AuthorizationCodeTTL:       600,
-		AccessTokenTTL:             3600,
-		RequirePKCE:                true,
-		AllowPKCEPlain:             false,
-		ClockSkewGracePeriod:       5,
-		AllowLocalhostRedirectURIs: true, // Required for localhost redirect URIs
+		Issuer:               "https://auth.example.com",
+		SupportedScopes:      []string{"openid", "email", "profile", "https://www.googleapis.com/auth/gmail.readonly"},
+		AuthorizationCodeTTL: 600,
+		AccessTokenTTL:       3600,
+		RequirePKCE:          true,
+		AllowPKCEPlain:       false,
+		ClockSkewGracePeriod: 5,
 	}
 
 	srv, err := New(provider, store, store, store, config, nil)
@@ -157,14 +156,13 @@ func TestServer_StartAuthorizationFlow_WithExplicitScopes(t *testing.T) {
 	}
 
 	config := &Config{
-		Issuer:                     "https://auth.example.com",
-		SupportedScopes:            []string{"openid", "email", "profile", "https://www.googleapis.com/auth/gmail.readonly"},
-		AuthorizationCodeTTL:       600,
-		AccessTokenTTL:             3600,
-		RequirePKCE:                true,
-		AllowPKCEPlain:             false,
-		ClockSkewGracePeriod:       5,
-		AllowLocalhostRedirectURIs: true, // Required for localhost redirect URIs
+		Issuer:               "https://auth.example.com",
+		SupportedScopes:      []string{"openid", "email", "profile", "https://www.googleapis.com/auth/gmail.readonly"},
+		AuthorizationCodeTTL: 600,
+		AccessTokenTTL:       3600,
+		RequirePKCE:          true,
+		AllowPKCEPlain:       false,
+		ClockSkewGracePeriod: 5,
 	}
 
 	srv, err := New(provider, store, store, store, config, nil)
@@ -251,14 +249,13 @@ func TestServer_StartAuthorizationFlow_ScopeIntersection(t *testing.T) {
 	}
 
 	config := &Config{
-		Issuer:                     "https://auth.example.com",
-		SupportedScopes:            []string{"openid", "email", "profile", "https://www.googleapis.com/auth/gmail.readonly"},
-		AuthorizationCodeTTL:       600,
-		AccessTokenTTL:             3600,
-		RequirePKCE:                true,
-		AllowPKCEPlain:             false,
-		ClockSkewGracePeriod:       5,
-		AllowLocalhostRedirectURIs: true, // Required for localhost redirect URIs
+		Issuer:               "https://auth.example.com",
+		SupportedScopes:      []string{"openid", "email", "profile", "https://www.googleapis.com/auth/gmail.readonly"},
+		AuthorizationCodeTTL: 600,
+		AccessTokenTTL:       3600,
+		RequirePKCE:          true,
+		AllowPKCEPlain:       false,
+		ClockSkewGracePeriod: 5,
 	}
 
 	srv, err := New(provider, store, store, store, config, nil)

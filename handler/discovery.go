@@ -119,13 +119,7 @@ func (h *Handler) buildProtectedResourceMetadata(resourcePath string, pathConfig
 
 	// Apply path-specific configuration if available
 	if pathConfig != nil {
-		// Use path-specific resource identifier if configured
-		if pathConfig.ResourceIdentifier != "" {
-			resource = pathConfig.ResourceIdentifier
-		} else if resourcePath != "/" && resourcePath != "" {
-			// For sub-paths, append the path to the base resource identifier
-			resource = h.server.Config.GetResourceIdentifier() + resourcePath
-		}
+		resource = h.server.Config.PathResourceIdentifier(resourcePath, *pathConfig)
 
 		// Use path-specific authorization servers if configured
 		if len(pathConfig.AuthorizationServers) > 0 {

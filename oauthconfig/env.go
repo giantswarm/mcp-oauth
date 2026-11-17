@@ -98,9 +98,13 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 		return nil, err
 	}
 
-	cfg.AllowLocalhostRedirectURIs, err = optionalBool(prefix+"ALLOW_LOCALHOST_REDIRECT_URIS", false)
+	allowLoopbackRedirectURIs, err := optionalBool(prefix+"ALLOW_LOCALHOST_REDIRECT_URIS", true)
 	if err != nil {
 		return nil, err
+	}
+	if !allowLoopbackRedirectURIs {
+		slog.Default().Warn("DEPRECATED: "+prefix+"ALLOW_LOCALHOST_REDIRECT_URIS=false has no effect; loopback redirect URIs are always allowed (RFC 8252 §7.3), remove the variable",
+			"env_var", prefix+"ALLOW_LOCALHOST_REDIRECT_URIS")
 	}
 
 	return cfg, nil
