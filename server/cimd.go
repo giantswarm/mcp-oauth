@@ -632,6 +632,16 @@ func metadataCacheLifetime(header http.Header, receivedAt time.Time, defaultLife
 // storing it or reusing it without revalidation, or states its lifetime
 // invalidly; stated is false when it states none.
 func statedFreshnessLifetime(header http.Header, receivedAt time.Time) (lifetime time.Duration, stated, storable bool) {
+	lifetime, stated, storable = cacheControlFreshnessLifetime(header)
+	if stated || !storable {
+		return lifetime, stated, storable
+	}
+	return expiresFreshnessLifetime(header, receivedAt)
+}
+
+// cacheControlFreshnessLifetime applies no-store, no-cache and the most
+// restrictive max-age of the Cache-Control header.
+func cacheControlFreshnessLifetime(header http.Header) (lifetime time.Duration, stated, storable bool) {
 	for _, line := range header.Values("Cache-Control") {
 		for _, directive := range strings.Split(line, ",") {
 			name, value, _ := strings.Cut(directive, "=")
@@ -650,10 +660,12 @@ func statedFreshnessLifetime(header http.Header, receivedAt time.Time) (lifetime
 			}
 		}
 	}
-	if stated {
-		return lifetime, true, true
-	}
+	return lifetime, stated, true
+}
 
+// expiresFreshnessLifetime measures Expires from Date, or from receivedAt when
+// Date is absent or invalid.
+func expiresFreshnessLifetime(header http.Header, receivedAt time.Time) (lifetime time.Duration, stated, storable bool) {
 	expires := header.Values("Expires")
 	if len(expires) == 0 {
 		return 0, false, true
