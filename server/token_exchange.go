@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
 )
@@ -351,11 +352,15 @@ func (s *Server) checkSubjectKeyBinding(ctx context.Context, identity *SubjectId
 // checkAllowedResource enforces Config.TokenExchangeAllowedResources on the
 // self-issued exchange: when the list is non-empty, the audience the token would
 // be minted for must be the server's own resource identifier or a listed value,
-// otherwise issuance is rejected with ErrInvalidTarget. An empty list disables
+// otherwise issuance is rejected with ErrInvalidTarget. Values are compared
+// after the same normalization as an authorization request's resource
+// (scheme and host case, default port, trailing slash). An empty list disables
 // the check. Returns nil when the exchange is allowed.
 func (s *Server) checkAllowedResource(ctx context.Context, audience, sessionID string) error {
 	allowed := s.Config.TokenExchangeAllowedResources
-	if len(allowed) == 0 || audience == s.Config.GetResourceIdentifier() || slices.Contains(allowed, audience) {
+	normalizedAudience := helpers.NormalizeURL(audience)
+	isAudience := func(resource string) bool { return helpers.NormalizeURL(resource) == normalizedAudience }
+	if len(allowed) == 0 || isAudience(s.Config.GetResourceIdentifier()) || slices.ContainsFunc(allowed, isAudience) {
 		return nil
 	}
 	s.Auditor.LogEvent(ctx, security.Event{

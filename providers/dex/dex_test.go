@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
@@ -972,50 +974,18 @@ func TestResolveHTTPClient(t *testing.T) {
 	timeout := 5 * time.Second
 	custom := &http.Client{Timeout: 99 * time.Second}
 
-	tests := []struct {
-		name           string
-		client         *http.Client
-		allowPrivateIP bool
-		wantSame       *http.Client // non-nil: pointer equality check
-		wantTimeout    time.Duration
-	}{
-		{
-			name:           "explicit client returned unchanged",
-			client:         custom,
-			allowPrivateIP: false,
-			wantSame:       custom,
-		},
-		{
-			name:           "explicit client with allowPrivateIP returned unchanged",
-			client:         custom,
-			allowPrivateIP: true,
-			wantSame:       custom,
-		},
-		{
-			name:           "nil client without allowPrivateIP returns default-dial client",
-			client:         nil,
-			allowPrivateIP: false,
-			wantTimeout:    timeout,
-		},
-		{
-			name:           "nil client with allowPrivateIP returns private-IP-allowed client",
-			client:         nil,
-			allowPrivateIP: true,
-			wantTimeout:    timeout,
-		},
-	}
+	t.Run("explicit client returned unchanged", func(t *testing.T) {
+		require.Same(t, custom, resolveHTTPClient(custom, nil, timeout))
+	})
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := resolveHTTPClient(tt.client, tt.allowPrivateIP, nil, timeout)
-			if got == nil {
-				t.Fatal("resolveHTTPClient() returned nil")
-			}
-			if tt.wantSame != nil && got != tt.wantSame {
-				t.Errorf("resolveHTTPClient() returned different client; want same pointer")
-			}
-		})
-	}
+	t.Run("default client honors the proxy environment and pins redirects", func(t *testing.T) {
+		client := resolveHTTPClient(nil, nil, timeout)
+		require.Equal(t, timeout, client.Timeout)
+		transport, ok := client.Transport.(*http.Transport)
+		require.True(t, ok, "expected *http.Transport, got %T", client.Transport)
+		require.NotNil(t, transport.Proxy, "the Dex client must honor HTTP_PROXY, HTTPS_PROXY and NO_PROXY")
+		require.NotNil(t, client.CheckRedirect, "the Dex client must pin redirects to the issuer host")
+	})
 }
 
 func TestAllowPrivateIP_WarningEmitted(t *testing.T) {
@@ -1025,19 +995,16 @@ func TestAllowPrivateIP_WarningEmitted(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-	// HTTPClient = nil overrides testConfig's default (server.Client()), so the warning
-	// fires. Discovery then fails because NewPrivateIPAllowedHTTPClient does not trust
-	// the test server's self-signed cert — that's expected. We only care that the
-	// warning was emitted to the custom logger before the failure.
+	// HTTPClient = nil drops testConfig's server.Client(), so discovery fails on
+	// the test server's self-signed certificate after the warning is logged.
 	_, _ = NewProvider(testConfig(server, func(cfg *Config) {
 		cfg.AllowPrivateIP = true
 		cfg.HTTPClient = nil
 		cfg.Logger = logger
 	}))
 
-	if !strings.Contains(buf.String(), "CWE-918") {
-		t.Errorf("expected CWE-918 warning in log output; got: %q", buf.String())
-	}
+	require.Contains(t, buf.String(), "dex.Config.AllowPrivateIP is deprecated and has no effect")
+	require.NotContains(t, buf.String(), "CWE-918")
 }
 
 func TestAllowPrivateIP_WarningEmittedWithExplicitClient(t *testing.T) {
@@ -1056,9 +1023,7 @@ func TestAllowPrivateIP_WarningEmittedWithExplicitClient(t *testing.T) {
 		t.Fatalf("NewProvider() failed: %v", err)
 	}
 
-	if !strings.Contains(buf.String(), "CWE-918") {
-		t.Errorf("expected CWE-918 warning even when HTTPClient is explicitly set; got: %q", buf.String())
-	}
+	require.Contains(t, buf.String(), "dex.Config.AllowPrivateIP is deprecated and has no effect")
 }
 
 // TestAllowPrivateIP_IPLiteralStillRejected confirms that AllowPrivateIP does not

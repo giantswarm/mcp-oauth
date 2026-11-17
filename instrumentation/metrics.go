@@ -404,7 +404,7 @@ func (m *Metrics) RecordForwardedIDTokenAccepted(ctx context.Context, provider, 
 //
 // Parameters:
 //   - category: The error category (e.g., "blocked_scheme", "private_ip", "link_local",
-//     "dns_resolves_to_private_ip", "loopback_not_allowed", "http_not_allowed")
+//     "dns_resolves_to_private_ip", "http_not_allowed")
 //   - stage: When the rejection occurred ("registration" or "authorization")
 func (m *Metrics) RecordRedirectURISecurityRejected(ctx context.Context, category, stage string) {
 	m.RedirectURISecurityRejected.Add(ctx, 1, metric.WithAttributes(
