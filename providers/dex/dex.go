@@ -139,8 +139,8 @@ type Config struct {
 
 	// AllowPrivateIP is ignored. The Dex client always reaches private and
 	// loopback addresses, honors HTTP_PROXY, HTTPS_PROXY and NO_PROXY, and pins
-	// redirects to the issuer host. IP-literal private addresses in IssuerURL
-	// are still rejected by URL validation.
+	// redirects to the issuer host. IssuerURL may name a private or loopback
+	// address.
 	//
 	// Deprecated: AllowPrivateIP has no effect; remove it. Setting it logs a
 	// warning.

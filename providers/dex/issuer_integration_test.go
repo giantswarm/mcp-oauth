@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
@@ -29,13 +30,13 @@ func TestConfiguredIssuerDiscovery(t *testing.T) {
 			var requests atomic.Int32
 			server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				requests.Add(1)
-				require.Equal(t, "/dex/.well-known/openid-configuration", request.URL.Path)
+				assert.Equal(t, "/dex/.well-known/openid-configuration", request.URL.Path)
 				issuer := "https://" + request.Host + "/dex"
 				if testCase.mismatch {
 					issuer += "/other"
 				}
 				writer.Header().Set("Content-Type", "application/json")
-				require.NoError(t, json.NewEncoder(writer).Encode(oidc.DiscoveryDocument{
+				assert.NoError(t, json.NewEncoder(writer).Encode(oidc.DiscoveryDocument{
 					Issuer: issuer, AuthorizationEndpoint: "https://" + request.Host + "/auth",
 					TokenEndpoint: "https://" + request.Host + "/token", JWKSUri: "https://" + request.Host + "/keys",
 				}))
@@ -62,7 +63,10 @@ func TestConfiguredIssuerDiscovery(t *testing.T) {
 }
 
 func TestConfiguredIssuerSyntaxBeforeDiscovery(t *testing.T) {
-	for _, suffix := range []string{"?tenant=one", "?", "#fragment", "#"} {
+	for suffix, refusal := range map[string]string{
+		"?tenant=one": "query component", "?": "query component",
+		"#fragment": "fragment component", "#": "fragment component",
+	} {
 		t.Run(suffix, func(t *testing.T) {
 			var requests atomic.Int32
 			server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -73,7 +77,7 @@ func TestConfiguredIssuerSyntaxBeforeDiscovery(t *testing.T) {
 				IssuerURL: server.URL + "/dex" + suffix, ClientID: "client", ClientSecret: "fixture",
 				HTTPClient: server.Client(), DiscoveryTimeout: time.Second,
 			})
-			require.ErrorContains(t, err, "invalid issuer URL")
+			require.ErrorContains(t, err, refusal)
 			require.Zero(t, requests.Load())
 		})
 	}

@@ -57,7 +57,9 @@ type cachedDocument struct {
 }
 
 // DiscoveryClient fetches and caches OIDC discovery documents.
-// It provides SSRF protection and HTTPS enforcement for all discovered endpoints.
+// It validates the issuer identifier and enforces HTTPS for all discovered
+// endpoints. The issuer is operator configuration, so private addresses are
+// allowed; the default HTTP client refuses redirects to private IP literals.
 //
 // The client is thread-safe and can be used concurrently from multiple goroutines.
 // Cold-cache fetches for the same issuer URL are coalesced via singleflight so
@@ -117,10 +119,10 @@ func NewDiscoveryClient(httpClient *http.Client, cacheTTL time.Duration, logger 
 	}
 }
 
-// WithSkipValidation returns a [DiscoveryOption] that disables SSRF and HTTPS
-// validation on the discovery client. Intended exclusively for unit tests that
-// spin up httptest servers on loopback addresses. Production callers must not
-// use this option — it bypasses all URL security checks.
+// WithSkipValidation returns a [DiscoveryOption] that disables issuer URL
+// validation, including the HTTPS requirement, on the discovery client.
+// Intended exclusively for unit tests that serve discovery over plain HTTP
+// httptest listeners. Production callers must not use this option.
 func WithSkipValidation() DiscoveryOption {
 	return func(c *DiscoveryClient) { c.skipValidation = true }
 }

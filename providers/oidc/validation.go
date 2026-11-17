@@ -40,10 +40,12 @@ func ValidateHTTPSURL(rawURL, context string) error {
 	return nil
 }
 
-// ValidateIssuerURL validates an operator-configured OIDC issuer identifier.
-// OpenID Connect Discovery 1.0 section 3 requires HTTPS without query or
-// fragment components. Private addresses are permitted because the operator
-// chooses the issuer; TLS and exact discovery-issuer matching establish trust.
+// ValidateIssuerURL validates an operator-configured OIDC Issuer Identifier.
+// OpenID Connect Core 1.0 section 1.2 defines it as an HTTPS URL with a host
+// and optional port and path, and no query or fragment components. Private
+// addresses are permitted because the operator chooses the issuer; TLS and
+// exact discovery-issuer matching establish trust. It is not an SSRF check:
+// use ValidateExternalURL for URLs a request or token selects.
 func ValidateIssuerURL(issuerURL string) error {
 	parsedURL, err := url.Parse(issuerURL)
 	if err != nil {
