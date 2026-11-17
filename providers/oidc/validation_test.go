@@ -10,125 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
-
-func TestValidateIssuerURL(t *testing.T) {
-	tests := []struct {
-		name    string
-		url     string
-		wantErr bool
-		errMsg  string
-	}{
-		// Valid cases
-		{
-			name:    "valid HTTPS URL",
-			url:     "https://dex.example.com",
-			wantErr: false,
-		},
-		{
-			name:    "valid HTTPS URL with port",
-			url:     "https://dex.example.com:8443",
-			wantErr: false,
-		},
-		{
-			name:    "valid HTTPS URL with path",
-			url:     "https://dex.example.com/auth",
-			wantErr: false,
-		},
-
-		// SECURITY: HTTP rejection
-		{
-			name:    "reject HTTP (not HTTPS)",
-			url:     "http://dex.example.com",
-			wantErr: true,
-			errMsg:  "must use HTTPS",
-		},
-
-		// SECURITY: Loopback addresses
-		{
-			name:    "reject IPv4 loopback",
-			url:     "https://127.0.0.1",
-			wantErr: true,
-			errMsg:  "loopback",
-		},
-		{
-			name:    "reject IPv6 loopback",
-			url:     "https://[::1]",
-			wantErr: true,
-			errMsg:  "loopback",
-		},
-		{
-			name:    "reject localhost",
-			url:     "https://localhost",
-			wantErr: false, // localhost is hostname, not IP (DNS would resolve)
-		},
-
-		// SECURITY: Private IP ranges
-		{
-			name:    "reject private IP 10.0.0.0/8",
-			url:     "https://10.0.0.1",
-			wantErr: true,
-			errMsg:  "private IP",
-		},
-		{
-			name:    "reject private IP 172.16.0.0/12",
-			url:     "https://172.16.0.1",
-			wantErr: true,
-			errMsg:  "private IP",
-		},
-		{
-			name:    "reject private IP 192.168.0.0/16",
-			url:     "https://192.168.1.1",
-			wantErr: true,
-			errMsg:  "private IP",
-		},
-
-		// SECURITY: Link-local addresses (AWS metadata service)
-		{
-			name:    "reject link-local IPv4 (metadata service)",
-			url:     "https://169.254.169.254",
-			wantErr: true,
-			errMsg:  "link-local",
-		},
-		{
-			name:    "reject link-local IPv6",
-			url:     "https://[fe80::1]",
-			wantErr: true,
-			errMsg:  "link-local",
-		},
-
-		// Malformed URLs
-		{
-			name:    "reject malformed URL",
-			url:     "not a url",
-			wantErr: true,
-			errMsg:  "must use HTTPS",
-		},
-		{
-			name:    "reject empty hostname",
-			url:     "https://",
-			wantErr: true,
-			errMsg:  "must have a hostname",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateIssuerURL(tt.url)
-			if tt.wantErr {
-				if err == nil {
-					t.Errorf("ValidateIssuerURL() expected error for %q, got nil", tt.url)
-					return
-				}
-				if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
-					t.Errorf("ValidateIssuerURL() error = %v, want error containing %q", err, tt.errMsg)
-				}
-			} else if err != nil {
-				t.Errorf("ValidateIssuerURL() unexpected error = %v", err)
-			}
-		})
-	}
-}
 
 func TestValidateConnectorID(t *testing.T) {
 	tests := []struct {
@@ -443,6 +327,40 @@ func makeGroups(n int) []string {
 
 // TestValidateExternalURL tests the generic external URL validation with SSRF protection.
 // This is used for JWKS URIs and other external endpoints.
+func TestValidateIssuerURL(t *testing.T) {
+	for _, issuer := range []string{
+		"https://dex.example.com", "https://dex.example.com:8443/dex",
+		"https://dex.example.com/dex%3Ftenant%23one",
+		"https://localhost:32000/dex", "https://127.0.0.1/dex", "https://[::1]/dex",
+		"https://10.0.0.1/dex", "https://172.16.0.1/dex", "https://192.168.0.1/dex",
+		"https://[fd00::1]/dex", "https://169.254.169.254/dex", "https://[fe80::1]/dex",
+		"https://253.1.2.3/dex", "https://unresolvable.invalid/dex",
+	} {
+		t.Run(issuer, func(t *testing.T) {
+			require.NoError(t, ValidateIssuerURL(issuer))
+		})
+	}
+	for _, testCase := range []struct {
+		issuer string
+		error  string
+	}{
+		{"", "HTTPS"},
+		{"dex.example.com", "HTTPS"},
+		{"http://dex.example.com", "HTTPS"},
+		{"https://", "hostname"},
+		{"https://dex.example.com:invalid", "invalid"},
+		{"https://dex.example.com/dex?tenant=one", "query component"},
+		{"https://dex.example.com/dex?", "query component"},
+		{"https://dex.example.com/dex#tenant", "fragment component"},
+		{"https://dex.example.com/dex#", "fragment component"},
+		{"https://user:password@dex.example.com/dex", "user information"},
+	} {
+		t.Run(testCase.issuer, func(t *testing.T) {
+			require.ErrorContains(t, ValidateIssuerURL(testCase.issuer), testCase.error)
+		})
+	}
+}
+
 func TestValidateExternalURL(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -5,7 +5,8 @@
 //
 // # Security Features
 //
-//   - SSRF protection for issuer URLs (blocks private IPs, localhost, link-local)
+//   - Syntax validation and exact discovery matching for configured issuer identifiers
+//   - Separate SSRF-safe clients for endpoints selected by requests or tokens
 //   - HTTPS enforcement for all endpoints
 //   - Input validation for parameters and claims
 //   - Discovery document caching with TTL

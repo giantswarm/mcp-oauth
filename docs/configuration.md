@@ -5,14 +5,15 @@ This guide covers all configuration options for the mcp-oauth library.
 ## Contents
 
 1. [Server Configuration](#server-configuration)
-2. [CORS Configuration](#cors-configuration)
-3. [Proxy Configuration](#proxy-configuration)
-4. [Interstitial Page Customization](#interstitial-page-customization)
-5. [Token Behavior](#token-behavior)
-6. [Storage Backend](#storage-backend)
-7. [Session & Token Lifecycle Callbacks](#session--token-lifecycle-callbacks)
-8. [Client Registration](#client-registration)
-9. [Scope Configuration](#scope-configuration)
+2. [Dex Issuer](#dex-issuer)
+3. [CORS Configuration](#cors-configuration)
+4. [Proxy Configuration](#proxy-configuration)
+5. [Interstitial Page Customization](#interstitial-page-customization)
+6. [Token Behavior](#token-behavior)
+7. [Storage Backend](#storage-backend)
+8. [Session & Token Lifecycle Callbacks](#session--token-lifecycle-callbacks)
+9. [Client Registration](#client-registration)
+10. [Scope Configuration](#scope-configuration)
 
 ## Server Configuration
 
@@ -73,6 +74,19 @@ config := &server.Config{
     ResourceIdentifier: "https://api.example.com",
 }
 ```
+
+## Dex Issuer
+
+`dex.Config.IssuerURL` identifies the operator-selected OpenID Provider. It must
+use HTTPS with a hostname and may include a port and path. User information,
+query components and fragments are refused, including empty `?` and `#`
+delimiters. Private, loopback and link-local addresses are permitted without a
+separate setting. Validation does not resolve DNS.
+
+Discovery verifies the provider's TLS certificate using the system trust store
+or `dex.Config.RootCAs`, and the returned `issuer` must match `IssuerURL` exactly.
+`oidc.ValidateExternalURL` and the SSRF-safe HTTP clients apply separate network
+restrictions to endpoints selected by a request or token.
 
 ## CORS Configuration
 

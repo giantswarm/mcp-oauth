@@ -57,7 +57,9 @@ type cachedDocument struct {
 }
 
 // DiscoveryClient fetches and caches OIDC discovery documents.
-// It provides SSRF protection and HTTPS enforcement for all discovered endpoints.
+// It validates the issuer identifier and enforces HTTPS for all discovered
+// endpoints. The issuer is operator configuration, so private addresses are
+// allowed; the default HTTP client refuses redirects to private IP literals.
 //
 // The client is thread-safe and can be used concurrently from multiple goroutines.
 // Cold-cache fetches for the same issuer URL are coalesced via singleflight so
@@ -95,7 +97,7 @@ func NewDiscoveryClient(httpClient *http.Client, cacheTTL time.Duration, logger 
 					return fmt.Errorf("stopped after %d redirects", maxRedirects)
 				}
 				// SECURITY: Validate redirect target URL for SSRF protection
-				if err := ValidateIssuerURL(req.URL.String()); err != nil {
+				if err := ValidateExternalURL(req.URL.String(), "redirect target"); err != nil {
 					return fmt.Errorf("invalid redirect target: %w", err)
 				}
 				return nil
@@ -117,10 +119,10 @@ func NewDiscoveryClient(httpClient *http.Client, cacheTTL time.Duration, logger 
 	}
 }
 
-// WithSkipValidation returns a [DiscoveryOption] that disables SSRF and HTTPS
-// validation on the discovery client. Intended exclusively for unit tests that
-// spin up httptest servers on loopback addresses. Production callers must not
-// use this option — it bypasses all URL security checks.
+// WithSkipValidation returns a [DiscoveryOption] that disables issuer URL
+// validation, including the HTTPS requirement, on the discovery client.
+// Intended exclusively for unit tests that serve discovery over plain HTTP
+// httptest listeners. Production callers must not use this option.
 func WithSkipValidation() DiscoveryOption {
 	return func(c *DiscoveryClient) { c.skipValidation = true }
 }
@@ -139,10 +141,10 @@ func NewDiscoveryClientWithOptions(httpClient *http.Client, cacheTTL time.Durati
 }
 
 // Discover fetches the OIDC discovery document for an issuer.
-// It validates the issuer URL for security (SSRF protection) and caches results.
+// It validates the operator-configured issuer identifier and caches results.
 //
 // Security Features:
-//   - SSRF protection via ValidateIssuerURL
+//   - Issuer identifier syntax validation via ValidateIssuerURL
 //   - HTTPS enforcement for issuer and all discovered endpoints
 //   - The document's issuer must be identical to issuerURL (no normalization)
 //   - Document caching with TTL to reduce attack surface
@@ -155,8 +157,7 @@ func NewDiscoveryClientWithOptions(httpClient *http.Client, cacheTTL time.Durati
 //	}
 //	// Use doc.AuthorizationEndpoint, doc.TokenEndpoint, etc.
 func (c *DiscoveryClient) Discover(ctx context.Context, issuerURL string) (*DiscoveryDocument, error) {
-	// SECURITY: Validate issuer URL before making request
-	// Skip validation only in tests (skipValidation is internal and not exported)
+	// Test clients may use HTTP listeners; production issuers require HTTPS.
 	if !c.skipValidation {
 		if err := ValidateIssuerURL(issuerURL); err != nil {
 			return nil, fmt.Errorf("invalid issuer URL: %w", err)
