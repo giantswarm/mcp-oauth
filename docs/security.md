@@ -796,9 +796,13 @@ endpoint, a JWKS or token exchange client with `AllowPrivateIP`) honor
 so a proxy bypasses nothing. When a proxy is set, list an internal IdP that
 the proxy cannot reach in `NO_PROXY`; a host in `NO_PROXY` is dialed directly.
 
-The SSRF-safe clients (the default JWKS and token exchange clients, and the
-host-scoped private-IP clients) ignore the proxy environment and dial the
-address their guard validated.
+The SSRF-safe clients (CIMD metadata, the default JWKS and token exchange
+clients, and the host-scoped private-IP clients) check the resolved addresses
+first. When `HTTPS_PROXY` and `NO_PROXY` name a proxy for the host, they open a
+`CONNECT` tunnel to each checked IP in turn, never to the hostname; otherwise
+they dial those IPs directly. A proxy that only admits domain names refuses a
+`CONNECT` to an IP, so list such hosts in `NO_PROXY` when direct egress exists.
+See the Egress Proxies section of `SECURITY_ARCHITECTURE.md`.
 
 `dex.Config.AllowPrivateIP` is deprecated and has no effect; the Dex
 client reaches private addresses without it.
