@@ -258,6 +258,19 @@ Transport: &http.Transport{
 
 **Implementation**: `server/cimd.go` - `isPrivateIP()`, `createSSRFProtectedTransport()`
 
+The guarded dialers try every validated address in the order DNS returned them and use the first that connects. As `net.Dialer` does, each attempt gets the time left divided by the addresses left, with a two-second floor, so an address that drops packets does not use up the whole dial timeout.
+
+#### Egress Proxies
+
+The guarded dialers (CIMD metadata, and the `providers/oidc` SSRF-safe and host-scoped clients) honor `HTTPS_PROXY` and `NO_PROXY`. A proxied connection is a `CONNECT` tunnel to the IP the guard validated, never to the hostname, so the proxy does not resolve the host again and the connection-time check still covers the address reached. TLS through the tunnel verifies the original hostname.
+
+- The host is still resolved locally, so the server needs DNS for the hosts it fetches from.
+- When `HTTPS_PROXY` is set, these fetches go through the proxy even if a direct connection would work. A proxy that only admits listed domain names refuses a `CONNECT` to an IP, and the fetch fails closed; list such hosts in `NO_PROXY` to reach them directly.
+- Only `http://` and `https://` proxies are supported. An `https://` proxy is verified against the system trust store, not a client's custom CA pool. The proxy address itself is operator configuration and is not checked.
+- Each validated address is its own `CONNECT`, tried in turn under the same time split as a direct dial. Reaching the proxy and its answer to `CONNECT` are bounded by the attempt's share of the dialer timeout.
+
+**Implementation**: `internal/proxytunnel`
+
 ### DoS Protection (Multi-Level)
 
 #### Rate Limiting (Per-Domain)

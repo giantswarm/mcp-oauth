@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -22,6 +21,7 @@ import (
 	"code.dny.dev/ssrf"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
+	"github.com/giantswarm/mcp-oauth/internal/proxytunnel"
 	"github.com/giantswarm/mcp-oauth/security"
 )
 
@@ -179,7 +179,9 @@ func validateAndSanitizeMetadataURL(clientID string, allowPrivateIP bool, allowe
 //
 // allowPrivateIP lifts the guard for every host, allowedPrivateHosts for the listed
 // hostnames only. rootCAs, when non-nil, replaces the system pool for TLS verification.
-func createSSRFProtectedTransport(allowPrivateIP bool, allowedPrivateHosts []string, rootCAs *x509.CertPool) *http.Transport {
+// When proxyFor names a proxy for the host, the validated addresses are reached
+// through a CONNECT tunnel to each IP, so the proxy never resolves the host again.
+func createSSRFProtectedTransport(allowPrivateIP bool, allowedPrivateHosts []string, rootCAs *x509.CertPool, proxyFor proxytunnel.Selector) *http.Transport {
 	dialer := &net.Dialer{
 		Timeout:   5 * time.Second,
 		KeepAlive: 30 * time.Second,
@@ -202,7 +204,11 @@ func createSSRFProtectedTransport(allowPrivateIP bool, allowedPrivateHosts []str
 					return nil, err
 				}
 			}
-			return dialFirstReachable(dialCtx, dialer, network, host, port, ips)
+			proxyURL, err := proxyFor(host, port)
+			if err != nil {
+				return nil, fmt.Errorf("failed to select a proxy for %s: %w", host, err)
+			}
+			return dialFirstReachable(dialCtx, dialer, network, host, port, ips, proxyURL)
 		},
 	}
 	if rootCAs != nil {
@@ -224,18 +230,19 @@ func rejectPrivateIPs(host string, ips []net.IPAddr) error {
 	return nil
 }
 
-// dialFirstReachable dials the already validated addresses in order and returns the first
-// connection, so the dial never resolves host again.
-func dialFirstReachable(ctx context.Context, dialer *net.Dialer, network, host, port string, ips []net.IPAddr) (net.Conn, error) {
-	dialErrs := make([]error, 0, len(ips))
+// dialFirstReachable tries the already validated addresses in order, through
+// proxyURL when it is non-nil, and returns the first connection, so the dial
+// never resolves host again.
+func dialFirstReachable(ctx context.Context, dialer *net.Dialer, network, host, port string, ips []net.IPAddr, proxyURL *url.URL) (net.Conn, error) {
+	addrs := make([]net.IP, 0, len(ips))
 	for _, ipAddr := range ips {
-		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ipAddr.IP.String(), port))
-		if err == nil {
-			return conn, nil
-		}
-		dialErrs = append(dialErrs, err)
+		addrs = append(addrs, ipAddr.IP)
 	}
-	return nil, fmt.Errorf("failed to connect to %s: %w", host, errors.Join(dialErrs...))
+	conn, err := proxytunnel.DialEach(ctx, dialer, network, proxyURL, addrs, port)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to %s: %w", host, err)
+	}
+	return conn, nil
 }
 
 // fetchClientMetadata fetches and validates OAuth client metadata from an HTTPS URL
@@ -569,6 +576,7 @@ func (s *Server) createMetadataHTTPClient(timeout time.Duration) *http.Client {
 			s.Config.AllowPrivateIPClientMetadata,
 			s.Config.AllowPrivateIPClientMetadataHosts,
 			s.Config.ClientMetadataRootCAs,
+			proxytunnel.FromEnvironment(),
 		),
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse

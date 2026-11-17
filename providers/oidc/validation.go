@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/giantswarm/mcp-oauth/internal/proxytunnel"
 )
 
 // connectorIDRegex is a compiled regex for validating connector IDs.
@@ -263,6 +265,8 @@ func isPrivateOrRestrictedIP(ip net.IP) bool {
 //   - Validates each resolved IP before allowing connection
 //   - Blocks loopback, private, and link-local addresses
 //   - Prevents access to cloud metadata services (169.254.169.254)
+//   - Honors HTTPS_PROXY and NO_PROXY: a proxied connection is a CONNECT
+//     tunnel to the validated IP, so the proxy never resolves the host again
 //
 // Example:
 //
@@ -271,6 +275,10 @@ func isPrivateOrRestrictedIP(ip net.IP) bool {
 //	}
 //	client := &http.Client{Transport: transport}
 func SSRFSafeDialContext(dialer *net.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return ssrfSafeDialContext(dialer, proxytunnel.FromEnvironment())
+}
+
+func ssrfSafeDialContext(dialer *net.Dialer, proxyFor proxytunnel.Selector) dialContextFunc {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		// Extract host from address (addr is "host:port")
 		host, port, err := net.SplitHostPort(addr)
@@ -296,11 +304,23 @@ func SSRFSafeDialContext(dialer *net.Dialer) func(ctx context.Context, network, 
 			}
 		}
 
-		// All IPs are safe, connect to the first one
-		// We use the first IP since we've validated all are safe
-		safeAddr := net.JoinHostPort(ips[0].String(), port)
-		return dialer.DialContext(ctx, network, safeAddr)
+		return dialValidated(ctx, dialer, network, host, port, ips, proxyFor)
 	}
+}
+
+// dialValidated tries the IPs the guard already accepted in order, through a
+// CONNECT tunnel per IP when the environment names a proxy for host, so
+// neither the dial nor the proxy resolves host again.
+func dialValidated(ctx context.Context, dialer *net.Dialer, network, host, port string, ips []net.IP, proxyFor proxytunnel.Selector) (net.Conn, error) {
+	proxyURL, err := proxyFor(host, port)
+	if err != nil {
+		return nil, fmt.Errorf("failed to select a proxy for %q: %w", host, err)
+	}
+	conn, err := proxytunnel.DialEach(ctx, dialer, network, proxyURL, ips, port)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to %q: %w", host, err)
+	}
+	return conn, nil
 }
 
 // dialContextFunc is the DialContext signature shared by the package's HTTP
@@ -315,10 +335,11 @@ type dialContextFunc = func(ctx context.Context, network, addr string) (net.Conn
 //   - pinHost refuses a redirect to another host. Set it whenever dialFor
 //     cannot filter private IPs for every host, so a redirect cannot pivot the
 //     fetch to an internal target the dialer would have to allow.
-//   - proxy honors the HTTP_PROXY, HTTPS_PROXY and NO_PROXY variables. Set it
-//     only where dialFor guards nothing: a proxied request dials the proxy, so
-//     a guard would inspect the proxy address instead of the target and the
-//     protection would be silently lost.
+//   - proxy makes the transport honor the HTTP_PROXY, HTTPS_PROXY and NO_PROXY
+//     variables. Set it only where dialFor guards nothing: a transport-level
+//     proxy dials the proxy, so a guard would inspect the proxy address instead
+//     of the target. The guarded dialers reach the proxy themselves, through a
+//     CONNECT tunnel to the IP they validated.
 //   - rootCAs, when non-nil, is the explicit CA pool the client verifies
 //     against (for an internal-CA IdP); nil keeps the default (system pool)
 //     verification.
@@ -391,7 +412,7 @@ func defaultDialContext(dialer *net.Dialer) dialContextFunc { return dialer.Dial
 func NewSSRFSafeHTTPClient(timeout time.Duration, rootCAs *x509.CertPool) *http.Client {
 	return newHTTPClient(timeout, SSRFSafeDialContext,
 		false, // pinHost: the dial guard already blocks redirects to private IPs
-		false, // proxy: a proxied request would bypass the dial guard
+		false, // proxy: the dial guard tunnels through the proxy itself
 		rootCAs)
 }
 
@@ -444,7 +465,13 @@ func guardSSRF(host string, ips []net.IP) error {
 // HostScopedPrivateIPDialContext creates a DialContext that allows private IP
 // resolution only for the explicitly listed hostnames; all other hosts are
 // subject to the normal SSRF/DNS-rebinding guard.
+// Like SSRFSafeDialContext, it honors HTTPS_PROXY and NO_PROXY through a
+// CONNECT tunnel to the validated IP.
 func HostScopedPrivateIPDialContext(dialer *net.Dialer, allowedHosts []string) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return hostScopedPrivateIPDialContext(dialer, allowedHosts, proxytunnel.FromEnvironment())
+}
+
+func hostScopedPrivateIPDialContext(dialer *net.Dialer, allowedHosts []string, proxyFor proxytunnel.Selector) dialContextFunc {
 	allowed := make(map[string]struct{}, len(allowedHosts))
 	for _, h := range allowedHosts {
 		allowed[h] = struct{}{}
@@ -470,8 +497,7 @@ func HostScopedPrivateIPDialContext(dialer *net.Dialer, allowedHosts []string) f
 			}
 		}
 
-		safeAddr := net.JoinHostPort(ips[0].String(), port)
-		return dialer.DialContext(ctx, network, safeAddr)
+		return dialValidated(ctx, dialer, network, host, port, ips, proxyFor)
 	}
 }
 
@@ -489,7 +515,7 @@ func NewHostScopedPrivateIPHTTPClient(allowedHosts []string, timeout time.Durati
 	}
 	return newHTTPClient(timeout, dialFor,
 		true,  // pinHost: private IPs are allowed for the listed hosts
-		false, // proxy: a proxied request would bypass the dial guard
+		false, // proxy: the dial guard tunnels through the proxy itself
 		rootCAs)
 }
 
