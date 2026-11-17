@@ -607,9 +607,10 @@ const (
 // metadataCacheLifetime returns how long a client metadata response received
 // at receivedAt may be reused, following RFC 9111 as
 // draft-ietf-oauth-client-id-metadata-document-00 section 4.4 recommends: its
-// freshness lifetime minus its Age, capped at maxClientMetadataCacheLifetime,
-// or defaultLifetime when it states none. Zero means it must not be stored.
-// The cache belongs to this server alone, so s-maxage and private do not apply.
+// freshness lifetime minus its initial age, capped at
+// maxClientMetadataCacheLifetime, or defaultLifetime when it states none. Zero
+// means it must not be stored. The cache belongs to this server alone, so
+// s-maxage and private do not apply.
 func metadataCacheLifetime(header http.Header, receivedAt time.Time, defaultLifetime time.Duration) time.Duration {
 	lifetime, stated, storable := statedFreshnessLifetime(header, receivedAt)
 	switch {
@@ -618,9 +619,7 @@ func metadataCacheLifetime(header http.Header, receivedAt time.Time, defaultLife
 	case !stated:
 		return defaultLifetime
 	}
-	if age, valid := parseDeltaSeconds(header.Get("Age")); valid {
-		lifetime -= age
-	}
+	lifetime -= initialAge(header, receivedAt)
 	if lifetime <= 0 {
 		return 0
 	}
@@ -639,8 +638,9 @@ func statedFreshnessLifetime(header http.Header, receivedAt time.Time) (lifetime
 	return expiresFreshnessLifetime(header, receivedAt)
 }
 
-// cacheControlFreshnessLifetime applies no-store, no-cache and the most
-// restrictive max-age of the Cache-Control header.
+// cacheControlFreshnessLifetime applies no-store, no-cache and max-age of the
+// Cache-Control header. A repeated max-age makes the response stale, as RFC
+// 9111 section 4.2.1 allows.
 func cacheControlFreshnessLifetime(header http.Header) (lifetime time.Duration, stated, storable bool) {
 	for _, line := range header.Values("Cache-Control") {
 		for _, directive := range strings.Split(line, ",") {
@@ -650,21 +650,18 @@ func cacheControlFreshnessLifetime(header http.Header) (lifetime time.Duration, 
 				return 0, true, false
 			case "max-age":
 				maxAge, valid := parseDeltaSeconds(value)
-				if !valid {
+				if !valid || stated {
 					return 0, true, false
 				}
-				if !stated || maxAge < lifetime {
-					lifetime = maxAge
-				}
-				stated = true
+				lifetime, stated = maxAge, true
 			}
 		}
 	}
 	return lifetime, stated, true
 }
 
-// expiresFreshnessLifetime measures Expires from Date, or from receivedAt when
-// Date is absent or invalid.
+// expiresFreshnessLifetime measures Expires from the response date. An invalid
+// Expires means already expired (RFC 9111 section 5.3).
 func expiresFreshnessLifetime(header http.Header, receivedAt time.Time) (lifetime time.Duration, stated, storable bool) {
 	expires := header.Values("Expires")
 	if len(expires) == 0 {
@@ -674,11 +671,27 @@ func expiresFreshnessLifetime(header http.Header, receivedAt time.Time) (lifetim
 	if err != nil {
 		return 0, true, false
 	}
-	date := receivedAt
-	if parsed, err := http.ParseTime(header.Get("Date")); err == nil {
-		date = parsed
+	return expiresAt.Sub(responseDate(header, receivedAt)), true, true
+}
+
+// initialAge is the age of a response when it was received: the larger of its
+// Age and the time since its Date (corrected_initial_age, RFC 9111 section
+// 4.2.3, with request and response time taken as equal).
+func initialAge(header http.Header, receivedAt time.Time) time.Duration {
+	age := max(receivedAt.Sub(responseDate(header, receivedAt)), 0)
+	if stated, valid := parseDeltaSeconds(header.Get("Age")); valid {
+		age = max(age, stated)
 	}
-	return expiresAt.Sub(date), true, true
+	return age
+}
+
+// responseDate is the Date of a response, or receivedAt when Date is absent
+// or invalid.
+func responseDate(header http.Header, receivedAt time.Time) time.Time {
+	if date, err := http.ParseTime(header.Get("Date")); err == nil {
+		return date
+	}
+	return receivedAt
 }
 
 // parseDeltaSeconds parses an RFC 9111 delta-seconds value, accepting the

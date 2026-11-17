@@ -174,7 +174,7 @@ func New(
 		flowStore:                  flowStore,
 		Config:                     config,
 		Logger:                     logger,
-		metadataCache:              newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
+		metadataCache:              newClientMetadataCache(1000),
 		metadataCacheCleanupCtx:    cleanupCtx,
 		metadataCacheCleanupCancel: cleanupCancel,
 	}

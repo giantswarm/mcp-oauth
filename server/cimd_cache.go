@@ -18,7 +18,6 @@ type clientMetadataCache struct {
 	mu         sync.RWMutex
 	entries    map[string]*cachedMetadataEntry
 	maxEntries int
-	defaultTTL time.Duration
 
 	// Metrics for monitoring cache performance
 	metrics cacheMetrics
@@ -53,17 +52,13 @@ const DefaultNegativeCacheTTL = 5 * time.Minute
 // draft-ietf-oauth-client-id-metadata-document-00 section 4.4 requires.
 const DefaultMaxNegativeEntries = 500
 
-func newClientMetadataCache(defaultTTL time.Duration, maxEntries int) *clientMetadataCache {
+func newClientMetadataCache(maxEntries int) *clientMetadataCache {
 	if maxEntries <= 0 {
 		maxEntries = 1000
-	}
-	if defaultTTL <= 0 {
-		defaultTTL = 5 * time.Minute
 	}
 	return &clientMetadataCache{
 		entries:    make(map[string]*cachedMetadataEntry),
 		maxEntries: maxEntries,
-		defaultTTL: defaultTTL,
 	}
 }
 
@@ -89,18 +84,18 @@ func (c *clientMetadataCache) Get(clientID string) (*storage.Client, bool) {
 	return entry.client, true
 }
 
-// Set stores metadata in cache with TTL
+// Set stores metadata for ttl; a ttl of zero or less stores nothing.
 func (c *clientMetadataCache) Set(clientID string, metadata *ClientMetadata, client *storage.Client, ttl time.Duration) {
+	if ttl <= 0 {
+		return
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	// Apply LRU eviction if cache is full
 	if len(c.entries) >= c.maxEntries {
 		c.evictOldest()
-	}
-
-	if ttl <= 0 {
-		ttl = c.defaultTTL
 	}
 
 	now := time.Now()
@@ -296,16 +291,14 @@ func (s *Server) handleMetadataFetchFailure(ctx context.Context, clientID string
 }
 
 // cacheAndReturnClient converts metadata to a client and caches it for
-// cacheLifetime; a zero cacheLifetime leaves it uncached.
+// cacheLifetime.
 func (s *Server) cacheAndReturnClient(clientID string, metadata *ClientMetadata, cacheLifetime time.Duration) *storage.Client {
 	s.metadataCache.mu.Lock()
 	s.metadataCache.metrics.fetches++
 	s.metadataCache.mu.Unlock()
 
 	client := metadataToClient(metadata)
-	if cacheLifetime > 0 {
-		s.metadataCache.Set(clientID, metadata, client, cacheLifetime)
-	}
+	s.metadataCache.Set(clientID, metadata, client, cacheLifetime)
 
 	return client
 }

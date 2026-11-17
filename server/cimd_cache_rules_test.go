@@ -1,12 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"crypto/x509"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -31,7 +33,7 @@ func TestMetadataCacheLifetime(t *testing.T) {
 		{name: "quoted max-age", header: http.Header{"Cache-Control": {`max-age="600"`}}, expected: 10 * time.Minute},
 		{name: "max-age above cap", header: http.Header{"Cache-Control": {"max-age=7200"}}, expected: time.Hour},
 		{name: "max-age overflowing delta-seconds", header: http.Header{"Cache-Control": {"max-age=99999999999999999999"}}, expected: time.Hour},
-		{name: "most restrictive max-age", header: http.Header{"Cache-Control": {"max-age=600", "max-age=60"}}, expected: time.Minute},
+		{name: "repeated max-age", header: http.Header{"Cache-Control": {"max-age=600", "max-age=60"}}, expected: 0},
 		{name: "max-age zero", header: http.Header{"Cache-Control": {"max-age=0"}}, expected: 0},
 		{name: "negative max-age", header: http.Header{"Cache-Control": {"max-age=-100"}}, expected: 0},
 		{name: "invalid max-age", header: http.Header{"Cache-Control": {"max-age=abc"}}, expected: 0},
@@ -44,8 +46,23 @@ func TestMetadataCacheLifetime(t *testing.T) {
 		{name: "age beyond lifetime", header: http.Header{"Cache-Control": {"max-age=600"}, "Age": {"600"}}, expected: 0},
 		{name: "invalid age ignored", header: http.Header{"Cache-Control": {"max-age=600"}, "Age": {"soon"}}, expected: 10 * time.Minute},
 		{
+			name:     "time since date subtracted",
+			header:   http.Header{"Cache-Control": {"max-age=600"}, "Date": {receivedAt.Add(-9 * time.Minute).Format(http.TimeFormat)}},
+			expected: time.Minute,
+		},
+		{
+			name:     "larger of age and time since date subtracted",
+			header:   http.Header{"Cache-Control": {"max-age=600"}, "Date": {receivedAt.Add(-time.Minute).Format(http.TimeFormat)}, "Age": {"300"}},
+			expected: 5 * time.Minute,
+		},
+		{
+			name:     "date in the future ignored",
+			header:   http.Header{"Cache-Control": {"max-age=600"}, "Date": {receivedAt.Add(time.Hour).Format(http.TimeFormat)}},
+			expected: 10 * time.Minute,
+		},
+		{
 			name:     "expires relative to date",
-			header:   http.Header{"Date": {"Mon, 16 Nov 2026 12:00:00 GMT"}, "Expires": {"Mon, 16 Nov 2026 12:02:00 GMT"}},
+			header:   http.Header{"Date": {receivedAt.Add(-time.Minute).Format(http.TimeFormat)}, "Expires": {receivedAt.Add(2 * time.Minute).Format(http.TimeFormat)}},
 			expected: 2 * time.Minute,
 		},
 		{
@@ -60,6 +77,11 @@ func TestMetadataCacheLifetime(t *testing.T) {
 		},
 		{name: "expires in the past", header: http.Header{"Expires": {receivedAt.Add(-time.Minute).Format(http.TimeFormat)}}, expected: 0},
 		{name: "invalid expires", header: http.Header{"Expires": {"0"}}, expected: 0},
+		{
+			name:     "expires reached before receipt",
+			header:   http.Header{"Date": {receivedAt.Add(-time.Hour).Format(http.TimeFormat)}, "Expires": {receivedAt.Add(-time.Minute).Format(http.TimeFormat)}},
+			expected: 0,
+		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			require.Equal(t, testCase.expected, metadataCacheLifetime(testCase.header, receivedAt, defaultLifetime))
@@ -82,12 +104,18 @@ type metadataFixture struct {
 	clientID  string
 	requests  atomic.Int64
 	server    *Server
+	audit     *bytes.Buffer
 	responses []metadataResponse
+}
+
+// auditEvents counts the audit events of eventType logged so far.
+func (fixture *metadataFixture) auditEvents(eventType string) int {
+	return strings.Count(fixture.audit.String(), `"event_type":"`+eventType+`"`)
 }
 
 func newMetadataFixture(t *testing.T, rateLimiter *security.RateLimiter, responses ...metadataResponse) *metadataFixture {
 	t.Helper()
-	fixture := &metadataFixture{responses: responses}
+	fixture := &metadataFixture{audit: &bytes.Buffer{}, responses: responses}
 	transport := newTLSServerWithFreshCert(t, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		number := fixture.requests.Add(1)
 		response := fixture.responses[min(int(number), len(fixture.responses))-1]
@@ -126,8 +154,8 @@ func newMetadataFixture(t *testing.T, rateLimiter *security.RateLimiter, respons
 		Config:                   config,
 		Logger:                   slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Instrumentation:          testInstrumentation(t),
-		Auditor:                  testAuditor(),
-		metadataCache:            newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
+		Auditor:                  security.NewAuditor(slog.New(slog.NewJSONHandler(fixture.audit, nil)), true),
+		metadataCache:            newClientMetadataCache(1000),
 		metadataFetchRateLimiter: rateLimiter,
 	}
 	return fixture
@@ -163,6 +191,7 @@ func TestGetOrFetchClientHonoursMetadataCacheRules(t *testing.T) {
 			client, err := fixture.server.getOrFetchClient(t.Context(), fixture.clientID)
 			if testCase.firstFails {
 				require.Error(t, err)
+				require.Equal(t, 1, fixture.auditEvents("client_metadata_fetch_failed"))
 			} else {
 				require.NoError(t, err)
 				require.Equal(t, []string{redirectURIForRequest(1)}, client.RedirectURIs)
@@ -187,4 +216,17 @@ func TestGetOrFetchClientRateLimitsUncachedMetadata(t *testing.T) {
 	_, err = fixture.server.getOrFetchClient(t.Context(), fixture.clientID)
 	require.ErrorContains(t, err, "rate limit exceeded")
 	require.Equal(t, int64(1), fixture.requests.Load())
+	require.Equal(t, 1, fixture.auditEvents("client_metadata_fetch_failed"))
+	require.Equal(t, 1, fixture.auditEvents("client_metadata_rate_limited"))
+}
+
+func TestClientMetadataCacheSetWithoutLifetimeStoresNothing(t *testing.T) {
+	cache := newClientMetadataCache(10)
+	metadata := &ClientMetadata{ClientID: "https://example.com/client", RedirectURIs: []string{"https://app.example.com/callback"}}
+
+	cache.Set(metadata.ClientID, metadata, metadataToClient(metadata), 0)
+
+	_, found := cache.Get(metadata.ClientID)
+	require.False(t, found)
+	require.Zero(t, cache.Size())
 }

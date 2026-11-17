@@ -82,8 +82,9 @@ func main() {
 			// Protects against slow or unresponsive metadata endpoints.
 			ClientMetadataFetchTimeout: 10 * time.Second,
 
-			// How long to cache fetched client metadata (default: 5 minutes)
-			// HTTP Cache-Control headers may override this value.
+			// How long to cache a metadata document whose response states no
+			// freshness lifetime (default: 5 minutes). Cache-Control and Expires
+			// take precedence; failed fetches are never cached.
 			// Cached entries reduce latency and external requests.
 			ClientMetadataCacheTTL: 5 * time.Minute,
 
@@ -93,7 +94,6 @@ func main() {
 			// - DNS rebinding protection (validates IPs at connection time)
 			// - PKCE required for all CIMD clients (public clients)
 			// - Rate limiting per domain
-			// - Negative caching for failed fetches
 		},
 		logger,
 		oauth.WithAuditor(auditor),

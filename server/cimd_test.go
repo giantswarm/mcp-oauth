@@ -440,7 +440,7 @@ func TestFetchClientMetadata(t *testing.T) {
 
 // TestMetadataCache tests the client metadata cache
 func TestMetadataCache(t *testing.T) {
-	cache := newClientMetadataCache(5*time.Minute, 100)
+	cache := newClientMetadataCache(100)
 
 	metadata := &ClientMetadata{
 		ClientID:     "https://example.com/client",
@@ -474,7 +474,7 @@ func TestMetadataCache(t *testing.T) {
 	}
 
 	// Test LRU eviction
-	smallCache := newClientMetadataCache(5*time.Minute, 2) // Max 2 entries
+	smallCache := newClientMetadataCache(2) // Max 2 entries
 	smallCache.Set("client1", metadata, client, 5*time.Minute)
 	smallCache.Set("client2", metadata, client, 5*time.Minute)
 	if smallCache.Size() != 2 {
@@ -612,7 +612,7 @@ func TestMetadataFetchRateLimiting(t *testing.T) {
 	srv := &Server{
 		Config:          config,
 		Logger:          logger,
-		metadataCache:   newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
+		metadataCache:   newClientMetadataCache(1000),
 		Instrumentation: testInstrumentation(t),
 		Auditor:         testAuditor(),
 	}
@@ -780,7 +780,7 @@ func TestGetOrFetchClient_NonURLClientID(t *testing.T) {
 		Config:          config,
 		Logger:          logger,
 		clientStore:     clientStore,
-		metadataCache:   newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
+		metadataCache:   newClientMetadataCache(1000),
 		Instrumentation: testInstrumentation(t),
 		Auditor:         testAuditor(),
 	}
@@ -809,7 +809,7 @@ func TestGetOrFetchClient_URLClientID_CIMDDisabled(t *testing.T) {
 	srv := &Server{
 		Config:          config,
 		Logger:          logger,
-		metadataCache:   newClientMetadataCache(5*time.Minute, 1000),
+		metadataCache:   newClientMetadataCache(1000),
 		Instrumentation: testInstrumentation(t),
 		Auditor:         testAuditor(),
 	}
@@ -836,7 +836,7 @@ func TestGetOrFetchClient_URLClientID_CacheHit(t *testing.T) {
 	srv := &Server{
 		Config:          config,
 		Logger:          logger,
-		metadataCache:   newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
+		metadataCache:   newClientMetadataCache(1000),
 		Instrumentation: testInstrumentation(t),
 		Auditor:         testAuditor(),
 	}
@@ -971,7 +971,7 @@ func TestGetOrFetchClient_SingleflightHonoursCallerContextCancel(t *testing.T) {
 	srv := &Server{
 		Config:          config,
 		Logger:          logger,
-		metadataCache:   newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
+		metadataCache:   newClientMetadataCache(1000),
 		Instrumentation: testInstrumentation(t),
 		Auditor:         testAuditor(),
 	}

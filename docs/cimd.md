@@ -326,11 +326,13 @@ recommends, and never caches error responses or invalid documents.
 | Response | Cached for |
 |----------|-----------|
 | `Cache-Control: no-store` or `no-cache` | Not cached |
-| `Cache-Control: max-age=N` | `min(N - Age, 1 hour)`; not cached when zero or less |
-| `Expires` (without `max-age`) | `min(Expires - Date - Age, 1 hour)`; not cached when in the past or invalid |
+| `Cache-Control: max-age=N` | `min(N - age, 1 hour)`; not cached when zero or less, invalid or repeated |
+| `Expires` (without `max-age`) | `min(Expires - Date - age, 1 hour)`; not cached when in the past or invalid |
 | No freshness information | `ClientMetadataCacheTTL` (default: 5 min) |
 | Error status, fetch failure, invalid document | Not cached |
 
+The age is the larger of the `Age` header and the time since `Date`
+([RFC 9111 section 4.2.3](https://www.rfc-editor.org/rfc/rfc9111.html#section-4.2.3)).
 The cache is private to the authorization server, so `s-maxage` and `private`
 do not change it.
 
