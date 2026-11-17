@@ -102,7 +102,8 @@ type JWKSClientOptions struct {
 	// Logger is the logger for debug/info messages (nil uses default logger).
 	Logger *slog.Logger
 
-	// AllowPrivateIP allows JWKS endpoints to resolve to private IP addresses.
+	// AllowPrivateIP allows JWKS endpoints to resolve to private IP addresses
+	// and makes the client honor HTTP_PROXY, HTTPS_PROXY and NO_PROXY.
 	// WARNING: Reduces SSRF protection. Only enable for internal/VPN deployments
 	// where the IdP legitimately runs on private networks.
 	AllowPrivateIP bool
@@ -169,7 +170,7 @@ func NewJWKSClientWithOptions(opts JWKSClientOptions) *JWKSClient {
 	if httpClient == nil {
 		switch {
 		case opts.AllowPrivateIP:
-			httpClient = NewPrivateIPAllowedHTTPClient(DefaultHTTPTimeout, opts.RootCAs)
+			httpClient = NewDefaultDialHTTPClient(DefaultHTTPTimeout, opts.RootCAs)
 		case len(opts.AllowPrivateIPHosts) > 0:
 			httpClient = NewHostScopedPrivateIPHTTPClient(opts.AllowPrivateIPHosts, DefaultHTTPTimeout, opts.RootCAs)
 		default:
