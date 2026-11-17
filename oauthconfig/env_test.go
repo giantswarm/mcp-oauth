@@ -63,6 +63,9 @@ func setRequired(t *testing.T, issuer string) {
 		"OAUTH_TRUSTED_AUDIENCES",
 		"OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS",
 		"OAUTH_TRUSTED_REDIRECT_SCHEMES",
+		"OAUTH_ALLOW_PRIVATE_IP_CLIENT_METADATA_HOSTS",
+		"OAUTH_ALLOW_PRIVATE_IP_REDIRECT_URI_HOSTS",
+		"OAUTH_ALLOW_PRIVATE_IP_JWKS_HOSTS",
 	} {
 		t.Setenv(v, "")
 	}
@@ -578,4 +581,18 @@ func TestFromEnv_ConsentInvalid(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+func TestFromEnv_AllowPrivateIPHosts(t *testing.T) {
+	setRequired(t, "https://auth.example.com")
+	t.Setenv("OAUTH_ALLOW_PRIVATE_IP_CLIENT_METADATA_HOSTS", "gateway.internal, agents.internal")
+	t.Setenv("OAUTH_ALLOW_PRIVATE_IP_REDIRECT_URI_HOSTS", "portal.internal")
+	t.Setenv("OAUTH_ALLOW_PRIVATE_IP_JWKS_HOSTS", "dex.internal")
+
+	cfg, err := oauthconfig.FromEnv()
+
+	require.NoError(t, err)
+	require.Equal(t, []string{"gateway.internal", "agents.internal"}, cfg.AllowPrivateIPClientMetadataHosts)
+	require.Equal(t, []string{"portal.internal"}, cfg.AllowPrivateIPRedirectURIHosts)
+	require.Equal(t, []string{"dex.internal"}, cfg.AllowPrivateIPJWKSHosts)
 }

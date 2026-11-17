@@ -151,18 +151,19 @@ func (s *Server) findMatchingTrustedAudience(tokenAudiences []string) string {
 // getJWKSClient returns or creates a JWKS client for JWT validation.
 // Thread-safe: uses sync.Once to ensure initialization happens only once.
 //
-// The client respects the AllowPrivateIPJWKS configuration option:
-//   - When false (default): SSRF protection is enabled, blocking private IPs
-//   - When true: Private IPs are allowed for internal IdP deployments
+// AllowPrivateIPJWKSHosts lets the listed hosts resolve to private addresses
+// and keeps the SSRF guard for every other host; the deprecated
+// AllowPrivateIPJWKS lifts it for every host.
 func (s *Server) getJWKSClient() *oidc.JWKSClient {
 	s.jwksClientOnce.Do(func() {
-		// AllowPrivateIPJWKS selects the dial posture; JWKSRootCAs pins the
+		// The private-IP settings select the dial posture; JWKSRootCAs pins the
 		// trust anchor and applies on either one (nil = system pool). An
 		// internal-CA Dex is trusted without relaxing the SSRF guard.
 		s.jwksClient = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
-			Logger:         s.Logger,
-			AllowPrivateIP: s.Config.AllowPrivateIPJWKS,
-			RootCAs:        s.Config.JWKSRootCAs,
+			Logger:              s.Logger,
+			AllowPrivateIP:      s.Config.AllowPrivateIPJWKS,
+			AllowPrivateIPHosts: s.Config.AllowPrivateIPJWKSHosts,
+			RootCAs:             s.Config.JWKSRootCAs,
 		})
 	})
 	return s.jwksClient

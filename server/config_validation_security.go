@@ -234,9 +234,8 @@ func logCoreSecurityWarnings(config *Config, logger *slog.Logger) {
 	if config.AllowPrivateIPClientMetadata {
 		logger.Warn("SECURITY WARNING: AllowPrivateIPClientMetadata is enabled",
 			"risk", "CIMD fetches to private-IP / loopback ranges allowed — SSRF into cluster possible",
-			"recommendation", "Unset for production deployments",
-			"cwe", "CWE-918",
-			"note", "Development only")
+			"recommendation", "List the hosts in AllowPrivateIPClientMetadataHosts instead",
+			"cwe", "CWE-918")
 	}
 	if len(config.AllowPrivateIPClientMetadataHosts) > 0 {
 		logger.Warn("SECURITY WARNING: AllowPrivateIPClientMetadataHosts is set",
@@ -248,7 +247,14 @@ func logCoreSecurityWarnings(config *Config, logger *slog.Logger) {
 	if config.AllowPrivateIPJWKS {
 		logger.Warn("SECURITY WARNING: AllowPrivateIPJWKS is enabled",
 			"risk", "JWKS endpoints can resolve to private/internal IP addresses — SSRF possible",
-			"recommendation", "Unset for production deployments; use only for private IdP deployments (e.g., internal Dex)",
+			"recommendation", "List the IdP's JWKS host in AllowPrivateIPJWKSHosts instead",
+			"cwe", "CWE-918")
+	}
+	if len(config.AllowPrivateIPJWKSHosts) > 0 {
+		logger.Warn("SECURITY WARNING: AllowPrivateIPJWKSHosts is set",
+			"hosts", config.AllowPrivateIPJWKSHosts,
+			"risk", "JWKS fetches from these hosts may reach private-IP / loopback ranges",
+			"recommendation", "List only the JWKS hosts of trusted identity providers",
 			"cwe", "CWE-918")
 	}
 }
@@ -292,16 +298,14 @@ func logRedirectURISecurityStatus(config *Config, logger *slog.Logger) {
 
 	if config.AllowPrivateIPRedirectURIs {
 		logger.Warn("SECURITY WARNING: Private IP redirect URIs are ALLOWED",
-			"risk", "SSRF attacks to internal networks (10.x, 172.16.x, 192.168.x)",
-			"recommendation", "Only enable for internal/VPN deployments with proper network controls",
-			"learn_more", "https://owasp.org/www-community/attacks/Server_Side_Request_Forgery")
+			"risk", "authorization codes may be sent to private addresses (10.x, 172.16.x, 192.168.x) on any host",
+			"recommendation", "List the hosts in AllowPrivateIPRedirectURIHosts instead")
 	}
 	if len(config.AllowPrivateIPRedirectURIHosts) > 0 {
 		logger.Warn("SECURITY WARNING: AllowPrivateIPRedirectURIHosts is set",
 			"hosts", config.AllowPrivateIPRedirectURIHosts,
-			"risk", "redirect URIs on these hosts may resolve to private IP ranges",
-			"recommendation", "List only hosts that serve a known client's callback",
-			"cwe", "CWE-918")
+			"risk", "authorization codes may be sent to private addresses on these hosts",
+			"recommendation", "List only hosts that serve a known client's callback")
 	}
 	if config.AllowLinkLocalRedirectURIs {
 		logger.Warn("SECURITY WARNING: Link-local redirect URIs are ALLOWED",

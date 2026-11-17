@@ -70,10 +70,9 @@ const (
 // for redirect URI validation with full security controls.
 //
 // This implements OAuth 2.0 Security BCP Section 4.1 and addresses:
-// - SSRF attacks via private IP addresses
+// - Authorization codes redirected to private or link-local addresses (browser-redirect policy)
 // - XSS attacks via dangerous schemes (javascript:, data:)
 // - Open redirect vulnerabilities
-// - Cloud metadata service access via link-local addresses
 //
 // The validation is configurable via Config to support different deployment scenarios:
 // - Production SaaS: Strict validation (default)
@@ -201,7 +200,8 @@ func (s *Server) validateHTTPRedirectURI(ctx context.Context, parsed *url.URL, r
 }
 
 // validateIPAddress checks if an IP address is allowed based on security configuration.
-// This prevents SSRF attacks to internal networks and cloud metadata services.
+// It keeps authorization codes from being redirected to internal networks or
+// cloud metadata addresses; the server itself never connects to the redirect URI.
 // The rawURI parameter is sanitized automatically when creating errors.
 //
 // IMPORTANT: This function does NOT check for loopback addresses. Loopback handling is
@@ -227,19 +227,19 @@ func (s *Server) validateIPAddress(ip net.IP, rawURI string) error {
 				RedirectURIErrorCategoryPrivateIP,
 				rawURI,
 				fmt.Sprintf("IP %s is in private range (RFC 1918)", ip.String()),
-				"redirect_uri: private IP addresses are not allowed (SSRF protection)",
+				"redirect_uri: private IP addresses are not allowed",
 			)
 		}
 	}
 
 	// Check for link-local addresses (169.254.x.x, fe80::/10) and link-local multicast
-	// This is critical for cloud security - blocks access to metadata services (169.254.169.254)
+	// (cloud metadata services live at 169.254.169.254)
 	if helpers.IsLinkLocal(ip) && !s.Config.AllowLinkLocalRedirectURIs {
 		return newRedirectURISecurityError(
 			RedirectURIErrorCategoryLinkLocal,
 			rawURI,
 			fmt.Sprintf("IP %s is link-local (could target cloud metadata services)", ip.String()),
-			"redirect_uri: link-local addresses are not allowed (cloud SSRF protection)",
+			"redirect_uri: link-local addresses are not allowed",
 		)
 	}
 
@@ -305,7 +305,7 @@ func (s *Server) validateHostnameWithDNS(ctx context.Context, hostname, rawURI s
 				RedirectURIErrorCategoryDNSPrivateIP,
 				rawURI,
 				fmt.Sprintf("hostname '%s' resolves to private IP %s", hostname, ip.String()),
-				"redirect_uri: hostname resolves to private IP address (DNS rebinding protection)",
+				"redirect_uri: hostname resolves to private IP address",
 			)
 		}
 
@@ -315,7 +315,7 @@ func (s *Server) validateHostnameWithDNS(ctx context.Context, hostname, rawURI s
 				RedirectURIErrorCategoryDNSLinkLocal,
 				rawURI,
 				fmt.Sprintf("hostname '%s' resolves to link-local IP %s", hostname, ip.String()),
-				"redirect_uri: hostname resolves to link-local address (cloud SSRF protection)",
+				"redirect_uri: hostname resolves to link-local address",
 			)
 		}
 	}
@@ -394,7 +394,7 @@ func (s *Server) recordRedirectURISecurityMetric(ctx context.Context, category, 
 // However, DNS rebinding attacks can bypass registration-time validation:
 // 1. Attacker registers with hostname "evil.com" resolving to public IP 1.2.3.4
 // 2. After registration, attacker changes DNS to resolve to internal IP 10.0.0.1
-// 3. Authorization request redirects to internal network (SSRF)
+// 3. The authorization response redirects the browser, with the code, to the internal network
 //
 // By re-validating at authorization time, we catch DNS rebinding attacks.
 // The trade-off is additional latency for DNS lookups during authorization.
@@ -425,8 +425,8 @@ func (s *Server) ValidateRedirectURIAtAuthorizationTime(ctx context.Context, red
 //
 // Settings enabled:
 // - ProductionMode=true: HTTPS required for non-loopback
-// - AllowPrivateIPRedirectURIs=false: Block SSRF to internal networks
-// - AllowLinkLocalRedirectURIs=false: Block cloud metadata SSRF
+// - AllowPrivateIPRedirectURIs=false: Refuse redirects to private addresses
+// - AllowLinkLocalRedirectURIs=false: Refuse redirects to link-local addresses
 // - DNSValidation=true: Resolve hostnames to check IPs
 // - DNSValidationStrict=true: Fail-closed on DNS failures
 // - ValidateRedirectURIAtAuthorization=true: Catch DNS rebinding

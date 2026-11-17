@@ -29,6 +29,12 @@
 //   - OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS     deprecated, no effect: loopback redirect URIs are always allowed (RFC 8252 §7.3); false logs a warning
 //   - OAUTH_TRUSTED_REDIRECT_SCHEMES          — comma-separated URI schemes (e.g. "cursor,vscode")
 //     populates server.Config.TrustedPublicRegistrationSchemes
+//   - OAUTH_ALLOW_PRIVATE_IP_CLIENT_METADATA_HOSTS — comma-separated hostnames whose CIMD
+//     metadata URLs may resolve to private addresses (server.Config.AllowPrivateIPClientMetadataHosts)
+//   - OAUTH_ALLOW_PRIVATE_IP_REDIRECT_URI_HOSTS — comma-separated hostnames whose redirect URIs
+//     may resolve to private addresses (server.Config.AllowPrivateIPRedirectURIHosts)
+//   - OAUTH_ALLOW_PRIVATE_IP_JWKS_HOSTS     — comma-separated hostnames whose forwarded-ID-token
+//     JWKS endpoint may resolve to private addresses (server.Config.AllowPrivateIPJWKSHosts)
 //   - OAUTH_TRUSTED_CLIENTS                   — JSON array of {"client_id", "redirect_uris"}
 //     objects; populates server.Config.TrustedClients (clients that skip the consent page)
 //   - OAUTH_CONSENT_COOKIE_KEY                — 32-byte AES-GCM key for the consent cookies,
