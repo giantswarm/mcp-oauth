@@ -277,10 +277,6 @@ func TestMetrics_RecordCIMDOperations(t *testing.T) {
 		metrics.RecordCIMDCache(ctx, "miss")
 	})
 
-	t.Run("CIMD cache negative_hit", func(_ *testing.T) {
-		metrics.RecordCIMDCache(ctx, "negative_hit")
-	})
-
 	// All should complete without panic
 }
 

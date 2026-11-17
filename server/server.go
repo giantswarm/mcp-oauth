@@ -316,10 +316,9 @@ func (s *Server) initializeMetadataSupport() {
 		return
 	}
 
-	// SECURITY: Initialize rate limiter for metadata fetches (10 req/min per domain)
 	s.metadataFetchRateLimiter = security.NewRateLimiter(10, 20, s.Logger)
 	s.Logger.Debug("Initialized metadata fetch rate limiter",
-		"rate", "10 requests/min per domain",
+		"rate", "10 requests/second per domain",
 		"burst", 20,
 		"purpose", "DoS protection")
 

@@ -955,9 +955,10 @@ type Config struct {
 	// Default: false.
 	EnableClientManagementEndpoint bool
 
-	// ClientMetadataCacheTTL is how long to cache fetched client metadata
-	// Caching reduces latency and prevents repeated fetches for the same client
-	// HTTP Cache-Control headers may override this value
+	// ClientMetadataCacheTTL is how long to cache a fetched client metadata
+	// document whose response states no freshness lifetime. Cache-Control and
+	// Expires take precedence; no-store, no-cache and expired responses are
+	// not cached.
 	// Default: 5 minutes
 	ClientMetadataCacheTTL time.Duration
 }

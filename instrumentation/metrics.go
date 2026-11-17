@@ -101,7 +101,7 @@ type Metrics struct {
 	// CIMD (Client ID Metadata Document) Metrics
 	CIMDFetchTotal    metric.Int64Counter     // Total fetch attempts (labels: result=success/error/blocked)
 	CIMDFetchDuration metric.Float64Histogram // Fetch duration in milliseconds
-	CIMDCacheTotal    metric.Int64Counter     // Cache operations (labels: operation=hit/miss/negative_hit)
+	CIMDCacheTotal    metric.Int64Counter     // Cache operations (labels: operation=hit/miss)
 
 	// Configuration values (copied from instrumentation config to avoid circular dependency)
 	includeClientIDInMetrics bool
@@ -520,7 +520,7 @@ func (m *Metrics) RecordCIMDFetch(ctx context.Context, result string, durationMs
 // This metric helps monitor cache hit/miss rates for CIMD metadata.
 //
 // Parameters:
-//   - operation: The type of cache operation ("hit", "miss", or "negative_hit")
+//   - operation: The type of cache operation ("hit" or "miss")
 func (m *Metrics) RecordCIMDCache(ctx context.Context, operation string) {
 	m.CIMDCacheTotal.Add(ctx, 1, metric.WithAttributes(
 		attribute.String(metricAttrOperation, operation),

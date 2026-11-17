@@ -298,45 +298,45 @@ All CIMD clients are treated as public clients and **MUST use PKCE** with the S2
 The server implements per-domain rate limiting for metadata fetches to prevent abuse:
 
 - Prevents DoS attacks via rapid metadata requests
-- Configurable limits per domain
+- 10 fetches per second per domain, burst 20 (replace with `WithMetadataFetchRateLimiter`)
+- Concurrent requests for the same client ID share one fetch
 
-### Negative Caching
-
-Failed metadata fetches are cached to prevent:
-
-- Rapid retry attacks
-- Resource exhaustion from invalid client IDs
-- DoS via repeated failures
-
-Failed entries use progressive backoff for cache TTL.
+Failed fetches are not cached ([CIMD draft 00 section 4.4](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-client-id-metadata-document-00#section-4.4)), so repeated requests for a failing client ID are bounded by this limit.
 
 ### Audit Logging
 
 All CIMD operations are logged for security monitoring:
 
 - `client_metadata_fetched`: Successful metadata fetch
-- `client_metadata_fetch_failed`: Failed fetch attempt
+- `client_metadata_fetch_failed`: Failed fetch or invalid document
 - `client_metadata_fetch_blocked`: SSRF protection triggered
 - `client_metadata_cache_hit`: Served from cache
-- `client_metadata_negative_cache_hit`: Blocked due to previous failure
 - `client_metadata_rate_limited`: Rate limit exceeded
 - `client_metadata_id_mismatch`: Security violation (client_id mismatch)
 
 ## Caching
 
-The server caches fetched metadata to reduce latency and external requests.
+The server caches valid metadata documents to reduce latency and external
+requests. It follows the HTTP caching rules of [RFC 9111](https://www.rfc-editor.org/rfc/rfc9111.html),
+as [CIMD draft 00 section 4.4](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-client-id-metadata-document-00#section-4.4)
+recommends, and never caches error responses or invalid documents.
 
 ### Cache Behavior
 
-| Scenario | Cache TTL |
+| Response | Cached for |
 |----------|-----------|
-| Successful fetch (no Cache-Control) | `ClientMetadataCacheTTL` (default: 5 min) |
-| Successful fetch (with Cache-Control) | `min(max-age, 1 hour)` |
-| Failed fetch | 5 minutes (with progressive backoff) |
+| `Cache-Control: no-store` or `no-cache` | Not cached |
+| `Cache-Control: max-age=N` | `min(N - Age, 1 hour)`; not cached when zero or less |
+| `Expires` (without `max-age`) | `min(Expires - Date - Age, 1 hour)`; not cached when in the past or invalid |
+| No freshness information | `ClientMetadataCacheTTL` (default: 5 min) |
+| Error status, fetch failure, invalid document | Not cached |
+
+The cache is private to the authorization server, so `s-maxage` and `private`
+do not change it.
 
 ### Cache-Control Header
 
-Clients can suggest cache duration using HTTP Cache-Control headers:
+Clients can set the cache duration using HTTP Cache-Control headers:
 
 ```http
 HTTP/1.1 200 OK
@@ -352,7 +352,6 @@ The server caps `max-age` at 1 hour to prevent cache poisoning attacks.
 
 - **LRU eviction** when cache reaches capacity (default: 1000 entries)
 - **Expired entries** are cleaned up periodically
-- **Negative cache** has separate capacity (default: 500 entries)
 
 ## Troubleshooting
 
@@ -397,12 +396,6 @@ The server couldn't fetch your metadata document.
 Too many requests to your domain in a short period.
 
 **Solution**: Wait for the rate limit window to reset. Consider implementing proper caching on your metadata endpoint.
-
-#### "client metadata previously failed validation (cached)"
-
-A previous fetch attempt failed and is cached.
-
-**Solution**: Wait for the negative cache entry to expire (typically 5 minutes), then fix the underlying issue and retry.
 
 ### Debugging Tips
 

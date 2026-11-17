@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -248,7 +247,7 @@ func dialFirstReachable(ctx context.Context, dialer *net.Dialer, network, host, 
 // fetchClientMetadata fetches and validates OAuth client metadata from an HTTPS URL
 // Implements draft-ietf-oauth-client-id-metadata-document-00
 //
-// Returns the metadata and a suggested cache TTL from HTTP Cache-Control header (0 if not specified)
+// Returns the metadata and how long it may be cached (0: do not cache)
 //
 // Security considerations per Section 6:
 //   - SSRF protection: blocks private/internal IP addresses at connection time (prevents DNS rebinding)
@@ -300,9 +299,6 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	resp, err := client.Do(req)
 	if err != nil {
 		s.recordCIMDFetchMetric(ctx, logKeyError, fetchStart)
-		s.logMetadataFetchEvent(ctx, "client_metadata_fetch_failed", clientID, map[string]any{
-			logKeyError: err.Error(),
-		})
 		return nil, 0, fmt.Errorf("failed to fetch metadata from %s: %w", clientID, err)
 	}
 	defer func() {
@@ -311,22 +307,18 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 		}
 	}()
 
-	metadata, suggestedTTL, err := s.processMetadataResponse(ctx, resp, clientID, fetchStart)
+	metadata, cacheLifetime, err := s.processMetadataResponse(ctx, resp, clientID, fetchStart)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	return metadata, suggestedTTL, nil
+	return metadata, cacheLifetime, nil
 }
 
 // processMetadataResponse validates, parses, and processes a CIMD HTTP response.
 func (s *Server) processMetadataResponse(ctx context.Context, resp *http.Response, clientID string, fetchStart time.Time) (*ClientMetadata, time.Duration, error) {
 	if resp.StatusCode != http.StatusOK {
 		s.recordCIMDFetchMetric(ctx, logKeyError, fetchStart)
-		s.logMetadataFetchEvent(ctx, "client_metadata_fetch_failed", clientID, map[string]any{
-			"status_code": resp.StatusCode,
-			"status":      resp.Status,
-		})
 		return nil, 0, fmt.Errorf("metadata fetch returned HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
@@ -364,13 +356,13 @@ func (s *Server) processMetadataResponse(ctx context.Context, resp *http.Respons
 
 	setClientMetadataDefaults(metadata)
 
-	suggestedTTL := parseSuggestedTTL(resp, clientID, s.Logger)
+	cacheLifetime := metadataCacheLifetime(resp.Header, time.Now(), s.defaultClientMetadataCacheLifetime())
 
 	s.logMetadataFetchEvent(ctx, "client_metadata_fetched", clientID, map[string]any{
-		"client_name":     metadata.ClientName,
-		"redirect_count":  len(metadata.RedirectURIs),
-		"document_size":   len(bodyBytes),
-		"cache_suggested": suggestedTTL > 0,
+		"client_name":    metadata.ClientName,
+		"redirect_count": len(metadata.RedirectURIs),
+		"document_size":  len(bodyBytes),
+		"cache_lifetime": cacheLifetime.String(),
 	})
 	s.recordCIMDFetchMetric(ctx, "success", fetchStart)
 
@@ -379,27 +371,18 @@ func (s *Server) processMetadataResponse(ctx context.Context, resp *http.Respons
 		"client_name", metadata.ClientName,
 		"redirect_uris", len(metadata.RedirectURIs),
 		"size_bytes", len(bodyBytes),
-		"cache_ttl", suggestedTTL)
+		"cache_lifetime", cacheLifetime)
 
-	return metadata, suggestedTTL, nil
+	return metadata, cacheLifetime, nil
 }
 
-// parseSuggestedTTL extracts the suggested cache TTL from Cache-Control headers.
-func parseSuggestedTTL(resp *http.Response, clientID string, logger *slog.Logger) time.Duration {
-	cacheControl := resp.Header.Get("Cache-Control")
-	if cacheControl == "" {
-		return 0
+// defaultClientMetadataCacheLifetime is the cache lifetime of a metadata
+// response that states no freshness lifetime.
+func (s *Server) defaultClientMetadataCacheLifetime() time.Duration {
+	if s.Config.ClientMetadataCacheTTL > 0 {
+		return s.Config.ClientMetadataCacheTTL
 	}
-	maxAge := parseCacheControlMaxAge(cacheControl)
-	if maxAge <= 0 {
-		return 0
-	}
-	ttl := time.Duration(maxAge) * time.Second
-	logger.Debug("Parsed Cache-Control max-age",
-		paramClientID, clientID,
-		"max_age_seconds", maxAge,
-		"suggested_ttl", ttl)
-	return ttl
+	return defaultClientMetadataCacheLifetime
 }
 
 // validateResponseContentType validates the Content-Type header for JSON responses
@@ -607,39 +590,101 @@ func hasLocalhostRedirectURIsOnly(redirectURIs []string) bool {
 	return true
 }
 
-// parseCacheControlMaxAge extracts max-age directive from Cache-Control header
-// Returns 0 if max-age is not present or invalid
-// Caps the max-age at 1 hour to prevent excessive caching from malicious servers
-// Example: "max-age=300, must-revalidate" -> 300 seconds
-func parseCacheControlMaxAge(cacheControl string) int {
-	const maxCacheControlAge = 3600 // 1 hour - prevents excessive caching
+const (
+	// defaultClientMetadataCacheLifetime applies when neither
+	// ClientMetadataCacheTTL nor the response states a lifetime.
+	defaultClientMetadataCacheLifetime = 5 * time.Minute
 
-	// Split by comma to handle multiple directives
-	directives := strings.Split(cacheControl, ",")
-	for _, directive := range directives {
-		// Trim whitespace and convert to lowercase
-		directive = strings.TrimSpace(strings.ToLower(directive))
+	// maxClientMetadataCacheLifetime bounds the lifetime a metadata response
+	// can claim for itself.
+	maxClientMetadataCacheLifetime = time.Hour
 
-		// Check for max-age directive
-		if strings.HasPrefix(directive, "max-age=") {
-			// Extract the value after "max-age="
-			ageStr := strings.TrimPrefix(directive, "max-age=")
-			ageStr = strings.TrimSpace(ageStr)
+	// maxDeltaSeconds is the value a delta-seconds too large to represent
+	// stands for (RFC 9111 section 1.2.2).
+	maxDeltaSeconds = 1 << 31
+)
 
-			// Parse as integer
-			age, err := strconv.Atoi(ageStr)
-			if err != nil || age < 0 {
-				return 0
+// metadataCacheLifetime returns how long a client metadata response received
+// at receivedAt may be reused, following RFC 9111 as
+// draft-ietf-oauth-client-id-metadata-document-00 section 4.4 recommends: its
+// freshness lifetime minus its Age, capped at maxClientMetadataCacheLifetime,
+// or defaultLifetime when it states none. Zero means it must not be stored.
+// The cache belongs to this server alone, so s-maxage and private do not apply.
+func metadataCacheLifetime(header http.Header, receivedAt time.Time, defaultLifetime time.Duration) time.Duration {
+	lifetime, stated, storable := statedFreshnessLifetime(header, receivedAt)
+	switch {
+	case !storable:
+		return 0
+	case !stated:
+		return defaultLifetime
+	}
+	if age, valid := parseDeltaSeconds(header.Get("Age")); valid {
+		lifetime -= age
+	}
+	if lifetime <= 0 {
+		return 0
+	}
+	return min(lifetime, maxClientMetadataCacheLifetime)
+}
+
+// statedFreshnessLifetime reads the freshness lifetime a response states
+// (RFC 9111 section 4.2.1). storable is false when the response forbids
+// storing it or reusing it without revalidation, or states its lifetime
+// invalidly; stated is false when it states none.
+func statedFreshnessLifetime(header http.Header, receivedAt time.Time) (lifetime time.Duration, stated, storable bool) {
+	for _, line := range header.Values("Cache-Control") {
+		for _, directive := range strings.Split(line, ",") {
+			name, value, _ := strings.Cut(directive, "=")
+			switch strings.ToLower(strings.TrimSpace(name)) {
+			case "no-store", "no-cache":
+				return 0, true, false
+			case "max-age":
+				maxAge, valid := parseDeltaSeconds(value)
+				if !valid {
+					return 0, true, false
+				}
+				if !stated || maxAge < lifetime {
+					lifetime = maxAge
+				}
+				stated = true
 			}
-
-			// SECURITY: Cap max-age to prevent malicious servers from forcing very long cache times
-			// This prevents cache poisoning attacks where an attacker controls the metadata server
-			if age > maxCacheControlAge {
-				return maxCacheControlAge
-			}
-
-			return age
 		}
 	}
-	return 0
+	if stated {
+		return lifetime, true, true
+	}
+
+	expires := header.Values("Expires")
+	if len(expires) == 0 {
+		return 0, false, true
+	}
+	expiresAt, err := http.ParseTime(expires[0])
+	if err != nil {
+		return 0, true, false
+	}
+	date := receivedAt
+	if parsed, err := http.ParseTime(header.Get("Date")); err == nil {
+		date = parsed
+	}
+	return expiresAt.Sub(date), true, true
+}
+
+// parseDeltaSeconds parses an RFC 9111 delta-seconds value, accepting the
+// quoted form.
+func parseDeltaSeconds(value string) (time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	if unquoted, ok := strings.CutPrefix(value, `"`); ok {
+		value, ok = strings.CutSuffix(unquoted, `"`)
+		if !ok {
+			return 0, false
+		}
+	}
+	if value == "" || strings.Trim(value, "0123456789") != "" {
+		return 0, false
+	}
+	seconds, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || seconds > maxDeltaSeconds {
+		seconds = maxDeltaSeconds
+	}
+	return time.Duration(seconds) * time.Second, true
 }

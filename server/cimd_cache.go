@@ -8,47 +8,29 @@ import (
 	"time"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
-	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
-// clientMetadataCache implements an in-memory LRU cache for URL-based client metadata
-// with TTL support and HTTP Cache-Control header respect
+// clientMetadataCache implements an in-memory LRU cache for URL-based client
+// metadata. It holds only valid documents whose responses allow storing them
+// (draft-ietf-oauth-client-id-metadata-document-00 section 4.4).
 type clientMetadataCache struct {
 	mu         sync.RWMutex
 	entries    map[string]*cachedMetadataEntry
 	maxEntries int
 	defaultTTL time.Duration
 
-	// SECURITY: Negative cache entries for failed metadata fetches
-	// This prevents rapid retries of known-bad client IDs and mitigates cache poisoning attempts
-	negativeEntries    map[string]*negativeCacheEntry
-	negativeTTL        time.Duration
-	maxNegativeEntries int
-
 	// Metrics for monitoring cache performance
 	metrics cacheMetrics
 }
 
-// negativeCacheEntry represents a cached failure for a client metadata fetch
-// Used to prevent rapid retries of known-bad client IDs (cache poisoning mitigation)
-type negativeCacheEntry struct {
-	errorMsg  string    // The error message from the failed fetch
-	expiresAt time.Time // When this negative entry expires
-	cachedAt  time.Time // When this entry was cached
-	attempts  int       // Number of failed attempts
-}
-
 // cacheMetrics tracks cache performance statistics
 type cacheMetrics struct {
-	hits            uint64 // Cache hits (positive entries)
-	misses          uint64 // Cache misses (including expired entries)
-	evictions       uint64 // Number of entries evicted due to capacity
-	fetches         uint64 // Number of successful metadata fetches
-	fetchFails      uint64 // Number of failed metadata fetches
-	negativeHits    uint64 // Cache hits for negative (failed) entries
-	negativeCached  uint64 // Number of negative entries cached
-	negativeEvicted uint64 // Number of negative entries evicted due to expiry
+	hits       uint64 // Cache hits
+	misses     uint64 // Cache misses (including expired entries)
+	evictions  uint64 // Number of entries evicted due to capacity
+	fetches    uint64 // Number of successful metadata fetches
+	fetchFails uint64 // Number of failed metadata fetches
 }
 
 // cachedMetadataEntry represents a cached client metadata entry with expiry
@@ -59,16 +41,17 @@ type cachedMetadataEntry struct {
 	cachedAt  time.Time
 }
 
-// DefaultNegativeCacheTTL is the default TTL for negative cache entries
-// SECURITY: Shorter than positive entries to allow retries after fixes
+// DefaultNegativeCacheTTL is unused.
+//
+// Deprecated: failed client metadata fetches are not cached, as
+// draft-ietf-oauth-client-id-metadata-document-00 section 4.4 requires.
 const DefaultNegativeCacheTTL = 5 * time.Minute
 
-// DefaultMaxNegativeEntries is the default maximum number of negative cache entries
+// DefaultMaxNegativeEntries is unused.
+//
+// Deprecated: failed client metadata fetches are not cached, as
+// draft-ietf-oauth-client-id-metadata-document-00 section 4.4 requires.
 const DefaultMaxNegativeEntries = 500
-
-// negativeCacheBackoffIncrement is the time added per failed attempt for progressive backoff
-// Each repeated failure for the same client ID extends the TTL by this amount
-const negativeCacheBackoffIncrement = time.Minute
 
 func newClientMetadataCache(defaultTTL time.Duration, maxEntries int) *clientMetadataCache {
 	if maxEntries <= 0 {
@@ -78,12 +61,9 @@ func newClientMetadataCache(defaultTTL time.Duration, maxEntries int) *clientMet
 		defaultTTL = 5 * time.Minute
 	}
 	return &clientMetadataCache{
-		entries:            make(map[string]*cachedMetadataEntry),
-		maxEntries:         maxEntries,
-		defaultTTL:         defaultTTL,
-		negativeEntries:    make(map[string]*negativeCacheEntry),
-		negativeTTL:        DefaultNegativeCacheTTL,
-		maxNegativeEntries: DefaultMaxNegativeEntries,
+		entries:    make(map[string]*cachedMetadataEntry),
+		maxEntries: maxEntries,
+		defaultTTL: defaultTTL,
 	}
 }
 
@@ -130,96 +110,6 @@ func (c *clientMetadataCache) Set(clientID string, metadata *ClientMetadata, cli
 		expiresAt: now.Add(ttl),
 		cachedAt:  now,
 	}
-
-	// SECURITY: Remove any negative cache entry for this client ID on successful fetch
-	// This allows recovery after a temporary failure is fixed
-	delete(c.negativeEntries, clientID)
-}
-
-// GetNegative checks if a client ID has a negative (failed) cache entry
-// Returns the error message and true if found and not expired, empty string and false otherwise
-func (c *clientMetadataCache) GetNegative(clientID string) (string, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	entry, ok := c.negativeEntries[clientID]
-	if !ok {
-		return "", false
-	}
-
-	// Check if expired
-	now := time.Now()
-	if now.After(entry.expiresAt) {
-		// Clean up expired entry
-		delete(c.negativeEntries, clientID)
-		c.metrics.negativeEvicted++
-		return "", false
-	}
-
-	c.metrics.negativeHits++
-	return entry.errorMsg, true
-}
-
-// SetNegative stores a negative cache entry for a failed metadata fetch
-// SECURITY: This prevents rapid retries of known-bad client IDs and mitigates DoS
-func (c *clientMetadataCache) SetNegative(clientID string, errorMsg string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	now := time.Now()
-
-	// Check if we already have a negative entry - increment attempts
-	if existing, ok := c.negativeEntries[clientID]; ok {
-		existing.attempts++
-		existing.errorMsg = errorMsg
-		// Extend the TTL slightly for repeated failures (up to 2x original)
-		// This provides backoff for persistent failures
-		extendedTTL := c.negativeTTL + time.Duration(existing.attempts-1)*negativeCacheBackoffIncrement
-		maxTTL := 2 * c.negativeTTL
-		if extendedTTL > maxTTL {
-			extendedTTL = maxTTL
-		}
-		existing.expiresAt = now.Add(extendedTTL)
-		return
-	}
-
-	// Apply eviction if negative cache is full
-	if len(c.negativeEntries) >= c.maxNegativeEntries {
-		c.evictOldestNegative()
-	}
-
-	c.negativeEntries[clientID] = &negativeCacheEntry{
-		errorMsg:  errorMsg,
-		expiresAt: now.Add(c.negativeTTL),
-		cachedAt:  now,
-		attempts:  1,
-	}
-	c.metrics.negativeCached++
-}
-
-// evictOldestNegative removes the oldest negative cache entry
-// Caller must hold write lock
-func (c *clientMetadataCache) evictOldestNegative() {
-	if len(c.negativeEntries) == 0 {
-		return
-	}
-
-	var oldestKey string
-	var oldestTime time.Time
-
-	// Find oldest entry
-	for key, entry := range c.negativeEntries {
-		if oldestKey == "" || entry.cachedAt.Before(oldestTime) {
-			oldestKey = key
-			oldestTime = entry.cachedAt
-		}
-	}
-
-	// Remove oldest entry
-	if oldestKey != "" {
-		delete(c.negativeEntries, oldestKey)
-		c.metrics.negativeEvicted++
-	}
 }
 
 // evictOldest removes the oldest cached entry (by cachedAt time)
@@ -252,7 +142,7 @@ func (c *clientMetadataCache) evictOldest() {
 	}
 }
 
-// CleanupExpired removes all expired entries from both positive and negative caches
+// CleanupExpired removes all expired entries
 func (c *clientMetadataCache) CleanupExpired() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -260,7 +150,6 @@ func (c *clientMetadataCache) CleanupExpired() int {
 	now := time.Now()
 	removed := 0
 
-	// Clean up positive cache entries
 	for key, entry := range c.entries {
 		if now.After(entry.expiresAt) {
 			delete(c.entries, key)
@@ -268,38 +157,21 @@ func (c *clientMetadataCache) CleanupExpired() int {
 		}
 	}
 
-	// Clean up negative cache entries
-	for key, entry := range c.negativeEntries {
-		if now.After(entry.expiresAt) {
-			delete(c.negativeEntries, key)
-			c.metrics.negativeEvicted++
-			removed++
-		}
-	}
-
 	return removed
 }
 
-// Size returns the current number of cached entries (positive only)
+// Size returns the current number of cached entries
 func (c *clientMetadataCache) Size() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.entries)
 }
 
-// NegativeSize returns the current number of negative cache entries
-func (c *clientMetadataCache) NegativeSize() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.negativeEntries)
-}
-
-// Clear removes all entries from both positive and negative caches
+// Clear removes all entries
 func (c *clientMetadataCache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.entries = make(map[string]*cachedMetadataEntry)
-	c.negativeEntries = make(map[string]*negativeCacheEntry)
 }
 
 // GetMetrics returns a snapshot of cache performance metrics
@@ -321,22 +193,6 @@ func (s *Server) tryGetCachedClient(ctx context.Context, clientID string) (*stor
 	s.logMetadataFetchEvent(ctx, "client_metadata_cache_hit", clientID, map[string]any{"source": "cache"})
 	s.Logger.Debug("Using cached client metadata", paramClientID, clientID)
 	return cachedClient, true
-}
-
-// checkNegativeCache checks if clientID is in the negative cache
-// Returns error if found in negative cache, nil otherwise
-func (s *Server) checkNegativeCache(ctx context.Context, clientID string) error {
-	errorMsg, found := s.metadataCache.GetNegative(clientID)
-	if !found {
-		return nil
-	}
-
-	s.recordCIMDCacheMetric(ctx, "negative_hit")
-	s.logMetadataFetchEvent(ctx, "client_metadata_negative_cache_hit", clientID, map[string]any{
-		"source": "negative_cache", "cached_error": errorMsg,
-	})
-	s.Logger.Debug("Client ID in negative cache", paramClientID, clientID, "cached_error", errorMsg)
-	return fmt.Errorf("client metadata previously failed validation: %s (cached)", errorMsg)
 }
 
 // checkMetadataFetchRateLimit checks if fetching metadata for this clientID is rate limited
@@ -367,8 +223,7 @@ func (s *Server) checkMetadataFetchRateLimit(ctx context.Context, clientID strin
 //   - SSRF protection: Enforced at HTTP connection time in createSSRFProtectedTransport()
 //     This prevents DNS rebinding attacks by validating IPs when connecting, not just during initial URL validation
 //   - Singleflight deduplication: prevents concurrent fetches of the same URL (DoS protection)
-//   - Rate limiting: per-domain rate limiting to prevent abuse (default: 10 req/min per domain)
-//   - Negative caching: prevents rapid retries of known-bad client IDs (cache poisoning mitigation)
+//   - Rate limiting: per-domain rate limiting to prevent abuse (default: 10 requests/second per domain, burst 20)
 //   - Audit logging: all cache hits and fetches are logged for security monitoring
 func (s *Server) getOrFetchClient(ctx context.Context, clientID string) (*storage.Client, error) {
 	if !isClientIDMetadataDocumentURL(clientID) {
@@ -381,10 +236,6 @@ func (s *Server) getOrFetchClient(ctx context.Context, clientID string) (*storag
 
 	if client, ok := s.tryGetCachedClient(ctx, clientID); ok {
 		return client, nil
-	}
-
-	if err := s.checkNegativeCache(ctx, clientID); err != nil {
-		return nil, err
 	}
 
 	if err := s.checkMetadataFetchRateLimit(ctx, clientID); err != nil {
@@ -420,68 +271,43 @@ func (s *Server) fetchClientWithSingleflight(ctx context.Context, clientID strin
 		return cachedClient, nil
 	}
 
-	// Double-check negative cache too
-	if errorMsg, found := s.metadataCache.GetNegative(clientID); found {
-		s.recordCIMDCacheMetric(ctx, "negative_hit")
-		return nil, fmt.Errorf("client metadata previously failed validation: %s (cached)", errorMsg)
-	}
-
 	s.recordCIMDCacheMetric(ctx, "miss")
 	s.Logger.Debug("Fetching client metadata from URL", paramClientID, clientID)
 
-	metadata, suggestedTTL, fetchErr := s.fetchClientMetadata(ctx, clientID)
+	metadata, cacheLifetime, fetchErr := s.fetchClientMetadata(ctx, clientID)
 	if fetchErr != nil {
 		s.handleMetadataFetchFailure(ctx, clientID, fetchErr)
 		return nil, fmt.Errorf("failed to fetch client metadata: %w", fetchErr)
 	}
 
-	return s.cacheAndReturnClient(clientID, metadata, suggestedTTL), nil
+	return s.cacheAndReturnClient(clientID, metadata, cacheLifetime), nil
 }
 
-// handleMetadataFetchFailure handles failed metadata fetches.
+// handleMetadataFetchFailure records a failed metadata fetch. The failure is
+// not cached: the next request for the client ID fetches the document again.
 func (s *Server) handleMetadataFetchFailure(ctx context.Context, clientID string, fetchErr error) {
 	s.metadataCache.mu.Lock()
 	s.metadataCache.metrics.fetchFails++
 	s.metadataCache.mu.Unlock()
 
-	s.metadataCache.SetNegative(clientID, fetchErr.Error())
-
-	s.Auditor.LogEvent(ctx, security.Event{
-		Type:     "client_metadata_fetch_failed_cached",
-		ClientID: clientID,
-		Details: map[string]any{
-			logKeyError:      fetchErr.Error(),
-			"negative_cache": "stored",
-			"cache_purpose":  "prevent_rapid_retry",
-		},
+	s.logMetadataFetchEvent(ctx, "client_metadata_fetch_failed", clientID, map[string]any{
+		logKeyError: fetchErr.Error(),
 	})
 }
 
-// cacheAndReturnClient caches metadata and returns the client.
-func (s *Server) cacheAndReturnClient(clientID string, metadata *ClientMetadata, suggestedTTL time.Duration) *storage.Client {
+// cacheAndReturnClient converts metadata to a client and caches it for
+// cacheLifetime; a zero cacheLifetime leaves it uncached.
+func (s *Server) cacheAndReturnClient(clientID string, metadata *ClientMetadata, cacheLifetime time.Duration) *storage.Client {
 	s.metadataCache.mu.Lock()
 	s.metadataCache.metrics.fetches++
 	s.metadataCache.mu.Unlock()
 
 	client := metadataToClient(metadata)
-	ttl := s.determineCacheTTL(clientID, suggestedTTL)
-	s.metadataCache.Set(clientID, metadata, client, ttl)
+	if cacheLifetime > 0 {
+		s.metadataCache.Set(clientID, metadata, client, cacheLifetime)
+	}
 
 	return client
-}
-
-// determineCacheTTL determines the TTL to use for caching.
-func (s *Server) determineCacheTTL(clientID string, suggestedTTL time.Duration) time.Duration {
-	if suggestedTTL > 0 {
-		s.Logger.Debug("Using Cache-Control TTL", paramClientID, clientID, "ttl", suggestedTTL)
-		return suggestedTTL
-	}
-
-	if s.Config.ClientMetadataCacheTTL > 0 {
-		return s.Config.ClientMetadataCacheTTL
-	}
-
-	return 5 * time.Minute // Default TTL
 }
 
 // metadataToClient converts ClientMetadata to storage.Client

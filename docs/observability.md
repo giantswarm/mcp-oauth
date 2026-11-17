@@ -148,7 +148,7 @@ instrumentation.Config{
 |--------|--------|-------------|
 | `oauth.cimd.fetch.total` | `result` | CIMD metadata fetch attempts (`result` ∈ `{success, error, blocked}`) |
 | `oauth.cimd.fetch.duration` | - | CIMD fetch duration (ms) |
-| `oauth.cimd.cache.total` | `operation` | CIMD cache operations (`operation` ∈ `{hit, miss, negative_hit}`) |
+| `oauth.cimd.cache.total` | `operation` | CIMD cache operations (`operation` ∈ `{hit, miss}`) |
 
 **Redirect URI Security Categories:**
 
