@@ -51,9 +51,10 @@ func newRedirectURISecurityError(category, rawURI, reason, clientMessage string)
 
 // Redirect URI security error categories for metrics and logging.
 const (
-	RedirectURIErrorCategoryBlockedScheme   = "blocked_scheme"
-	RedirectURIErrorCategoryPrivateIP       = "private_ip"
-	RedirectURIErrorCategoryLinkLocal       = "link_local"
+	RedirectURIErrorCategoryBlockedScheme = "blocked_scheme"
+	RedirectURIErrorCategoryPrivateIP     = "private_ip"
+	RedirectURIErrorCategoryLinkLocal     = "link_local"
+	// Deprecated: never returned; loopback redirect URIs are always allowed.
 	RedirectURIErrorCategoryLoopback        = "loopback_not_allowed"
 	RedirectURIErrorCategoryHTTPNotAllowed  = "http_not_allowed"
 	RedirectURIErrorCategoryDNSPrivateIP    = "dns_resolves_to_private_ip"
@@ -170,20 +171,9 @@ func (s *Server) validateHTTPRedirectURI(ctx context.Context, parsed *url.URL, r
 	scheme := strings.ToLower(parsed.Scheme)
 	hostname := parsed.Hostname()
 
-	// Check if it's a loopback address
-	isLoopback := isLoopbackAddress(hostname)
-
-	// Step 1: Handle loopback addresses (localhost, 127.x.x.x, ::1)
-	if isLoopback {
-		if !s.Config.AllowLocalhostRedirectURIs {
-			return newRedirectURISecurityError(
-				RedirectURIErrorCategoryLoopback,
-				rawURI,
-				"loopback addresses disabled via AllowLocalhostRedirectURIs=false",
-				"redirect_uri: loopback addresses are not allowed",
-			)
-		}
-		// Loopback is allowed - RFC 8252 Section 7.3 allows HTTP for loopback
+	// Step 1: loopback addresses (localhost, 127.x.x.x, ::1) are always
+	// allowed, over HTTP too (RFC 8252 §7.3, §8.3)
+	if isLoopbackAddress(hostname) {
 		return nil
 	}
 
@@ -435,7 +425,6 @@ func (s *Server) ValidateRedirectURIAtAuthorizationTime(ctx context.Context, red
 //
 // Settings enabled:
 // - ProductionMode=true: HTTPS required for non-loopback
-// - AllowLocalhostRedirectURIs=true: RFC 8252 native app support
 // - AllowPrivateIPRedirectURIs=false: Block SSRF to internal networks
 // - AllowLinkLocalRedirectURIs=false: Block cloud metadata SSRF
 // - DNSValidation=true: Resolve hostnames to check IPs
@@ -450,7 +439,6 @@ func (s *Server) ValidateRedirectURIAtAuthorizationTime(ctx context.Context, red
 func HighSecurityRedirectURIConfig() *Config {
 	return &Config{
 		ProductionMode:                     true,
-		AllowLocalhostRedirectURIs:         true, // RFC 8252 native app support
 		AllowPrivateIPRedirectURIs:         false,
 		AllowLinkLocalRedirectURIs:         false,
 		DNSValidation:                      true,

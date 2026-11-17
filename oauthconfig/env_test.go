@@ -1,8 +1,10 @@
 package oauthconfig_test
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/hex"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -114,9 +116,6 @@ func TestFromEnv_HappyPath(t *testing.T) {
 	want := []string{"muster-client", "second-aud"}
 	if !reflect.DeepEqual(cfg.TrustedAudiences, want) {
 		t.Errorf("TrustedAudiences = %v, want %v", cfg.TrustedAudiences, want)
-	}
-	if !cfg.AllowLocalhostRedirectURIs {
-		t.Errorf("AllowLocalhostRedirectURIs = false")
 	}
 	wantSchemes := []string{"cursor", "vscode", "vscode-insiders"}
 	if !reflect.DeepEqual(cfg.TrustedPublicRegistrationSchemes, wantSchemes) {
@@ -344,9 +343,6 @@ func TestFromEnvWithPrefix(t *testing.T) {
 	if want := []string{"agentcore-runtime"}; !reflect.DeepEqual(cfg.TrustedAudiences, want) {
 		t.Errorf("TrustedAudiences = %v, want %v", cfg.TrustedAudiences, want)
 	}
-	if !cfg.AllowLocalhostRedirectURIs {
-		t.Errorf("AllowLocalhostRedirectURIs = false")
-	}
 	if want := []string{"cursor"}; !reflect.DeepEqual(cfg.TrustedPublicRegistrationSchemes, want) {
 		t.Errorf("TrustedPublicRegistrationSchemes = %v, want %v", cfg.TrustedPublicRegistrationSchemes, want)
 	}
@@ -504,6 +500,38 @@ func TestFromEnv_BadAllowLocalhostRedirectURIs(t *testing.T) {
 	_, err := oauthconfig.FromEnv()
 	if err == nil || !strings.Contains(err.Error(), "ALLOW_LOCALHOST_REDIRECT_URIS") {
 		t.Fatalf("expected bool parse error on ALLOW_LOCALHOST_REDIRECT_URIS, got %v", err)
+	}
+}
+
+func TestFromEnv_AllowLocalhostRedirectURIsFalseWarns(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    string
+		wantWarn bool
+	}{
+		{name: "unset"},
+		{name: "true", value: "true"},
+		{name: "false", value: "false", wantWarn: true},
+		{name: "zero", value: "0", wantWarn: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+
+			setRequired(t, "https://auth.example")
+			t.Setenv("OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS", tt.value)
+			_, err := oauthconfig.FromEnv()
+			require.NoError(t, err)
+			if tt.wantWarn {
+				require.Contains(t, logs.String(), "OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS")
+				require.Contains(t, logs.String(), "level=WARN")
+			} else {
+				require.NotContains(t, logs.String(), "OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS")
+			}
+		})
 	}
 }
 
