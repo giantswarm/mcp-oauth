@@ -43,7 +43,11 @@ func newConsentFlow(t *testing.T, configure func(*server.Config), redirectURIs .
 func newConsentFlowWithProvider(t *testing.T, provider providers.Provider, configure func(*server.Config), redirectURIs ...string) *consentFlow {
 	t.Helper()
 	store := memory.New()
-	cfg := &server.Config{Issuer: testIssuer, DisableNonceEchoRequirement: true}
+	cfg := &server.Config{
+		Issuer:                      testIssuer,
+		DisableNonceEchoRequirement: true,
+		ResourceMetadataByPath:      map[string]server.ProtectedResourceConfig{"/files": {}},
+	}
 	if configure != nil {
 		configure(cfg)
 	}
@@ -205,7 +209,7 @@ func TestConsent_ApproveThenCodeAndRemembered(t *testing.T) {
 		requireConsentPage(t, w)
 	})
 	t.Run("another resource asks again", func(t *testing.T) {
-		w := f.get(f.authorizeTarget(consentTestRedirect, testutil.GenerateRandomString(43), url.Values{"resource": {"https://other.example.com"}}))
+		w := f.get(f.authorizeTarget(consentTestRedirect, testutil.GenerateRandomString(43), url.Values{"resource": {testIssuer + "/files"}}))
 		requireConsentPage(t, w)
 	})
 	t.Run("prompt=consent asks again", func(t *testing.T) {
@@ -225,7 +229,7 @@ func TestConsent_ChangedRedirectURIAsksAgain(t *testing.T) {
 }
 
 func TestConsent_LoopbackAlwaysRequiresConsent(t *testing.T) {
-	f := newConsentFlow(t, func(c *server.Config) { c.AllowLocalhostRedirectURIs = true }, "http://127.0.0.1/callback")
+	f := newConsentFlow(t, nil, "http://127.0.0.1/callback")
 
 	page := f.get(f.authorizeTarget("http://127.0.0.1:50001/callback", testutil.GenerateRandomString(43), nil))
 	requireConsentPage(t, page)
@@ -252,7 +256,7 @@ func TestConsent_LoopbackAlwaysRequiresConsent(t *testing.T) {
 }
 
 func TestConsent_NoWarningWithAPublicRedirectURI(t *testing.T) {
-	f := newConsentFlow(t, func(c *server.Config) { c.AllowLocalhostRedirectURIs = true }, "http://127.0.0.1/callback", consentTestRedirect)
+	f := newConsentFlow(t, nil, "http://127.0.0.1/callback", consentTestRedirect)
 
 	page := f.get(f.authorizeTarget(consentTestRedirect, testutil.GenerateRandomString(43), nil))
 	requireConsentPage(t, page)

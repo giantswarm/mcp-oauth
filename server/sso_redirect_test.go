@@ -22,7 +22,7 @@ import (
 // TestGetJWKSClient_PermissiveRefusesCrossHostRedirect verifies that the SSO
 // forwarded-ID-token JWKS client keeps the cross-host redirect guard even when
 // AllowPrivateIPJWKS is set. The SSO path builds its client via
-// NewJWKSClientWithOptions -> NewPrivateIPAllowedHTTPClient, which sets
+// NewJWKSClientWithOptions -> NewDefaultDialHTTPClient, which sets
 // CheckRedirect: blockCrossHostRedirect. With AllowPrivateIPJWKS the SSRF dial
 // guard is off, so this redirect guard is the remaining defense against a
 // compromised internal Dex 302-ing the JWKS fetch to an arbitrary internal

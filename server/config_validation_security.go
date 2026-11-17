@@ -2,10 +2,12 @@ package server
 
 import (
 	"log/slog"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/giantswarm/mcp-oauth/internal/constants"
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 )
 
 // applySecurityDefaults sets secure defaults for security-related configuration.
@@ -263,9 +265,13 @@ func logRedirectURISecurityStatus(config *Config, logger *slog.Logger) {
 	// Warn about explicitly disabled security features
 	if config.DisableProductionMode {
 		logger.Warn("SECURITY WARNING: ProductionMode is DISABLED",
-			"risk", "HTTP allowed on non-loopback hosts, relaxed redirect URI validation",
-			"recommendation", "Only disable for local development environments",
+			"risk", "HTTP redirect URIs allowed on non-loopback hosts",
+			"recommendation", "Only for a loopback issuer in local development",
 			"learn_more", "https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics#section-4.1")
+		if !isLoopbackIssuer(config.Issuer) {
+			logger.Warn("DEPRECATED: DisableProductionMode with a non-loopback Issuer will be refused in a future release; remove it, loopback redirect URIs of native clients are always allowed",
+				"issuer", config.Issuer)
+		}
 	}
 	if config.DisableDNSValidation {
 		logger.Warn("SECURITY WARNING: DNS validation is DISABLED",
@@ -290,11 +296,6 @@ func logRedirectURISecurityStatus(config *Config, logger *slog.Logger) {
 			"learn_more", "https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation")
 	}
 
-	if config.AllowLocalhostRedirectURIs {
-		logger.Debug("Localhost redirect URIs are ALLOWED (RFC 8252 native app support)",
-			"note", "HTTP allowed on loopback for native apps",
-			"learn_more", "https://datatracker.ietf.org/doc/html/rfc8252#section-7.3")
-	}
 	if config.AllowPrivateIPRedirectURIs {
 		logger.Warn("SECURITY WARNING: Private IP redirect URIs are ALLOWED",
 			"risk", "authorization codes may be sent to private addresses (10.x, 172.16.x, 192.168.x) on any host",
@@ -313,4 +314,9 @@ func logRedirectURISecurityStatus(config *Config, logger *slog.Logger) {
 			"impact", "Could expose cloud instance credentials and sensitive metadata",
 			"learn_more", "https://owasp.org/www-community/attacks/Server_Side_Request_Forgery")
 	}
+}
+
+func isLoopbackIssuer(issuer string) bool {
+	issuerURL, err := url.Parse(issuer)
+	return err == nil && helpers.IsLoopbackHostname(issuerURL.Hostname())
 }

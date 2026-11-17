@@ -59,9 +59,8 @@ func TestServer_New_EmitsNoInfo(t *testing.T) {
 func TestServer_LogValue_ExposesEffectiveConfig(t *testing.T) {
 	setup := newTestServerSetup(false)
 	srv, err := setup.createServer(&Config{
-		Issuer:                     "https://oauth.example.com",
-		RegistrationAccessToken:    "tok",
-		AllowLocalhostRedirectURIs: true,
+		Issuer:                  "https://oauth.example.com",
+		RegistrationAccessToken: "tok",
 	})
 	require.NoError(t, err)
 
@@ -83,7 +82,7 @@ func TestServer_LogValue_ExposesEffectiveConfig(t *testing.T) {
 	require.Equal(t, true, policy["dns_validation"])
 	require.Equal(t, true, policy["dns_validation_strict"])
 	require.Equal(t, true, policy["authorization_time_validation"])
-	require.Equal(t, true, policy["allow_localhost"])
+	require.NotContains(t, policy, "allow_localhost")
 	require.Equal(t, false, policy["allow_private_ip"])
 	require.Equal(t, false, policy["allow_link_local"])
 }

@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"path"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/security"
 )
 
@@ -575,25 +577,29 @@ type Config struct {
 	// These settings control security validation of redirect URIs during client registration
 	// and authorization flows. They address SSRF and open redirect vulnerabilities.
 
-	// ProductionMode enforces strict security validation for redirect URIs:
-	// - HTTPS required for all redirect URIs (except loopback when AllowLocalhostRedirectURIs=true)
-	// - Private IP addresses blocked in redirect URIs (unless AllowPrivateIPRedirectURIs=true)
-	// - Link-local addresses blocked (unless AllowLinkLocalRedirectURIs=true)
-	// - Dangerous URI schemes blocked (javascript:, data:, file:, etc.)
-	// Default: true (secure by default - set automatically by applySecurityDefaults)
-	// To disable for development, set DisableProductionMode=true instead.
+	// ProductionMode refuses plain-HTTP redirect URIs on hosts that are not
+	// loopback at registration (RFC 9700 §4.1.3; MCP Communication Security).
+	// It has no other effect: private-IP, link-local and scheme checks apply
+	// regardless.
+	// Default: true (set by applySecurityDefaults unless DisableProductionMode).
 	ProductionMode bool
 
-	// DisableProductionMode explicitly disables ProductionMode for development environments.
-	// WARNING: Disabling ProductionMode significantly weakens redirect URI security.
-	// Only set this to true for local development where you need HTTP on non-loopback hosts.
-	// Default: false (ProductionMode is enabled)
+	// DisableProductionMode accepts http:// redirect URIs on hosts that are not
+	// loopback at registration. The authorization request still refuses them
+	// while Issuer uses https://.
+	//
+	// Deprecated: remove it. New logs a deprecation warning unless Issuer is a
+	// loopback URL (http://localhost, http://127.0.0.1, http://[::1]). Loopback
+	// redirect URIs of native clients need no setting.
+	// Default: false
 	DisableProductionMode bool
 
-	// AllowLocalhostRedirectURIs allows http://localhost and http://127.0.0.1 redirect URIs
-	// even in ProductionMode. Required for native apps per RFC 8252.
-	// Also allows loopback IPv6 addresses (::1, [::1]).
-	// Default: false (Go zero-value; set to true for native app support per RFC 8252 Section 7.3)
+	// AllowLocalhostRedirectURIs has no effect. Loopback redirect URIs
+	// (http://localhost, http://127.0.0.0/8, http://[::1]) are always accepted
+	// over plain HTTP, and a registered one matches a request on any port, as
+	// RFC 8252 §7.3 requires for native clients.
+	//
+	// Deprecated: remove it; it is ignored whatever its value.
 	AllowLocalhostRedirectURIs bool
 
 	// AllowPrivateIPRedirectURIs accepts redirect URIs on every host that
@@ -1332,6 +1338,41 @@ func (c *Config) GetResourceIdentifier() string {
 		return c.ResourceIdentifier
 	}
 	return c.Issuer
+}
+
+// PathResourceIdentifier returns the resource identifier advertised for the
+// Protected Resource Metadata path resourcePath: pathConfig.ResourceIdentifier
+// when set, else GetResourceIdentifier with the cleaned, slash-rooted
+// resourcePath appended (the root path appends nothing). A
+// ResourceMetadataByPath key and the request path it is served at therefore
+// yield the same identifier.
+func (c *Config) PathResourceIdentifier(resourcePath string, pathConfig ProtectedResourceConfig) string {
+	if pathConfig.ResourceIdentifier != "" {
+		return pathConfig.ResourceIdentifier
+	}
+	cleanPath := path.Clean("/" + strings.TrimPrefix(resourcePath, "/"))
+	if cleanPath == "/" {
+		return c.GetResourceIdentifier()
+	}
+	return c.GetResourceIdentifier() + cleanPath
+}
+
+// servesResource reports whether resource names a protected resource this
+// server issues tokens for: GetResourceIdentifier or the identifier of a
+// ResourceMetadataByPath entry. URLs are compared after normalization
+// (scheme and host case, default port, trailing slash), as ValidateToken
+// compares a token's audience.
+func (c *Config) servesResource(resource string) bool {
+	normalizedResource := helpers.NormalizeURL(resource)
+	if normalizedResource == helpers.NormalizeURL(c.GetResourceIdentifier()) {
+		return true
+	}
+	for resourcePath, pathConfig := range c.ResourceMetadataByPath {
+		if normalizedResource == helpers.NormalizeURL(c.PathResourceIdentifier(resourcePath, pathConfig)) {
+			return true
+		}
+	}
+	return false
 }
 
 // SetTrustedSchemesMap builds the pre-computed trusted schemes map from the given schemes.

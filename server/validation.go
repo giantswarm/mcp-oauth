@@ -158,8 +158,8 @@ func (s *Server) validateRedirectURI(client *storage.Client, redirectURI string)
 
 // resolveRegisteredRedirectURI returns the canonical URI from
 // client.RedirectURIs that matches redirectURI under the same rules as
-// validateRedirectURI: exact match by default, plus optional RFC 8252 §7.3
-// port-agnostic loopback match when AllowLocalhostRedirectURIs is set. For
+// validateRedirectURI: exact match, plus the RFC 8252 §7.3 port-agnostic
+// loopback match. For
 // loopback the canonical URI substitutes the request's port into the
 // registered scheme/host/path so the bound native-app port survives the
 // round-trip; for non-loopback the canonical URI is the registered element
@@ -176,37 +176,32 @@ func (s *Server) resolveRegisteredRedirectURI(client *storage.Client, redirectUR
 		}
 	}
 
-	if s.Config.AllowLocalhostRedirectURIs {
-		if canonical, ok := canonicalLoopbackRedirectURI(redirectURI, client.RedirectURIs); ok {
-			if err := validateRedirectURISecurityEnhanced(canonical, s.Config.Issuer, s.Config.AllowedCustomSchemes); err != nil {
-				return "", err
-			}
-			return canonical, nil
+	if canonical, ok := canonicalLoopbackRedirectURI(redirectURI, client.RedirectURIs); ok {
+		if err := validateRedirectURISecurityEnhanced(canonical, s.Config.Issuer, s.Config.AllowedCustomSchemes); err != nil {
+			return "", err
 		}
+		return canonical, nil
 	}
 
 	return "", fmt.Errorf("redirect URI not registered for client")
 }
 
 // canonicalLoopbackRedirectURI returns the canonical URI for a loopback
-// port-agnostic match (RFC 8252 §7.3 + §8.3). Scheme, host, and path are
-// taken from the matched registered URI; only the port is taken from the
-// request (the native app binds an ephemeral port, so RFC 8252 mandates the
-// request port wins on the redirect leg). Returns ok=false when no registered
-// loopback URI matches.
+// port-agnostic match (RFC 8252 §7.3 + §8.3). Only the port may differ from a
+// registered loopback URI; scheme and host compare case-insensitively and
+// every other component (userinfo, path, query, fragment) compares exactly
+// (RFC 9700 §4.1.3). The canonical URI is the matched registered URI with the
+// request's port, since the native app binds an ephemeral port. Returns
+// ok=false when no registered loopback URI matches.
 func canonicalLoopbackRedirectURI(requestedURI string, registeredURIs []string) (string, bool) {
 	parsed, err := url.Parse(requestedURI)
 	if err != nil {
 		return "", false
 	}
-	hostname := parsed.Hostname()
-	if !isLoopbackAddress(hostname) {
+	if !isLoopbackAddress(parsed.Hostname()) {
 		return "", false
 	}
-
-	requestedScheme := strings.ToLower(parsed.Scheme)
-	requestedHost := strings.ToLower(hostname)
-	requestedPath := parsed.Path
+	requestedKey := loopbackMatchKey(parsed)
 	requestedPort := parsed.Port()
 
 	for _, registered := range registeredURIs {
@@ -215,12 +210,7 @@ func canonicalLoopbackRedirectURI(requestedURI string, registeredURIs []string) 
 			continue
 		}
 		registeredHost := registeredParsed.Hostname()
-		if !isLoopbackAddress(registeredHost) {
-			continue
-		}
-		if strings.ToLower(registeredParsed.Scheme) != requestedScheme ||
-			strings.ToLower(registeredHost) != requestedHost ||
-			registeredParsed.Path != requestedPath {
+		if !isLoopbackAddress(registeredHost) || loopbackMatchKey(registeredParsed) != requestedKey {
 			continue
 		}
 		canonical := *registeredParsed
@@ -230,6 +220,16 @@ func canonicalLoopbackRedirectURI(requestedURI string, registeredURIs []string) 
 		return canonical.String(), true
 	}
 	return "", false
+}
+
+// loopbackMatchKey serializes u without its port, with scheme and host
+// lowercased, so two loopback redirect URIs that differ only in port share a
+// key.
+func loopbackMatchKey(u *url.URL) string {
+	key := *u
+	key.Scheme = strings.ToLower(u.Scheme)
+	key.Host = net.JoinHostPort(strings.ToLower(u.Hostname()), "")
+	return key.String()
 }
 
 // validateScopes validates that requested scopes are allowed
@@ -553,9 +553,10 @@ func validateHTTPAgainstServerIssuer(scheme, serverIssuer string) error {
 	return nil
 }
 
-// validateResourceParameter validates the resource parameter per RFC 8707
-// The resource parameter must be an absolute HTTPS URI identifying the target resource server
-// This prevents token theft and replay attacks across different resource servers
+// validateResourceParameter validates the resource parameter per RFC 8707:
+// an absolute HTTPS URI (HTTP on localhost) that names a resource this server
+// serves (Config.servesResource). A token for any other resource would let a
+// client present it to that resource server (RFC 8707 §2, invalid_target).
 // Note: Caller must ensure resource is non-empty before calling this function
 func (s *Server) validateResourceParameter(resource string) error {
 	// SECURITY: Validate resource length to prevent DoS via extremely long URIs
@@ -601,6 +602,10 @@ func (s *Server) validateResourceParameter(resource string) error {
 		return fmt.Errorf("resource must not contain fragment identifier")
 	}
 
+	if !s.Config.servesResource(resource) {
+		return fmt.Errorf("resource %q is not served by this authorization server", resource)
+	}
+
 	return nil
 }
 
@@ -616,7 +621,8 @@ func (s *Server) validateResourceConsistency(ctx context.Context, resource strin
 	// Validate resource format if provided in token request
 	if resource != "" {
 		if err := s.validateResourceParameter(resource); err != nil {
-			return s.logAuthCodeValidationFailure(ctx, "invalid_resource_format", clientID, authCode.UserID, helpers.SafeTruncate(code, 8))
+			_ = s.logAuthCodeValidationFailure(ctx, "invalid_resource", clientID, authCode.UserID, helpers.SafeTruncate(code, 8))
+			return fmt.Errorf("%w: %w", ErrInvalidTarget, err)
 		}
 	}
 
