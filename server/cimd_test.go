@@ -10,7 +10,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/giantswarm/mcp-oauth/security"
@@ -441,7 +440,7 @@ func TestFetchClientMetadata(t *testing.T) {
 
 // TestMetadataCache tests the client metadata cache
 func TestMetadataCache(t *testing.T) {
-	cache := newClientMetadataCache(5*time.Minute, 100)
+	cache := newClientMetadataCache(100)
 
 	metadata := &ClientMetadata{
 		ClientID:     "https://example.com/client",
@@ -475,7 +474,7 @@ func TestMetadataCache(t *testing.T) {
 	}
 
 	// Test LRU eviction
-	smallCache := newClientMetadataCache(5*time.Minute, 2) // Max 2 entries
+	smallCache := newClientMetadataCache(2) // Max 2 entries
 	smallCache.Set("client1", metadata, client, 5*time.Minute)
 	smallCache.Set("client2", metadata, client, 5*time.Minute)
 	if smallCache.Size() != 2 {
@@ -613,7 +612,7 @@ func TestMetadataFetchRateLimiting(t *testing.T) {
 	srv := &Server{
 		Config:          config,
 		Logger:          logger,
-		metadataCache:   newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
+		metadataCache:   newClientMetadataCache(1000),
 		Instrumentation: testInstrumentation(t),
 		Auditor:         testAuditor(),
 	}
@@ -756,265 +755,6 @@ func TestRedirectURIValidation(t *testing.T) {
 	}
 }
 
-// TestParseCacheControlMaxAge tests the Cache-Control max-age parsing with capping
-func TestParseCacheControlMaxAge(t *testing.T) {
-	tests := []struct {
-		name         string
-		cacheControl string
-		want         int
-	}{
-		{
-			name:         "no cache-control",
-			cacheControl: "",
-			want:         0,
-		},
-		{
-			name:         "no max-age directive",
-			cacheControl: "public, must-revalidate",
-			want:         0,
-		},
-		{
-			name:         "valid max-age under cap",
-			cacheControl: "max-age=300",
-			want:         300,
-		},
-		{
-			name:         "max-age with other directives",
-			cacheControl: "public, max-age=600, must-revalidate",
-			want:         600,
-		},
-		{
-			name:         "max-age at cap",
-			cacheControl: "max-age=3600",
-			want:         3600,
-		},
-		{
-			name:         "max-age exceeds cap - should be capped",
-			cacheControl: "max-age=7200",
-			want:         3600, // Capped at 1 hour
-		},
-		{
-			name:         "very large max-age - should be capped",
-			cacheControl: "max-age=999999999",
-			want:         3600, // Capped at 1 hour
-		},
-		{
-			name:         "negative max-age",
-			cacheControl: "max-age=-100",
-			want:         0,
-		},
-		{
-			name:         "invalid max-age format",
-			cacheControl: "max-age=abc",
-			want:         0,
-		},
-		{
-			name:         "max-age with whitespace",
-			cacheControl: "max-age = 500",
-			want:         0, // Strict parsing - no space around =
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := parseCacheControlMaxAge(tt.cacheControl)
-			if got != tt.want {
-				t.Errorf("parseCacheControlMaxAge(%q) = %d, want %d", tt.cacheControl, got, tt.want)
-			}
-		})
-	}
-}
-
-// TestNegativeCache tests the negative cache functionality for failed metadata fetches
-func TestNegativeCache(t *testing.T) {
-	cache := newClientMetadataCache(5*time.Minute, 100)
-
-	// Test negative cache miss
-	t.Run("negative cache miss", func(t *testing.T) {
-		_, found := cache.GetNegative("https://example.com/client")
-		if found {
-			t.Error("expected negative cache miss, got hit")
-		}
-	})
-
-	// Test negative cache set and hit
-	t.Run("negative cache set and hit", func(t *testing.T) {
-		clientID := "https://example.com/bad-client"
-		errorMsg := "failed to fetch metadata: connection refused"
-
-		cache.SetNegative(clientID, errorMsg)
-
-		got, found := cache.GetNegative(clientID)
-		if !found {
-			t.Error("expected negative cache hit, got miss")
-		}
-		if got != errorMsg {
-			t.Errorf("negative cache error = %q, want %q", got, errorMsg)
-		}
-	})
-
-	t.Run("negative cache expiry", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			shortCache := newClientMetadataCache(5*time.Minute, 100)
-			shortCache.negativeTTL = 1 * time.Minute
-
-			clientID := "https://example.com/expired-client"
-			shortCache.SetNegative(clientID, "some error")
-
-			_, found := shortCache.GetNegative(clientID)
-			if !found {
-				t.Error("expected negative cache hit before expiry")
-			}
-
-			time.Sleep(2 * time.Minute)
-
-			_, found = shortCache.GetNegative(clientID)
-			if found {
-				t.Error("expected negative cache miss for expired entry, got hit")
-			}
-		})
-	})
-
-	// Test negative cache increment on repeated failures
-	t.Run("negative cache increment attempts", func(t *testing.T) {
-		clientID := "https://example.com/retry-client"
-		cache.SetNegative(clientID, "error 1")
-		cache.SetNegative(clientID, "error 2")
-
-		// Entry should still exist and have updated error
-		got, found := cache.GetNegative(clientID)
-		if !found {
-			t.Error("expected negative cache hit after multiple failures")
-		}
-		if got != "error 2" {
-			t.Errorf("negative cache error = %q, want %q", got, "error 2")
-		}
-	})
-
-	// Test negative cache LRU eviction
-	t.Run("negative cache LRU eviction", func(t *testing.T) {
-		smallCache := newClientMetadataCache(5*time.Minute, 100)
-		smallCache.maxNegativeEntries = 2
-
-		smallCache.SetNegative("client1", "error1")
-		smallCache.SetNegative("client2", "error2")
-
-		if smallCache.NegativeSize() != 2 {
-			t.Errorf("negative cache size = %d, want 2", smallCache.NegativeSize())
-		}
-
-		// Add third entry - should evict oldest
-		smallCache.SetNegative("client3", "error3")
-		if smallCache.NegativeSize() != 2 {
-			t.Errorf("negative cache size = %d, want 2 after eviction", smallCache.NegativeSize())
-		}
-
-		// client1 should be evicted (oldest)
-		_, found := smallCache.GetNegative("client1")
-		if found {
-			t.Error("expected client1 to be evicted from negative cache, but found")
-		}
-	})
-
-	// Test that successful fetch clears negative cache entry
-	t.Run("successful fetch clears negative cache", func(t *testing.T) {
-		clientID := "https://example.com/recovered-client"
-		cache.SetNegative(clientID, "initial error")
-
-		// Verify negative entry exists
-		_, found := cache.GetNegative(clientID)
-		if !found {
-			t.Error("expected negative cache hit before successful fetch")
-		}
-
-		// Simulate successful fetch by calling Set
-		metadata := &ClientMetadata{
-			ClientID:     clientID,
-			RedirectURIs: []string{"https://app.example.com/callback"},
-		}
-		client := metadataToClient(metadata)
-		cache.Set(clientID, metadata, client, 5*time.Minute)
-
-		// Negative entry should be cleared
-		_, found = cache.GetNegative(clientID)
-		if found {
-			t.Error("expected negative cache miss after successful fetch, but found")
-		}
-	})
-
-	t.Run("cleanup expired cleans negative entries", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			cleanupCache := newClientMetadataCache(5*time.Minute, 100)
-			cleanupCache.negativeTTL = 1 * time.Minute
-
-			cleanupCache.SetNegative("neg1", "error1")
-			cleanupCache.SetNegative("neg2", "error2")
-
-			if cleanupCache.NegativeSize() != 2 {
-				t.Errorf("negative cache size = %d before cleanup, want 2", cleanupCache.NegativeSize())
-			}
-
-			time.Sleep(2 * time.Minute)
-
-			removed := cleanupCache.CleanupExpired()
-			if removed != 2 {
-				t.Errorf("expected 2 entries removed, got %d", removed)
-			}
-			if cleanupCache.NegativeSize() != 0 {
-				t.Errorf("negative cache size = %d after cleanup, want 0", cleanupCache.NegativeSize())
-			}
-		})
-	})
-
-	// Test Clear clears both positive and negative caches
-	t.Run("clear clears both caches", func(t *testing.T) {
-		clearCache := newClientMetadataCache(5*time.Minute, 100)
-
-		metadata := &ClientMetadata{
-			ClientID:     "https://example.com/client",
-			RedirectURIs: []string{"https://app.example.com/callback"},
-		}
-		client := metadataToClient(metadata)
-		clearCache.Set("https://example.com/client", metadata, client, 5*time.Minute)
-		clearCache.SetNegative("https://example.com/bad-client", "error")
-
-		if clearCache.Size() != 1 || clearCache.NegativeSize() != 1 {
-			t.Errorf("cache not properly populated: size=%d, negativeSize=%d", clearCache.Size(), clearCache.NegativeSize())
-		}
-
-		clearCache.Clear()
-
-		if clearCache.Size() != 0 {
-			t.Errorf("positive cache size = %d after clear, want 0", clearCache.Size())
-		}
-		if clearCache.NegativeSize() != 0 {
-			t.Errorf("negative cache size = %d after clear, want 0", clearCache.NegativeSize())
-		}
-	})
-}
-
-// TestNegativeCacheMetrics tests that negative cache metrics are tracked
-func TestNegativeCacheMetrics(t *testing.T) {
-	cache := newClientMetadataCache(5*time.Minute, 100)
-
-	// Set a negative entry
-	cache.SetNegative("https://example.com/bad", "error")
-
-	// Get it (should be a hit)
-	cache.GetNegative("https://example.com/bad")
-
-	// Get a non-existent entry (should not affect negative hits)
-	cache.GetNegative("https://example.com/nonexistent")
-
-	metrics := cache.GetMetrics()
-	if metrics.negativeCached != 1 {
-		t.Errorf("negativeCached = %d, want 1", metrics.negativeCached)
-	}
-	if metrics.negativeHits != 1 {
-		t.Errorf("negativeHits = %d, want 1", metrics.negativeHits)
-	}
-}
-
 // TestGetOrFetchClient_NonURLClientID tests that non-URL client IDs fall back to normal client store lookup
 func TestGetOrFetchClient_NonURLClientID(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -1040,7 +780,7 @@ func TestGetOrFetchClient_NonURLClientID(t *testing.T) {
 		Config:          config,
 		Logger:          logger,
 		clientStore:     clientStore,
-		metadataCache:   newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
+		metadataCache:   newClientMetadataCache(1000),
 		Instrumentation: testInstrumentation(t),
 		Auditor:         testAuditor(),
 	}
@@ -1069,7 +809,7 @@ func TestGetOrFetchClient_URLClientID_CIMDDisabled(t *testing.T) {
 	srv := &Server{
 		Config:          config,
 		Logger:          logger,
-		metadataCache:   newClientMetadataCache(5*time.Minute, 1000),
+		metadataCache:   newClientMetadataCache(1000),
 		Instrumentation: testInstrumentation(t),
 		Auditor:         testAuditor(),
 	}
@@ -1096,7 +836,7 @@ func TestGetOrFetchClient_URLClientID_CacheHit(t *testing.T) {
 	srv := &Server{
 		Config:          config,
 		Logger:          logger,
-		metadataCache:   newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
+		metadataCache:   newClientMetadataCache(1000),
 		Instrumentation: testInstrumentation(t),
 		Auditor:         testAuditor(),
 	}
@@ -1231,7 +971,7 @@ func TestGetOrFetchClient_SingleflightHonoursCallerContextCancel(t *testing.T) {
 	srv := &Server{
 		Config:          config,
 		Logger:          logger,
-		metadataCache:   newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
+		metadataCache:   newClientMetadataCache(1000),
 		Instrumentation: testInstrumentation(t),
 		Auditor:         testAuditor(),
 	}
@@ -1245,37 +985,6 @@ func TestGetOrFetchClient_SingleflightHonoursCallerContextCancel(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "context canceled") {
 		t.Fatalf("getOrFetchClient with pre-canceled ctx must surface context.Canceled, got: %v", err)
-	}
-}
-
-// TestGetOrFetchClient_URLClientID_NegativeCacheHit tests that failed URL clients return cached error
-func TestGetOrFetchClient_URLClientID_NegativeCacheHit(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-
-	config := &Config{
-		EnableClientIDMetadataDocuments: true,
-		ClientMetadataCacheTTL:          5 * time.Minute,
-	}
-
-	srv := &Server{
-		Config:          config,
-		Logger:          logger,
-		metadataCache:   newClientMetadataCache(config.ClientMetadataCacheTTL, 1000),
-		Instrumentation: testInstrumentation(t),
-		Auditor:         testAuditor(),
-	}
-
-	// Pre-populate negative cache
-	clientID := "https://example.com/bad-client"
-	srv.metadataCache.SetNegative(clientID, "previous validation failure")
-
-	// Test that negative cached error is returned
-	_, err := srv.getOrFetchClient(context.Background(), clientID)
-	if err == nil {
-		t.Error("expected error for negatively cached client ID, got nil")
-	}
-	if !strings.Contains(err.Error(), "previously failed validation") {
-		t.Errorf("expected negative cache error, got: %v", err)
 	}
 }
 

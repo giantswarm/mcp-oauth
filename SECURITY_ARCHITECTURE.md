@@ -276,7 +276,7 @@ The guarded dialers (CIMD metadata, and the `providers/oidc` SSRF-safe and host-
 #### Rate Limiting (Per-Domain)
 
 ```go
-// Default: 10 requests/minute per domain, burst of 20
+// Default: 10 requests/second per domain, burst of 20
 metadataFetchRateLimiter := security.NewRateLimiter(10, 20, logger)
 ```
 
@@ -397,7 +397,7 @@ type cacheMetrics struct {
 
 3. **Time Synchronization**: Cache TTL and token expiry depend on accurate system time. Ensure NTP or similar is configured.
 
-4. **Rate Limit Tuning**: Default rate limits (10 req/min per domain) may need adjustment based on your deployment:
+4. **Rate Limit Tuning**: Default rate limits (10 requests/second per domain, burst 20) may need adjustment based on your deployment:
    - **Lower** for high-security environments
    - **Higher** for high-traffic deployments with many legitimate clients
 
