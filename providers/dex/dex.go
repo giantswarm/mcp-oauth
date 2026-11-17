@@ -139,8 +139,8 @@ type Config struct {
 
 	// AllowPrivateIP is ignored. The Dex client always reaches private and
 	// loopback addresses, honors HTTP_PROXY, HTTPS_PROXY and NO_PROXY, and pins
-	// redirects to the issuer host. IP-literal private addresses in IssuerURL
-	// are still rejected by URL validation.
+	// redirects to the issuer host. IssuerURL may name a private or loopback
+	// address.
 	//
 	// Deprecated: AllowPrivateIP has no effect; remove it. Setting it logs a
 	// warning.
@@ -230,9 +230,7 @@ func validateRequiredConfig(cfg *Config) error {
 		return fmt.Errorf("discovery timeout must not be negative, got %v", cfg.DiscoveryTimeout)
 	}
 
-	// SECURITY: Validate issuer URL with SSRF protection.
-	// When a discovery client is injected (tests only), skip URL validation:
-	// the injected client is already bound to a trusted server.
+	// An injected discovery client is bound to a test server and may use HTTP.
 	if cfg.discoveryClient == nil {
 		if err := oidc.ValidateIssuerURL(cfg.IssuerURL); err != nil {
 			return fmt.Errorf("invalid issuer URL: %w", err)

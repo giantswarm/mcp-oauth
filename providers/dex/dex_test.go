@@ -221,9 +221,9 @@ func TestNewProvider_ValidationErrors(t *testing.T) {
 			wantErr: "invalid issuer URL",
 		},
 		{
-			name: "private IP issuer URL",
+			name: "issuer query component",
 			config: &Config{
-				IssuerURL:    "https://10.0.0.1",
+				IssuerURL:    "https://dex.example.com?x=1",
 				ClientID:     "client",
 				ClientSecret: "secret",
 			},
@@ -874,12 +874,13 @@ func TestHealthCheck_Unreachable(t *testing.T) {
 	server.Close() // Close it immediately to make it unreachable
 
 	cfg := &Config{
-		IssuerURL:      server.URL,
-		ClientID:       "test-client",
-		ClientSecret:   "test-secret",
-		RedirectURL:    "http://localhost:8080/callback",
-		HTTPClient:     &http.Client{Timeout: 100 * time.Millisecond},
-		RequestTimeout: 100 * time.Millisecond,
+		IssuerURL:        server.URL,
+		ClientID:         "test-client",
+		ClientSecret:     "test-secret",
+		RedirectURL:      "http://localhost:8080/callback",
+		HTTPClient:       &http.Client{Timeout: 100 * time.Millisecond},
+		RequestTimeout:   100 * time.Millisecond,
+		DiscoveryTimeout: 100 * time.Millisecond,
 	}
 
 	// This will fail during discovery in NewProvider
@@ -1024,24 +1025,6 @@ func TestAllowPrivateIP_WarningEmittedWithExplicitClient(t *testing.T) {
 	}
 
 	require.Contains(t, buf.String(), "dex.Config.AllowPrivateIP is deprecated and has no effect")
-}
-
-// TestAllowPrivateIP_IPLiteralStillRejected confirms that AllowPrivateIP does not
-// bypass static URL validation: an IP-literal private IssuerURL is rejected even
-// when the flag is set, because the flag only lifts the transport-level check.
-func TestAllowPrivateIP_IPLiteralStillRejected(t *testing.T) {
-	_, err := NewProvider(&Config{
-		IssuerURL:      "https://10.0.0.1",
-		ClientID:       "client",
-		ClientSecret:   "secret",
-		AllowPrivateIP: true,
-	})
-	if err == nil {
-		t.Fatal("NewProvider() succeeded, want error for private IP literal")
-	}
-	if !strings.Contains(err.Error(), "invalid issuer URL") {
-		t.Errorf("NewProvider() error = %v, want error containing 'invalid issuer URL'", err)
-	}
 }
 
 // An identity-only sign-in asks Dex for openid alone: offline_access would

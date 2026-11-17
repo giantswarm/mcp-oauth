@@ -13,7 +13,7 @@ This checklist should be completed for all pull requests that modify security-se
 
 ### 2. SSRF (Server-Side Request Forgery) Protection ✓
 
-- [ ] All external URLs validated with `ValidateIssuerURL()` or equivalent
+- [ ] URLs selected by a request or token validated with `ValidateExternalURL()` or an SSRF-safe dialer; operator-configured issuers use `ValidateIssuerURL()` (syntax only)
 - [ ] Private IP ranges blocked (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
 - [ ] Loopback addresses blocked (127.0.0.1, ::1)
 - [ ] Link-local addresses blocked (169.254.169.254 - metadata services)

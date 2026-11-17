@@ -445,35 +445,27 @@ The `providers/oidc` package implements secure OIDC discovery per RFC 8414 (OAut
 
 **Security Principle**: OIDC discovery involves fetching configuration from external URLs, creating SSRF and DoS attack vectors that require careful mitigation.
 
-### SSRF Protection (Issuer URL Validation)
+### Issuer URL Validation
 
-**Critical Security Requirement**: Prevent Server-Side Request Forgery attacks when fetching discovery documents.
+The issuer is operator configuration, not a URL a request or token selects, so
+issuer validation checks syntax and relies on TLS and the issuer match for trust
+rather than on network restrictions.
 
-```go
-// ValidateIssuerURL enforces HTTPS and blocks private IP ranges
-func ValidateIssuerURL(issuerURL string) error {
-    // 1. HTTPS enforcement
-    if u.Scheme != "https" {
-        return fmt.Errorf("issuer URL must use HTTPS")
-    }
+`ValidateIssuerURL` accepts an Issuer Identifier as defined by OpenID Connect
+Core 1.0 section 1.2: an HTTPS URL with a host and optional port and path. It
+refuses user information, query components and fragments, including empty `?`
+and `#` delimiters. Private, loopback and link-local addresses are permitted.
+It does not resolve DNS.
 
-    // 2. Block private IP ranges
-    if ip := net.ParseIP(host); ip != nil {
-        if ip.IsLoopback() { /* 127.0.0.1, ::1 */ }
-        if ip.IsPrivate() { /* 10.x, 172.16-31.x, 192.168.x, fc00::/7 */ }
-        if ip.IsLinkLocalUnicast() { /* 169.254.x.x - AWS/GCP metadata */ }
-    }
-}
-```
+Trust in the configured issuer comes from:
 
-#### Blocked Address Ranges
+- **TLS verification** against the system trust store or `dex.Config.RootCAs`.
+- **Exact issuer match**: the discovery document's `issuer` must be identical
+  to the configured issuer (OpenID Connect Discovery 1.0 section 4.3).
 
-- **IPv4 Loopback**: `127.0.0.0/8` (localhost services)
-- **IPv4 Private**: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`
-- **IPv4 Link-Local**: `169.254.0.0/16` (cloud metadata services)
-- **IPv6 Loopback**: `::1`
-- **IPv6 Private**: `fc00::/7`, `fd00::/8`
-- **IPv6 Link-Local**: `fe80::/10`
+Endpoints selected by a request or token (JWKS URIs of trusted issuers, CIMD
+client metadata, token endpoints from exchange requests) keep SSRF protection
+through `ValidateExternalURL` and the SSRF-safe dialers.
 
 **Implementation**: `providers/oidc/validation.go` - `ValidateIssuerURL()`
 
@@ -517,7 +509,7 @@ httpClient := &http.Client{
             return fmt.Errorf("stopped after %d redirects", maxRedirects)
         }
         // SECURITY: Validate redirect target for SSRF protection
-        if err := ValidateIssuerURL(req.URL.String()); err != nil {
+        if err := ValidateExternalURL(req.URL.String(), "redirect target"); err != nil {
             return fmt.Errorf("invalid redirect target: %w", err)
         }
         return nil
