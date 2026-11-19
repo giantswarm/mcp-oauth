@@ -3,6 +3,7 @@ package oidc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"golang.org/x/sync/singleflight"
+
+	"github.com/giantswarm/mcp-oauth/internal/proxytunnel"
 )
 
 const (
@@ -230,6 +233,10 @@ func (c *DiscoveryClient) fetchAndCache(ctx context.Context, issuerURL string) (
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		var refused *proxytunnel.ConnectRefusedError
+		if errors.As(err, &refused) {
+			return nil, fmt.Errorf("failed to fetch OIDC discovery document: %w (the HTTPS_PROXY proxy refused the tunnel to the issuer: add the issuer host to NO_PROXY or allow it on the proxy)", err)
+		}
 		return nil, fmt.Errorf("failed to fetch OIDC discovery document: %w", err)
 	}
 

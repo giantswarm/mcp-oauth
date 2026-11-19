@@ -380,6 +380,7 @@ func newHTTPClient(timeout time.Duration, dialFor func(*net.Dialer) dialContextF
 	}
 	if proxy {
 		transport.Proxy = http.ProxyFromEnvironment
+		transport.OnProxyConnectResponse = refuseNonOKConnect
 	}
 	if rootCAs != nil {
 		transport.TLSClientConfig = &tls.Config{
@@ -463,6 +464,16 @@ func NewDefaultDialHTTPClient(timeout time.Duration, rootCAs *x509.CertPool) *ht
 		true, // pinHost: the dialer cannot filter private IPs
 		true, // proxy: the endpoint is operator-configured
 		rootCAs)
+}
+
+// refuseNonOKConnect turns a proxy's non-200 answer to CONNECT into a
+// proxytunnel.ConnectRefusedError. Without it net/http reports only the status
+// text ("Forbidden"), which reads as the endpoint's own answer.
+func refuseNonOKConnect(_ context.Context, _ *url.URL, connectReq *http.Request, connectRes *http.Response) error {
+	if connectRes.StatusCode == http.StatusOK {
+		return nil
+	}
+	return &proxytunnel.ConnectRefusedError{Target: connectReq.Host, StatusCode: connectRes.StatusCode, Status: connectRes.Status}
 }
 
 func guardSSRF(host string, ips []net.IP) error {
