@@ -339,4 +339,9 @@ func TestMetadataFetchError_NamesPinningOnARefusedConnect(t *testing.T) {
 
 	plain := metadataFetchError("https://localhost/client.json", errors.New("connection reset"))
 	require.NotContains(t, plain.Error(), "PreRegisteredClientMetadata")
+
+	authRequired := metadataFetchError("https://localhost/client.json", &proxytunnel.ConnectRefusedError{
+		Target: "127.0.0.1:443", StatusCode: http.StatusProxyAuthRequired, Status: "407 Proxy Authentication Required",
+	})
+	require.NotContains(t, authRequired.Error(), "PreRegisteredClientMetadata")
 }

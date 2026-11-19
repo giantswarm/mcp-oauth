@@ -604,10 +604,11 @@ func (s *Server) createMetadataHTTPClient(timeout time.Duration) *http.Client {
 
 // metadataFetchError wraps a failed metadata request. A proxy that allows
 // destinations by domain cannot match the CONNECT to the checked IP that the
-// SSRF guard sends, so its refusal names pre-registration as the fix.
+// SSRF guard sends and answers 403, so that refusal names pre-registration as
+// the fix.
 func metadataFetchError(clientID string, err error) error {
 	var refused *proxytunnel.ConnectRefusedError
-	if errors.As(err, &refused) {
+	if errors.As(err, &refused) && refused.StatusCode == http.StatusForbidden {
 		return fmt.Errorf("failed to fetch metadata from %s: %w (a proxy that allows by domain refuses a CONNECT to an IP address: pre-register this client in PreRegisteredClientMetadata)", clientID, err)
 	}
 	return fmt.Errorf("failed to fetch metadata from %s: %w", clientID, err)

@@ -115,10 +115,13 @@ func TestRestrictClientMetadataRefusesWithoutNetwork(t *testing.T) {
 		PreRegisteredClientMetadata:     []ClientMetadata{pinned},
 	})
 
+	audit := captureAudit(srv)
 	_, err := srv.GetClient(t.Context(), endpoint.URL+"/unlisted.json")
 	require.ErrorIs(t, err, ErrClientMetadataNotAllowed)
 	require.Zero(t, requests.Load())
 	require.Zero(t, srv.metadataCache.metrics.fetchFails, "a refused client ID is not a fetch")
+	blocked := onlyAuditLine(t, audit, "client_metadata_fetch_blocked")
+	require.Equal(t, "not_allowed", blocked.Details[logKeyReason])
 
 	client, err := srv.GetClient(t.Context(), pinned.ClientID)
 	require.NoError(t, err)

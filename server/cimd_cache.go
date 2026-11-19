@@ -236,7 +236,7 @@ func (s *Server) getOrFetchClient(ctx context.Context, clientID string) (*storag
 	if err := s.checkClientMetadataAllowed(clientID); err != nil {
 		s.recordCIMDFetchMetric(ctx, "blocked", time.Now())
 		s.logMetadataFetchEvent(ctx, "client_metadata_fetch_blocked", clientID, map[string]any{
-			"reason": "not_allowed",
+			logKeyReason: "not_allowed",
 		})
 		return nil, err
 	}

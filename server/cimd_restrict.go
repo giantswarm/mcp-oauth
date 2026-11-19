@@ -51,14 +51,11 @@ func validateClientMetadataHost(host string) error {
 	return nil
 }
 
-// checkClientMetadataAllowed applies RestrictClientMetadata to a URL client_id.
-// Pinned client IDs match byte for byte (RFC 9700 section 4.1.3); hosts match
-// on their host key.
+// checkClientMetadataAllowed applies RestrictClientMetadata to a URL client_id
+// that is not pinned: its host must be in ClientMetadataHosts, matched on the
+// host key.
 func (s *Server) checkClientMetadataAllowed(clientID string) error {
 	if !s.Config.RestrictClientMetadata {
-		return nil
-	}
-	if _, ok := s.preRegisteredClients[clientID]; ok {
 		return nil
 	}
 	u, err := url.Parse(clientID)

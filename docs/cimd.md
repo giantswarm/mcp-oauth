@@ -255,11 +255,11 @@ The deprecated `AllowPrivateIPClientMetadata` has none of these limits on who ch
 
 #### Restricting which client IDs are accepted
 
-`RestrictClientMetadata` turns the open CIMD model into an allow-list (§9.2: "no obligation to support dynamic client onboarding"; §10.8: allow-lists of trusted domains). Only a client ID pinned in `PreRegisteredClientMetadata`, or one whose host is in `ClientMetadataHosts`, is accepted. Every other URL client_id gets `invalid_client` before any DNS lookup or request, and is counted as `blocked` on `oauth_cimd_fetch_total` with a `client_metadata_fetch_blocked` audit event. A server that only one gateway calls can pin that gateway's document and accept nothing else.
+`RestrictClientMetadata` turns the open CIMD model into an allow-list (§9.2: "no obligation to support dynamic client onboarding"; §10.8: allow-lists of trusted domains). Only a client ID pinned in `PreRegisteredClientMetadata`, or one whose host is in `ClientMetadataHosts`, is accepted. Every other URL client_id gets `invalid_client` (§6.1, a terminal failure on policy grounds) before any DNS lookup or request, and is counted as `blocked` on `oauth_cimd_fetch_total` with a `client_metadata_fetch_blocked` audit event. A server that only one gateway calls can pin that gateway's document and accept nothing else.
 
 #### Behind an egress proxy
 
-The fetch honours `HTTPS_PROXY` and `NO_PROXY`, and asks the proxy for a `CONNECT` to the IP address it checked, never to the hostname. This keeps §10.7 enforced in the server: the proxy cannot resolve the name again to a different address. A proxy that allows destinations by domain name (squid `dstdomain`) cannot match an IP address and refuses the tunnel; the error then names `PreRegisteredClientMetadata`. On such a network:
+The fetch honours `HTTPS_PROXY` and `NO_PROXY`, and asks the proxy for a `CONNECT` to the IP address it checked, never to the hostname. This keeps §10.7 enforced in the server: the proxy cannot resolve the name again to a different address. A proxy that allows destinations by domain name (squid `dstdomain`) cannot match an IP address and refuses the tunnel with `403`; the error then names `PreRegisteredClientMetadata`. On such a network:
 
 1. **Pin the clients** you accept in `PreRegisteredClientMetadata` ([Pre-registered metadata](#pre-registered-metadata)). No request leaves the server for them; re-check the pinned documents against their URLs from a place that may reach the internet.
 2. **Turn on `RestrictClientMetadata`**, so unpinned client IDs are refused without any request.
