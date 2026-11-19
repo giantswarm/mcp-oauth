@@ -236,6 +236,12 @@ func createSSRFProtectedTransport(allowPrivateIP bool, allowedPrivateHosts []str
 // addresses it resolved to.
 type listedHostCheck func(host string, ips []net.IP) error
 
+// checkListedMetadataHost lets a listed metadata host reach RFC 1918 and
+// RFC 4193 addresses on top of the globally reachable ones isPrivateIP allows.
+func checkListedMetadataHost(host string, ips []net.IP) error {
+	return privateaddr.CheckListedHost(host, ips, isPrivateIP)
+}
+
 // checkListedIPAddrs applies checkListed to ips.
 func checkListedIPAddrs(checkListed listedHostCheck, host string, ips []net.IPAddr) error {
 	addrs := make([]net.IP, 0, len(ips))
@@ -293,7 +299,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 			"config", "AllowPrivateIPClientMetadata=true")
 	}
 
-	sanitizedURL, err := validateAndSanitizeMetadataURL(clientID, allowPrivateIP, s.Config.AllowPrivateIPClientMetadataHosts, privateaddr.CheckListedHost)
+	sanitizedURL, err := validateAndSanitizeMetadataURL(clientID, allowPrivateIP, s.Config.AllowPrivateIPClientMetadataHosts, checkListedMetadataHost)
 	if err != nil {
 		s.recordCIMDFetchMetric(ctx, "blocked", fetchStart)
 		s.logMetadataFetchEvent(ctx, "client_metadata_fetch_blocked", clientID, map[string]any{
@@ -588,7 +594,7 @@ func (s *Server) createMetadataHTTPClient(timeout time.Duration) *http.Client {
 			s.Config.AllowPrivateIPClientMetadataHosts,
 			s.Config.ClientMetadataRootCAs,
 			proxytunnel.FromEnvironment(),
-			privateaddr.CheckListedHost,
+			checkListedMetadataHost,
 		),
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse

@@ -8,14 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
-
-	"code.dny.dev/ssrf"
 )
-
-// publicGuard accepts only globally reachable addresses: it refuses the IANA
-// special-purpose IPv4 ranges, everything outside IPv6 global unicast, and the
-// special-purpose ranges inside it.
-var publicGuard = ssrf.New(ssrf.WithAnyPort())
 
 // IsListable reports whether addr is in the private class a host list lifts:
 // RFC 1918 (10/8, 172.16/12, 192.168/16) or RFC 4193 (fc00::/7). An IPv4
@@ -24,21 +17,18 @@ func IsListable(addr netip.Addr) bool {
 	return addr.Unmap().IsPrivate()
 }
 
-// AllowedForListedHost reports whether a listed host may resolve to addr: a
-// globally reachable address or one in the listable private class. Loopback,
-// link-local (cloud metadata), unspecified, multicast, RFC 6598 shared space
-// and translation prefixes stay refused.
-func AllowedForListedHost(addr netip.Addr) bool {
-	addr = addr.Unmap()
-	return IsListable(addr) || publicGuard.SafeAddr(addr) == nil
-}
-
 // CheckListedHost returns an error naming the first address in ips that a
-// listed host may not resolve to, or nil when every address is allowed.
-func CheckListedHost(host string, ips []net.IP) error {
+// listed host may not resolve to: one that restricted refuses and that is not
+// in the listable class. restricted is the guard the operation applies to an
+// unlisted host, so a listed host is never refused an address an unlisted
+// host may reach, and gains only RFC 1918 and RFC 4193.
+func CheckListedHost(host string, ips []net.IP, restricted func(net.IP) bool) error {
 	for _, ip := range ips {
 		addr, ok := netip.AddrFromSlice(ip)
-		if !ok || !AllowedForListedHost(addr) {
+		if !ok {
+			return fmt.Errorf("listed host %q resolved to an invalid address", host)
+		}
+		if restricted(ip) && !IsListable(addr) {
 			return fmt.Errorf("listed host %q resolved to %s, which a private-IP host list does not allow (only RFC 1918 and RFC 4193 are lifted)", host, ip)
 		}
 	}

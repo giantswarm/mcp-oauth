@@ -501,7 +501,7 @@ The following flags exist for non-production scenarios. Each emits a startup `WA
 
 Every private-IP allowance follows one pattern, `AllowPrivateIP<Operation>Hosts`: a hostname list (no port, no wildcard, no IP literal), with the connection-time guard kept for every host that is not listed. Entries match case-insensitively and ignore one trailing dot; redirect URIs and client IDs are still compared byte for byte against what was registered ([RFC 9700 §4.1.3](https://datatracker.ietf.org/doc/html/rfc9700#section-4.1.3)).
 
-Every list lifts RFC 1918 (`10/8`, `172.16/12`, `192.168/16`) and RFC 4193 (`fc00::/7`) only. For the CIMD and JWKS fetches, a listed host that resolves to loopback, link-local (cloud metadata), unspecified, multicast, shared address space (`100.64.0.0/10`) or another IANA special-purpose range is refused. The redirect list is browser-redirect policy, not a fetch: link-local keeps its own switch (`AllowLinkLocalRedirectURIs`), and a redirect hostname that resolves to loopback is accepted for every host, listed or not, like a loopback redirect URI. The deprecated blanket switches still work, keep their wider behaviour, and log a deprecation warning naming their host list.
+Every list lifts RFC 1918 (`10/8`, `172.16/12`, `192.168/16`) and RFC 4193 (`fc00::/7`) on top of the guard the operation applies to an unlisted host, and nothing else: a listed host is never refused an address an unlisted host may reach. Loopback, link-local (cloud metadata) and unspecified addresses stay refused for a listed host on the CIMD and JWKS fetches; the CIMD guard also refuses the other IANA special-purpose ranges, listed or not. The redirect list is browser-redirect policy, not a fetch: link-local keeps its own switch (`AllowLinkLocalRedirectURIs`), and a redirect hostname that resolves to loopback is accepted for every host, listed or not, like a loopback redirect URI. The deprecated blanket switches still work, keep their wider behaviour, and log a deprecation warning naming their host list.
 
 ```go
 // Development / private-network only, never set in internet-facing production
@@ -742,7 +742,7 @@ Trusted issuers have the same field, `TrustedIssuer.AllowPrivateIPJWKSHosts`. Th
 - Private IP ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 (RFC 1918)
 - IPv6 unique-local addresses: fc00::/7 (RFC 4193)
 
-Loopback, link-local and the other special-purpose ranges stay refused.
+Loopback, link-local and unspecified addresses stay refused.
 
 **Security notes:**
 - HTTPS is still required for a listed host

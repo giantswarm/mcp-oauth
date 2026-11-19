@@ -690,8 +690,8 @@ type Config struct {
 
 	// AllowPrivateIPJWKSHosts lists the hostnames whose JWKS endpoint, used to
 	// validate forwarded SSO ID tokens (TrustedAudiences), may resolve to RFC
-	// 1918 or RFC 4193 addresses. Loopback, link-local and the other
-	// special-purpose ranges stay refused for a listed host. Every other host
+	// 1918 or RFC 4193 addresses. Loopback, link-local and unspecified
+	// addresses stay refused for a listed host. Every other host
 	// keeps the SSRF guard at connection time. Entries match the JWKS URL's
 	// hostname case-insensitively, ignoring one trailing dot (no port, no
 	// wildcard), like TrustedIssuer.AllowPrivateIPJWKSHosts.

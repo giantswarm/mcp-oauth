@@ -110,8 +110,8 @@ type JWKSClientOptions struct {
 	AllowPrivateIP bool
 
 	// AllowPrivateIPHosts lists hostnames whose JWKS URLs are permitted to
-	// resolve to RFC 1918 and RFC 4193 addresses; loopback, link-local and the
-	// other special-purpose ranges stay refused for them. Hosts match
+	// resolve to RFC 1918 and RFC 4193 addresses; loopback, link-local and
+	// unspecified addresses stay refused for them. Hosts match
 	// case-insensitively and ignore one trailing dot. All other hosts remain
 	// subject to the normal SSRF/DNS-rebinding guard. Prefer this over
 	// AllowPrivateIP when the private endpoint is a known in-cluster service

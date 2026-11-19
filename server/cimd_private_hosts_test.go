@@ -16,7 +16,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/giantswarm/mcp-oauth/internal/privateaddr"
 	"github.com/giantswarm/mcp-oauth/internal/privateaddr/privateaddrtest"
 	"github.com/giantswarm/mcp-oauth/internal/proxytunnel"
 	"github.com/giantswarm/mcp-oauth/internal/proxytunnel/proxytunneltest"
@@ -40,14 +39,14 @@ func TestValidateAndSanitizeMetadataURL_AllowedPrivateHosts(t *testing.T) {
 		checkListed    listedHostCheck
 		wantErr        string
 	}{
-		{"listed private host is accepted", "https://localhost/client.json", false, []string{"localhost"}, privateaddrtest.LoopbackAsPrivate, ""},
-		{"listed host matches case-insensitively with a trailing dot", "https://LocalHost./client.json", false, []string{"localhost"}, privateaddrtest.LoopbackAsPrivate, ""},
-		{"listed host resolving to loopback is refused", "https://localhost/client.json", false, []string{"localhost"}, privateaddr.CheckListedHost, errListedHost},
-		{"unlisted private host is refused", "https://127.0.0.1/client.json", false, []string{"localhost"}, privateaddrtest.LoopbackAsPrivate, errPrivateIP},
-		{"no allowance refuses the listed host", "https://localhost/client.json", false, nil, privateaddrtest.LoopbackAsPrivate, errPrivateIP},
-		{"global bool accepts every private host", "https://127.0.0.1/client.json", true, nil, privateaddr.CheckListedHost, ""},
-		{"global bool and list accept an unlisted host", "https://127.0.0.1/client.json", true, []string{"localhost"}, privateaddr.CheckListedHost, ""},
-		{"global bool overrides the listed-host policy", "https://localhost/client.json", true, []string{"localhost"}, privateaddr.CheckListedHost, ""},
+		{"listed private host is accepted", "https://localhost/client.json", false, []string{"localhost"}, privateaddrtest.LoopbackAsPrivate(isPrivateIP), ""},
+		{"listed host matches case-insensitively with a trailing dot", "https://LocalHost./client.json", false, []string{"localhost"}, privateaddrtest.LoopbackAsPrivate(isPrivateIP), ""},
+		{"listed host resolving to loopback is refused", "https://localhost/client.json", false, []string{"localhost"}, checkListedMetadataHost, errListedHost},
+		{"unlisted private host is refused", "https://127.0.0.1/client.json", false, []string{"localhost"}, privateaddrtest.LoopbackAsPrivate(isPrivateIP), errPrivateIP},
+		{"no allowance refuses the listed host", "https://localhost/client.json", false, nil, privateaddrtest.LoopbackAsPrivate(isPrivateIP), errPrivateIP},
+		{"global bool accepts every private host", "https://127.0.0.1/client.json", true, nil, checkListedMetadataHost, ""},
+		{"global bool and list accept an unlisted host", "https://127.0.0.1/client.json", true, []string{"localhost"}, checkListedMetadataHost, ""},
+		{"global bool overrides the listed-host policy", "https://localhost/client.json", true, []string{"localhost"}, checkListedMetadataHost, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -73,7 +72,7 @@ func TestSSRFProtectedTransport_AllowedPrivateHosts(t *testing.T) {
 	_, port, err := net.SplitHostPort(srv.Listener.Addr().String())
 	require.NoError(t, err)
 
-	transport := createSSRFProtectedTransport(false, []string{"localhost"}, nil, noProxy, privateaddrtest.LoopbackAsPrivate)
+	transport := createSSRFProtectedTransport(false, []string{"localhost"}, nil, noProxy, privateaddrtest.LoopbackAsPrivate(isPrivateIP))
 
 	conn, err := transport.DialContext(t.Context(), "tcp", net.JoinHostPort("localhost", port))
 	require.NoError(t, err)
@@ -82,7 +81,7 @@ func TestSSRFProtectedTransport_AllowedPrivateHosts(t *testing.T) {
 	_, err = transport.DialContext(t.Context(), "tcp", net.JoinHostPort("127.0.0.1", port))
 	require.ErrorContains(t, err, errPrivateIP)
 
-	production := createSSRFProtectedTransport(false, []string{"localhost"}, nil, noProxy, privateaddr.CheckListedHost)
+	production := createSSRFProtectedTransport(false, []string{"localhost"}, nil, noProxy, checkListedMetadataHost)
 	_, err = production.DialContext(t.Context(), "tcp", net.JoinHostPort("localhost", port))
 	require.ErrorContains(t, err, errListedHost)
 }
@@ -175,7 +174,7 @@ func TestSSRFProtectedTransport_TunnelsTheCheckedIPThroughTheProxy(t *testing.T)
 	pool.AddCert(srv.Certificate())
 	proxy := proxytunneltest.New(t, http.StatusOK)
 
-	client := &http.Client{Transport: createSSRFProtectedTransport(false, []string{"localhost"}, pool, proxyAlways(proxy.URL()), privateaddrtest.LoopbackAsPrivate)}
+	client := &http.Client{Transport: createSSRFProtectedTransport(false, []string{"localhost"}, pool, proxyAlways(proxy.URL()), privateaddrtest.LoopbackAsPrivate(isPrivateIP))}
 	resp, err := client.Get("https://" + net.JoinHostPort("localhost", port) + "/client.json")
 	require.NoError(t, err)
 	body, err := io.ReadAll(resp.Body)
@@ -198,7 +197,7 @@ func TestSSRFProtectedTransport_TunnelsTheCheckedIPThroughTheProxy(t *testing.T)
 // guard runs before any proxy is contacted.
 func TestSSRFProtectedTransport_RefusesPrivateTargetBeforeTheProxy(t *testing.T) {
 	proxy := proxytunneltest.New(t, http.StatusOK)
-	transport := createSSRFProtectedTransport(false, nil, nil, proxyAlways(proxy.URL()), privateaddr.CheckListedHost)
+	transport := createSSRFProtectedTransport(false, nil, nil, proxyAlways(proxy.URL()), checkListedMetadataHost)
 
 	_, err := transport.DialContext(t.Context(), "tcp", net.JoinHostPort("localhost", "443"))
 	require.ErrorContains(t, err, errPrivateIP)
@@ -294,6 +293,30 @@ func TestFetchClientMetadata_NeverFetchesJWKSURI(t *testing.T) {
 				require.ErrorContains(t, err, "token_endpoint_auth_method")
 			}
 			require.Zero(t, jwksHits.Load())
+		})
+	}
+}
+
+// TestCheckListedMetadataHost pins that a listed metadata host reaches every
+// address an unlisted one may, plus RFC 1918 and RFC 4193, and nothing else.
+func TestCheckListedMetadataHost(t *testing.T) {
+	for _, tt := range []struct {
+		addr     string
+		unlisted bool
+		listed   bool
+	}{
+		{"8.8.8.8", true, true},
+		{"10.0.0.1", false, true},
+		{"fd00::1", false, true},
+		{"100.64.0.1", false, false},
+		{"127.0.0.1", false, false},
+		{"169.254.169.254", false, false},
+		{"fe80::1", false, false},
+	} {
+		t.Run(tt.addr, func(t *testing.T) {
+			ip := net.ParseIP(tt.addr)
+			require.Equal(t, tt.unlisted, !isPrivateIP(ip))
+			require.Equal(t, tt.listed, checkListedMetadataHost("gateway.internal", []net.IP{ip}) == nil)
 		})
 	}
 }
