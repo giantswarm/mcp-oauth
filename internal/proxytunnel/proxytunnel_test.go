@@ -81,6 +81,11 @@ func TestDialReportsARefusedConnect(t *testing.T) {
 	require.ErrorContains(t, err, "proxy refused CONNECT")
 	require.ErrorContains(t, err, "403")
 	require.Nil(t, conn)
+
+	var refused *proxytunnel.ConnectRefusedError
+	require.ErrorAs(t, err, &refused)
+	require.Equal(t, net.JoinHostPort(ip.String(), port), refused.Target)
+	require.Equal(t, http.StatusForbidden, refused.StatusCode)
 }
 
 func TestDialRefusesUnsupportedProxyScheme(t *testing.T) {

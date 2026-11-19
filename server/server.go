@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
+	"github.com/giantswarm/mcp-oauth/internal/privateaddr"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -86,6 +87,7 @@ type Server struct {
 	Instrumentation               *instrumentation.Instrumentation        // OpenTelemetry instrumentation
 	tracer                        trace.Tracer                            // OpenTelemetry tracer for server operations
 	preRegisteredClients          map[string]*storage.Client              // Immutable operator-pinned CIMD documents
+	clientMetadataHosts           privateaddr.HostSet                     // Hosts RestrictClientMetadata lets the server fetch
 	metadataCache                 *clientMetadataCache                    // Cache for URL-based client metadata (MCP 2025-11-25)
 	metadataFetchGroup            singleflight.Group                      // Deduplicates concurrent metadata fetches (DoS protection)
 	metadataFetchRateLimiter      *security.RateLimiter                   // Per-domain rate limiter for metadata fetches
@@ -197,6 +199,7 @@ func New(
 	}
 
 	srv.preRegisteredClients = buildPreRegisteredClients(config.PreRegisteredClientMetadata)
+	srv.clientMetadataHosts = privateaddr.NewHostSet(config.ClientMetadataHosts)
 	srv.attachRevokedTokenStore(tokenStore)
 
 	srv.initializeMetadataSupport()

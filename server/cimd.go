@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -333,7 +334,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 	resp, err := client.Do(req)
 	if err != nil {
 		s.recordCIMDFetchMetric(ctx, logKeyError, fetchStart)
-		return nil, 0, fmt.Errorf("failed to fetch metadata from %s: %w", clientID, err)
+		return nil, 0, metadataFetchError(clientID, err)
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
@@ -599,6 +600,17 @@ func (s *Server) createMetadataHTTPClient(timeout time.Duration) *http.Client {
 			return http.ErrUseLastResponse
 		},
 	}
+}
+
+// metadataFetchError wraps a failed metadata request. A proxy that allows
+// destinations by domain cannot match the CONNECT to the checked IP that the
+// SSRF guard sends, so its refusal names pre-registration as the fix.
+func metadataFetchError(clientID string, err error) error {
+	var refused *proxytunnel.ConnectRefusedError
+	if errors.As(err, &refused) {
+		return fmt.Errorf("failed to fetch metadata from %s: %w (a proxy that allows by domain refuses a CONNECT to an IP address: pre-register this client in PreRegisteredClientMetadata)", clientID, err)
+	}
+	return fmt.Errorf("failed to fetch metadata from %s: %w", clientID, err)
 }
 
 // recordCIMDFetchMetric records CIMD fetch metrics.
