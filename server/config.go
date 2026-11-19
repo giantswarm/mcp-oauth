@@ -908,13 +908,15 @@ type Config struct {
 	// Default: false (disabled for backward compatibility)
 	EnableClientIDMetadataDocuments bool
 
-	// StaticClientMetadata supplies operator-pinned public client documents for
-	// installations without access to the clients' metadata hosts. Requires
+	// PreRegisteredClientMetadata pre-registers public clients by their Client
+	// ID Metadata Document (CIMD draft 03 section 9.2), for installations that
+	// cannot or must not fetch the clients' documents. Requires
 	// EnableClientIDMetadataDocuments. Exact client IDs only; these documents
-	// never expire or trigger DNS/HTTP requests. All other clients retain the
-	// normal CIMD fetch policy. Configure only documents you operationally trust;
-	// updates require a server restart. This does not skip authorization consent.
-	StaticClientMetadata []ClientMetadata
+	// never expire or trigger DNS/HTTP requests, and the library never refreshes
+	// them. All other clients retain the normal CIMD fetch policy. Configure only
+	// documents you reviewed against their live URL; updates require a server
+	// restart. This does not skip authorization consent.
+	PreRegisteredClientMetadata []ClientMetadata
 
 	// TrustedClients lists the clients whose authorization requests skip the
 	// consent page, each with the exact https redirect URIs it may use. Every
@@ -1246,7 +1248,7 @@ func (c *Config) Validate() error {
 		return err
 	}
 
-	if err := validateStaticClientMetadata(c); err != nil {
+	if err := validatePreRegisteredClientMetadata(c); err != nil {
 		return err
 	}
 

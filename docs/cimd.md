@@ -11,7 +11,8 @@ Client ID Metadata Documents (CIMD) let clients use HTTPS URLs as client identif
 5. [How It Works](#how-it-works)
 6. [Security](#security)
 7. [Caching](#caching)
-8. [Troubleshooting](#troubleshooting)
+8. [Pre-registered metadata](#pre-registered-metadata)
+9. [Troubleshooting](#troubleshooting)
 
 ## What are Client ID Metadata Documents?
 
@@ -366,6 +367,52 @@ The server caps `max-age` at 1 hour to prevent cache poisoning attacks.
 - **LRU eviction** when cache reaches capacity (default: 1000 entries)
 - **Expired entries** are cleaned up periodically
 
+## Pre-registered metadata
+
+[CIMD draft 03 section 6](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-client-id-metadata-document-03#section-6)
+lets an authorization server associate a client identifier URL with its
+metadata "through other means" than fetching it, and
+[section 9.2](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-client-id-metadata-document-03#section-9.2)
+describes pre-registering client identifier URLs. `Config.PreRegisteredClientMetadata`
+implements this: the operator supplies a reviewed copy of a public client's
+document, for example on an installation that cannot reach the client's
+metadata host.
+
+```go
+config := &server.Config{
+    Issuer: "https://auth.example.com",
+    EnableClientIDMetadataDocuments: true,
+    RequirePKCE: true,
+    PreRegisteredClientMetadata: []server.ClientMetadata{{
+        ClientID: "https://client.example.com/cli.json",
+        ClientName: "Example CLI",
+        RedirectURIs: []string{"http://localhost:3000/callback"},
+        GrantTypes: []string{"authorization_code", "refresh_token"},
+        TokenEndpointAuthMethod: "none",
+        Scope: "openid profile email offline_access",
+    }},
+}
+```
+
+Only an exact client ID match uses the configured document. It needs no DNS or
+HTTP access, survives cache expiry, and is snapshotted at startup. Unlisted
+clients keep the normal CIMD fetch and SSRF protections. Invalid documents,
+duplicate IDs and configuration with CIMD disabled fail startup. Only public
+clients (`token_endpoint_auth_method: none`) are supported.
+
+Pinning a document is an operator trust decision. Section 9.2 says the
+authorization server should fetch the live document when it establishes the
+pre-registration: copy the document from its client identifier URL and review
+its identifier, callbacks and scopes before adding it. Section 6 says the
+server should periodically re-fetch documents, because their contents change.
+The library never refreshes a pinned document, so re-check each pinned document
+against its URL outside the library, then update or remove it by changing the
+configuration and restarting the server.
+
+Pinned metadata does not grant a sign-in, skip consent, open dynamic
+registration, or relax redirect matching, PKCE, resource or scope validation.
+Loopback callbacks follow RFC 8252 port matching.
+
 ## Troubleshooting
 
 ### Common Errors
@@ -446,40 +493,4 @@ Too many requests to your domain in a short period.
 ### Standards
 
 - [MCP Specification 2025-11-25](https://spec.modelcontextprotocol.io/specification/2025-11-25/)
-- [draft-ietf-oauth-client-id-metadata-document-00](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/)
-
-## Offline metadata
-
-For an installation that cannot reach a client's metadata host, supply a
-reviewed copy of that public client's document in `Config.StaticClientMetadata`:
-
-```go
-config := &server.Config{
-    Issuer: "https://auth.example.com",
-    EnableClientIDMetadataDocuments: true,
-    AllowLocalhostRedirectURIs: true,
-    RequirePKCE: true,
-    StaticClientMetadata: []server.ClientMetadata{{
-        ClientID: "https://client.example.com/cli.json",
-        ClientName: "Example CLI",
-        RedirectURIs: []string{"http://localhost:3000/callback"},
-        GrantTypes: []string{"authorization_code", "refresh_token"},
-        TokenEndpointAuthMethod: "none",
-        Scope: "openid profile email offline_access",
-    }},
-}
-```
-
-Only an exact client ID match uses the configured document. It needs no DNS or
-HTTP access, survives cache expiry, and is snapshotted at startup. Unlisted
-clients keep the normal CIMD fetch and SSRF protections. Invalid documents,
-duplicate IDs and configuration with CIMD disabled fail startup. Only public
-clients (`token_endpoint_auth_method: none`) are supported.
-
-This is an operator trust decision: review each document's identifier,
-callbacks and scopes before adding it. Update or remove a document by changing
-the configuration and restarting the server; the library never refreshes a
-pinned document from the internet. Local metadata does not grant a sign-in,
-skip consent, open dynamic registration, or relax redirect matching, PKCE,
-resource or scope validation. A native client's loopback callback still requires
-`AllowLocalhostRedirectURIs`; RFC 8252 port matching continues to apply.
+- [draft-ietf-oauth-client-id-metadata-document-03](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-client-id-metadata-document-03)
