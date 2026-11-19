@@ -144,10 +144,10 @@ func newMetadataFixture(t *testing.T, rateLimiter *security.RateLimiter, respons
 	pool := x509.NewCertPool()
 	pool.AddCert(transport.Certificate())
 	config := &Config{
-		EnableClientIDMetadataDocuments:   true,
-		ClientMetadataFetchTimeout:        time.Second,
-		ClientMetadataRootCAs:             pool,
-		AllowPrivateIPClientMetadataHosts: []string{"127.0.0.1"},
+		EnableClientIDMetadataDocuments: true,
+		ClientMetadataFetchTimeout:      time.Second,
+		ClientMetadataRootCAs:           pool,
+		AllowPrivateIPClientMetadata:    true,
 	}
 	fixture.clientID = transport.URL + "/client.json"
 	fixture.server = &Server{

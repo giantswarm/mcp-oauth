@@ -159,9 +159,12 @@ type TrustedIssuer struct {
 	AllowPrivateIPJWKS bool
 
 	// AllowPrivateIPJWKSHosts lists the hostnames whose JWKS URL may resolve to
-	// a private, loopback or link-local address (e.g. an in-cluster service such
-	// as muster.agent-platform.svc.cluster.local). Every other host keeps the
-	// SSRF guard at connection time. Entries match exactly. Ignored when
+	// an RFC 1918 or RFC 4193 address (e.g. an in-cluster service such as
+	// muster.agent-platform.svc.cluster.local). Loopback, link-local and
+	// unspecified addresses stay refused for a listed host. Every other
+	// host keeps the SSRF guard at connection time. Entries match the hostname
+	// case-insensitively, ignoring one trailing dot (no port, no wildcard).
+	// The issuer's host is not implied: list it here. Ignored when
 	// AllowPrivateIPJWKS is true.
 	AllowPrivateIPJWKSHosts []string
 

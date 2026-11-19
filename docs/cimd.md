@@ -234,9 +234,20 @@ The server implements multiple layers of SSRF (Server-Side Request Forgery) prot
    - Every IANA special-purpose IPv4 range: loopback, private, link-local (cloud metadata), shared address space (`100.64.0.0/10`), benchmarking, documentation, multicast and reserved
    - IPv6 only inside `2000::/3`, without the special-purpose ranges in it (6to4, Teredo, documentation)
    - An IPv4 address in IPv6 form is checked as IPv4
-   - `AllowPrivateIPClientMetadataHosts` lifts the guard for the listed hostnames; the deprecated `AllowPrivateIPClientMetadata` lifts it for every host
+   - `AllowPrivateIPClientMetadataHosts` lets the listed hostnames resolve to RFC 1918 and RFC 4193 addresses, never to loopback, link-local or the other special-purpose ranges; the deprecated `AllowPrivateIPClientMetadata` lifts the guard for every host
 
 4. **No Redirects**: HTTP redirects are not followed
+5. **No URL inside a document is fetched**: `jwks_uri` and every other URL in a metadata document are never requested
+
+#### Private hosts: a deviation from the draft
+
+[draft-ietf-oauth-client-id-metadata-document-03 §10.7](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-client-id-metadata-document-03#section-10.7) says a server MUST NOT fetch a metadata URL that resolves to a special-use address. `AllowPrivateIPClientMetadataHosts` deviates from that on purpose, for platform clients that live on a private network. The rule exists because the client chooses the URL; with the list, the operator names each host and every other host keeps the guard. A listed host still gets:
+
+- HTTPS with certificate verification (`ClientMetadataRootCAs` or the system pool), no redirects, the 1 MB and JSON content-type limits, and the `client_id` equality check;
+- the private class only (RFC 1918, RFC 4193), never loopback or link-local;
+- no fetch of any URL inside the document.
+
+The compliant alternative is to pre-register the client (§9.2) instead of resolving its metadata document. The deprecated `AllowPrivateIPClientMetadata` has none of these limits on who chooses the host.
 
 ### Consent
 

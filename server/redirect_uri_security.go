@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"slices"
 	"strings"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
+	"github.com/giantswarm/mcp-oauth/internal/privateaddr"
 )
 
 // Redirect URI validation stage constants for metrics.
@@ -220,7 +220,7 @@ func (s *Server) validateIPAddress(ip net.IP, rawURI string) error {
 		)
 	}
 
-	// Check for private IP ranges (RFC 1918)
+	// Check for private IP ranges (RFC 1918, RFC 4193)
 	if ip.IsPrivate() {
 		if !s.Config.AllowPrivateIPRedirectURIs {
 			return newRedirectURISecurityError(
@@ -298,7 +298,7 @@ func (s *Server) validateHostnameWithDNS(ctx context.Context, hostname, rawURI s
 		return nil
 	}
 
-	allowPrivate := s.Config.AllowPrivateIPRedirectURIs || slices.Contains(s.Config.AllowPrivateIPRedirectURIHosts, hostname)
+	allowPrivate := s.Config.AllowPrivateIPRedirectURIs || privateaddr.NewHostSet(s.Config.AllowPrivateIPRedirectURIHosts).Contains(hostname)
 	for _, ip := range ips {
 		if ip.IsPrivate() && !allowPrivate {
 			return newRedirectURISecurityError(

@@ -21,6 +21,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
+	"github.com/giantswarm/mcp-oauth/internal/privateaddr"
 )
 
 // JWKSClient fetches and caches JWKS (JSON Web Key Sets) for JWT validation.
@@ -33,8 +34,8 @@ type JWKSClient struct {
 	cacheTTL            time.Duration
 	logger              *slog.Logger
 	timeProvider        timeProvider
-	allowPrivateIP      bool     // When true, SSRF protection is disabled for private IdP deployments
-	allowPrivateIPHosts []string // When set, private IPs allowed only for these hostnames
+	allowPrivateIP      bool                // When true, SSRF protection is disabled for private IdP deployments
+	allowPrivateIPHosts privateaddr.HostSet // hosts whose JWKS URL may resolve to RFC 1918 / RFC 4193 addresses
 
 	// refetchGroup coalesces unknown-kid fetches per URI. refetchBackoff
 	// bounds sequential attempts (0 uses DefaultJWKSRefetchBackoff), with
@@ -109,11 +110,13 @@ type JWKSClientOptions struct {
 	AllowPrivateIP bool
 
 	// AllowPrivateIPHosts lists hostnames whose JWKS URLs are permitted to
-	// resolve to private IP addresses. All other hosts remain subject to the
-	// normal SSRF/DNS-rebinding guard. Prefer this over AllowPrivateIP when
-	// the private endpoint is a known in-cluster service (e.g.
-	// muster.agent-platform.svc.cluster.local). Ignored when AllowPrivateIP
-	// is true.
+	// resolve to RFC 1918 and RFC 4193 addresses; loopback, link-local and
+	// unspecified addresses stay refused for them. Hosts match
+	// case-insensitively and ignore one trailing dot. All other hosts remain
+	// subject to the normal SSRF/DNS-rebinding guard. Prefer this over
+	// AllowPrivateIP when the private endpoint is a known in-cluster service
+	// (e.g. muster.agent-platform.svc.cluster.local). Ignored when
+	// AllowPrivateIP is true.
 	AllowPrivateIPHosts []string
 
 	// RootCAs is the CA pool used to verify the JWKS endpoint's TLS certificate
@@ -197,7 +200,7 @@ func NewJWKSClientWithOptions(opts JWKSClientOptions) *JWKSClient {
 		logger:              logger,
 		timeProvider:        realTime{},
 		allowPrivateIP:      opts.AllowPrivateIP,
-		allowPrivateIPHosts: opts.AllowPrivateIPHosts,
+		allowPrivateIPHosts: privateaddr.NewHostSet(opts.AllowPrivateIPHosts),
 		refetchBackoff:      DefaultJWKSRefetchBackoff,
 	}
 }
@@ -231,12 +234,7 @@ func (c *JWKSClient) cachedFresh(jwksURI string) (*jose.JSONWebKeySet, bool) {
 }
 
 func (c *JWKSClient) isAllowedPrivateIPHost(host string) bool {
-	for _, allowed := range c.allowPrivateIPHosts {
-		if host == allowed {
-			return true
-		}
-	}
-	return false
+	return c.allowPrivateIPHosts.Contains(host)
 }
 
 // validateJWKSURL enforces the SSRF/HTTPS policy for a JWKS fetch: private and

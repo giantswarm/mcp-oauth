@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/giantswarm/mcp-oauth/internal/privateaddr/privateaddrtest"
 )
 
 func TestValidateConnectorID(t *testing.T) {
@@ -740,23 +742,32 @@ func TestNewHostScopedPrivateIPHTTPClient(t *testing.T) {
 		}
 	})
 
-	t.Run("allows connection to listed loopback host", func(t *testing.T) {
-		// httptest.NewServer listens on 127.0.0.1; extract its hostname.
+	t.Run("allows connection to a listed private host", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}))
 		t.Cleanup(srv.Close)
 
 		host := srv.Listener.Addr().(*net.TCPAddr).IP.String()
-		client := NewHostScopedPrivateIPHTTPClient([]string{host}, 5*time.Second, nil)
+		client := newHostScopedPrivateIPHTTPClient([]string{host}, 5*time.Second, nil, privateaddrtest.LoopbackAsPrivate(isPrivateOrRestrictedIP))
 		resp, err := client.Get(srv.URL + "/ok")
-		if err != nil {
-			t.Fatalf("expected successful request to listed loopback host, got: %v", err)
-		}
+		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("expected 200, got %d", resp.StatusCode)
-		}
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+	})
+
+	t.Run("refuses a listed host that resolves to loopback", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(srv.Close)
+
+		_, port, err := net.SplitHostPort(srv.Listener.Addr().String())
+		require.NoError(t, err)
+		client := NewHostScopedPrivateIPHTTPClient([]string{"localhost"}, 5*time.Second, nil)
+		_, err = client.Get("http://" + net.JoinHostPort("LOCALHOST.", port) + "/ok")
+		require.ErrorIs(t, err, ErrRestrictedAddress)
+		require.ErrorContains(t, err, "a private-IP host list does not allow")
 	})
 
 	t.Run("blocks unlisted loopback host via SSRF guard", func(t *testing.T) {
@@ -797,7 +808,7 @@ func TestHostScopedPrivateIPHTTPClient_RedirectPinning(t *testing.T) {
 		t.Cleanup(srv.Close)
 
 		host := srv.Listener.Addr().(*net.TCPAddr).IP.String()
-		client := NewHostScopedPrivateIPHTTPClient([]string{host}, 5*time.Second, nil)
+		client := newHostScopedPrivateIPHTTPClient([]string{host}, 5*time.Second, nil, privateaddrtest.LoopbackAsPrivate(isPrivateOrRestrictedIP))
 		resp, err := client.Get(srv.URL + "/keys")
 		if err != nil {
 			t.Fatalf("same-host redirect must be followed, got error: %v", err)
@@ -823,7 +834,7 @@ func TestHostScopedPrivateIPHTTPClient_RedirectPinning(t *testing.T) {
 		t.Cleanup(entry.Close)
 
 		host := entry.Listener.Addr().(*net.TCPAddr).IP.String()
-		client := NewHostScopedPrivateIPHTTPClient([]string{host}, 5*time.Second, nil)
+		client := newHostScopedPrivateIPHTTPClient([]string{host}, 5*time.Second, nil, privateaddrtest.LoopbackAsPrivate(isPrivateOrRestrictedIP))
 		_, err := client.Get(entry.URL + "/keys")
 		if err == nil {
 			t.Fatal("cross-host redirect must be refused")
@@ -851,7 +862,7 @@ func TestHostScopedPrivateIPHTTPClient_TrustsExplicitCA(t *testing.T) {
 	pool.AddCert(srv.Certificate())
 
 	host := srv.Listener.Addr().(*net.TCPAddr).IP.String()
-	client := NewHostScopedPrivateIPHTTPClient([]string{host}, 5*time.Second, pool)
+	client := newHostScopedPrivateIPHTTPClient([]string{host}, 5*time.Second, pool, privateaddrtest.LoopbackAsPrivate(isPrivateOrRestrictedIP))
 	resp, err := client.Get(srv.URL)
 	if err != nil {
 		t.Fatalf("expected TLS handshake to succeed with explicit CA pool, got: %v", err)
@@ -1022,4 +1033,32 @@ func TestHTTPClients_RedirectGuard(t *testing.T) {
 			t.Error("expected no redirect guard on the SSRF-safe client")
 		}
 	})
+}
+
+// TestCheckListedHostNeverStricterThanTheGuard pins that a listed host, the
+// provider's issuer host included, reaches every address guardSSRF allows an
+// unlisted host, plus RFC 1918 and RFC 4193, and nothing else.
+func TestCheckListedHostNeverStricterThanTheGuard(t *testing.T) {
+	for _, tt := range []struct {
+		addr     string
+		unlisted bool
+		listed   bool
+	}{
+		{"8.8.8.8", true, true},
+		{"100.64.0.1", true, true},
+		{"64:ff9b::a9fe:a9fe", true, true},
+		{"10.0.0.1", false, true},
+		{"fd00::1", false, true},
+		{"127.0.0.1", false, false},
+		{"::1", false, false},
+		{"169.254.169.254", false, false},
+		{"fe80::1", false, false},
+		{"0.0.0.0", false, false},
+	} {
+		t.Run(tt.addr, func(t *testing.T) {
+			ips := []net.IP{net.ParseIP(tt.addr)}
+			require.Equal(t, tt.unlisted, guardSSRF("dex.internal", ips) == nil)
+			require.Equal(t, tt.listed, checkListedHost("dex.internal", ips) == nil)
+		})
+	}
 }

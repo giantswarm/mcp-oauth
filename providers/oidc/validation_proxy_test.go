@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/giantswarm/mcp-oauth/internal/privateaddr/privateaddrtest"
 	"github.com/giantswarm/mcp-oauth/internal/proxytunnel"
 	"github.com/giantswarm/mcp-oauth/internal/proxytunnel/proxytunneltest"
 )
@@ -38,7 +39,7 @@ func TestHostScopedDialTunnelsTheCheckedIP(t *testing.T) {
 	require.NoError(t, err)
 	proxy := proxytunneltest.New(t, http.StatusOK)
 
-	dial := hostScopedPrivateIPDialContext(&net.Dialer{}, []string{"localhost"}, proxyAlways(proxy.URL()))
+	dial := hostScopedPrivateIPDialContext(&net.Dialer{}, []string{"localhost"}, proxyAlways(proxy.URL()), privateaddrtest.LoopbackAsPrivate(isPrivateOrRestrictedIP))
 	client := &http.Client{Transport: &http.Transport{DialContext: dial}}
 	resp, err := client.Get("http://" + net.JoinHostPort("localhost", port) + "/keys")
 	require.NoError(t, err)
@@ -93,7 +94,7 @@ func TestGuardedDialTriesEachValidatedAddress(t *testing.T) {
 	dialer := &net.Dialer{Timeout: 5 * time.Second}
 
 	t.Run("direct", func(t *testing.T) {
-		dial := hostScopedPrivateIPDialContext(dialer, []string{"localhost"}, proxyAlways(nil))
+		dial := hostScopedPrivateIPDialContext(dialer, []string{"localhost"}, proxyAlways(nil), privateaddrtest.LoopbackAsPrivate(isPrivateOrRestrictedIP))
 		conn, err := dial(t.Context(), "tcp", addr)
 		require.NoError(t, err)
 		require.NoError(t, conn.Close())
@@ -101,7 +102,7 @@ func TestGuardedDialTriesEachValidatedAddress(t *testing.T) {
 
 	t.Run("through the proxy", func(t *testing.T) {
 		proxy := proxytunneltest.New(t, http.StatusOK)
-		dial := hostScopedPrivateIPDialContext(dialer, []string{"localhost"}, proxyAlways(proxy.URL()))
+		dial := hostScopedPrivateIPDialContext(dialer, []string{"localhost"}, proxyAlways(proxy.URL()), privateaddrtest.LoopbackAsPrivate(isPrivateOrRestrictedIP))
 		conn, err := dial(t.Context(), "tcp", addr)
 		require.NoError(t, err)
 		require.NoError(t, conn.Close())

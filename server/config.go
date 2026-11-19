@@ -617,10 +617,11 @@ type Config struct {
 	// may resolve to private IPv4 addresses (RFC 1918) or IPv6 unique-local
 	// addresses (RFC 4193), at registration and, with
 	// ValidateRedirectURIAtAuthorization, at authorization. Entries match the
-	// redirect URI's hostname exactly (no port, no wildcard), like
-	// AllowPrivateIPClientMetadataHosts. A literal IP redirect URI is not
-	// matched, and link-local addresses stay governed by
-	// AllowLinkLocalRedirectURIs.
+	// redirect URI's hostname case-insensitively, ignoring one trailing dot (no
+	// port, no wildcard), like AllowPrivateIPClientMetadataHosts. Redirect URI
+	// matching against the registered URIs stays an exact string comparison.
+	// A literal IP redirect URI is not matched, and link-local addresses stay
+	// governed by AllowLinkLocalRedirectURIs.
 	//
 	// This is browser-redirect policy, not SSRF protection: the server never
 	// connects to a redirect URI. It keeps an authorization code from being
@@ -649,10 +650,22 @@ type Config struct {
 	AllowPrivateIPClientMetadata bool
 
 	// AllowPrivateIPClientMetadataHosts lists the hostnames whose CIMD metadata
-	// URLs may resolve to private, loopback or link-local addresses. Every other
-	// host keeps the SSRF guard, at validation and at connection time, so DNS
-	// rebinding stays covered. Entries match the client_id URL's hostname exactly
-	// (no port, no wildcard), like TrustedIssuer.AllowPrivateIPJWKSHosts.
+	// URLs may resolve to RFC 1918 or RFC 4193 addresses. Loopback, link-local
+	// (cloud metadata) and the other special-purpose ranges stay refused for a
+	// listed host. Every other host keeps the SSRF guard, at validation and at
+	// connection time, so DNS rebinding stays covered. Entries match the
+	// client_id URL's hostname case-insensitively, ignoring one trailing dot (no
+	// port, no wildcard), like TrustedIssuer.AllowPrivateIPJWKSHosts.
+	//
+	// This list deviates from draft-ietf-oauth-client-id-metadata-document-03
+	// section 10.7, which forbids fetching a metadata URL that resolves to a
+	// special-use address. The operator, not the client, names each host, and
+	// a listed host still gets HTTPS with certificate verification, no
+	// redirects, the size and content-type limits, and the client_id equality
+	// check. URLs inside a document, jwks_uri included, are never fetched. The
+	// compliant alternative is pre-registration of the client (section 9.2).
+	// AllowPrivateIPClientMetadata has none of these limits on who chooses the
+	// host.
 	//
 	// Default: empty (refused for every host)
 	AllowPrivateIPClientMetadataHosts []string
@@ -676,12 +689,18 @@ type Config struct {
 	AllowPrivateIPJWKS bool
 
 	// AllowPrivateIPJWKSHosts lists the hostnames whose JWKS endpoint, used to
-	// validate forwarded SSO ID tokens (TrustedAudiences), may resolve to
-	// private, loopback or link-local addresses. Every other host keeps the
-	// SSRF guard at connection time. Entries match the JWKS URL's hostname
-	// exactly (no port, no wildcard), like TrustedIssuer.AllowPrivateIPJWKSHosts.
+	// validate forwarded SSO ID tokens (TrustedAudiences), may resolve to RFC
+	// 1918 or RFC 4193 addresses. Loopback, link-local and unspecified
+	// addresses stay refused for a listed host. Every other host
+	// keeps the SSRF guard at connection time. Entries match the JWKS URL's
+	// hostname case-insensitively, ignoring one trailing dot (no port, no
+	// wildcard), like TrustedIssuer.AllowPrivateIPJWKSHosts.
 	//
-	// Default: empty (refused for every host)
+	// The host of the provider's issuer URL is always treated as listed: the
+	// server already reaches it for discovery and token calls. List a host
+	// here only when the provider's jwks_uri is on a different host.
+	//
+	// Default: empty (only the issuer host may resolve privately)
 	AllowPrivateIPJWKSHosts []string
 
 	// JWKSRootCAs is the CA pool used to verify the JWKS endpoint's TLS

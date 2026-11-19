@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"slices"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
@@ -151,9 +153,10 @@ func (s *Server) findMatchingTrustedAudience(tokenAudiences []string) string {
 // getJWKSClient returns or creates a JWKS client for JWT validation.
 // Thread-safe: uses sync.Once to ensure initialization happens only once.
 //
-// AllowPrivateIPJWKSHosts lets the listed hosts resolve to private addresses
-// and keeps the SSRF guard for every other host; the deprecated
-// AllowPrivateIPJWKS lifts it for every host.
+// The configured provider's issuer host and the hosts in
+// AllowPrivateIPJWKSHosts may resolve to RFC 1918 and RFC 4193 addresses;
+// every other host keeps the SSRF guard. The deprecated AllowPrivateIPJWKS
+// lifts it for every host.
 func (s *Server) getJWKSClient() *oidc.JWKSClient {
 	s.jwksClientOnce.Do(func() {
 		// The private-IP settings select the dial posture; JWKSRootCAs pins the
@@ -162,11 +165,24 @@ func (s *Server) getJWKSClient() *oidc.JWKSClient {
 		s.jwksClient = oidc.NewJWKSClientWithOptions(oidc.JWKSClientOptions{
 			Logger:              s.Logger,
 			AllowPrivateIP:      s.Config.AllowPrivateIPJWKS,
-			AllowPrivateIPHosts: s.Config.AllowPrivateIPJWKSHosts,
+			AllowPrivateIPHosts: providerJWKSPrivateIPHosts(s.provider, s.Config.AllowPrivateIPJWKSHosts),
 			RootCAs:             s.Config.JWKSRootCAs,
 		})
 	})
 	return s.jwksClient
+}
+
+// providerJWKSPrivateIPHosts returns listed plus the host of the provider's
+// issuer URL. The server already calls that host for discovery and tokens, so
+// a JWKS URL on it may resolve privately too. A jwks_uri on any other host
+// needs its own entry in listed: the discovery document does not choose
+// which hosts are trusted.
+func providerJWKSPrivateIPHosts(provider providers.Provider, listed []string) []string {
+	issuer, err := url.Parse(providers.IssuerOf(provider))
+	if err != nil || issuer.Hostname() == "" {
+		return listed
+	}
+	return append(slices.Clone(listed), issuer.Hostname())
 }
 
 // idTokenClaimsToUserInfo converts validated ID token claims to UserInfo.

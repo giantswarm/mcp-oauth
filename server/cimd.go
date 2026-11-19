@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +19,7 @@ import (
 	"code.dny.dev/ssrf"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
+	"github.com/giantswarm/mcp-oauth/internal/privateaddr"
 	"github.com/giantswarm/mcp-oauth/internal/proxytunnel"
 	"github.com/giantswarm/mcp-oauth/security"
 )
@@ -127,7 +127,7 @@ func isPrivateIP(ip net.IP) bool {
 // allowPrivateIP lifts the private-IP check for every host, allowedPrivateHosts
 // for the listed hostnames only; see Config.AllowPrivateIPClientMetadata and
 // Config.AllowPrivateIPClientMetadataHosts.
-func validateAndSanitizeMetadataURL(clientID string, allowPrivateIP bool, allowedPrivateHosts []string) (string, error) {
+func validateAndSanitizeMetadataURL(clientID string, allowPrivateIP bool, allowedPrivateHosts []string, checkListed listedHostCheck) (string, error) {
 	u, err := url.Parse(clientID)
 	if err != nil {
 		return "", fmt.Errorf("invalid URL: %w", err)
@@ -152,8 +152,13 @@ func validateAndSanitizeMetadataURL(clientID string, allowPrivateIP bool, allowe
 
 	// CRITICAL SECURITY: Block requests to private/internal IP ranges
 	// This prevents SSRF attacks against internal services
-	// Skip this check if the private-IP allowance covers this host
-	if !allowPrivateIP && !slices.Contains(allowedPrivateHosts, hostname) {
+	switch {
+	case allowPrivateIP:
+	case privateaddr.NewHostSet(allowedPrivateHosts).Contains(hostname):
+		if err := checkListed(hostname, ips); err != nil {
+			return "", fmt.Errorf("client_id metadata URL: %w (SSRF protection)", err)
+		}
+	default:
 		for _, ip := range ips {
 			if isPrivateIP(ip) {
 				return "", fmt.Errorf("client_id metadata URL resolves to private/internal IP address: %s -> %s (SSRF protection)",
@@ -180,11 +185,12 @@ func validateAndSanitizeMetadataURL(clientID string, allowPrivateIP bool, allowe
 // hostnames only. rootCAs, when non-nil, replaces the system pool for TLS verification.
 // When proxyFor names a proxy for the host, the validated addresses are reached
 // through a CONNECT tunnel to each IP, so the proxy never resolves the host again.
-func createSSRFProtectedTransport(allowPrivateIP bool, allowedPrivateHosts []string, rootCAs *x509.CertPool, proxyFor proxytunnel.Selector) *http.Transport {
+func createSSRFProtectedTransport(allowPrivateIP bool, allowedPrivateHosts []string, rootCAs *x509.CertPool, proxyFor proxytunnel.Selector, checkListed listedHostCheck) *http.Transport {
 	dialer := &net.Dialer{
 		Timeout:   5 * time.Second,
 		KeepAlive: 30 * time.Second,
 	}
+	listed := privateaddr.NewHostSet(allowedPrivateHosts)
 	transport := &http.Transport{
 		DialContext: func(dialCtx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
@@ -198,7 +204,13 @@ func createSSRFProtectedTransport(allowPrivateIP bool, allowedPrivateHosts []str
 			}
 
 			// CRITICAL SECURITY: validate the resolved IPs at connection time
-			if !allowPrivateIP && !slices.Contains(allowedPrivateHosts, host) {
+			switch {
+			case allowPrivateIP:
+			case listed.Contains(host):
+				if err := checkListedIPAddrs(checkListed, host, ips); err != nil {
+					return nil, err
+				}
+			default:
 				if err := rejectPrivateIPs(host, ips); err != nil {
 					return nil, err
 				}
@@ -217,6 +229,28 @@ func createSSRFProtectedTransport(allowPrivateIP bool, allowedPrivateHosts []str
 		}
 	}
 	return transport
+}
+
+// listedHostCheck decides whether a listed host may be reached at the
+// addresses it resolved to.
+type listedHostCheck func(host string, ips []net.IP) error
+
+// checkListedMetadataHost lets a listed metadata host reach RFC 1918 and
+// RFC 4193 addresses on top of the globally reachable ones isPrivateIP allows.
+func checkListedMetadataHost(host string, ips []net.IP) error {
+	return privateaddr.CheckListedHost(host, ips, isPrivateIP)
+}
+
+// checkListedIPAddrs applies checkListed to ips.
+func checkListedIPAddrs(checkListed listedHostCheck, host string, ips []net.IPAddr) error {
+	addrs := make([]net.IP, 0, len(ips))
+	for _, ipAddr := range ips {
+		addrs = append(addrs, ipAddr.IP)
+	}
+	if err := checkListed(host, addrs); err != nil {
+		return fmt.Errorf("SSRF protection: %w", err)
+	}
+	return nil
 }
 
 // rejectPrivateIPs returns the SSRF error for the first private/internal address host resolved to.
@@ -265,7 +299,7 @@ func (s *Server) fetchClientMetadata(ctx context.Context, clientID string) (*Cli
 			"config", "AllowPrivateIPClientMetadata=true")
 	}
 
-	sanitizedURL, err := validateAndSanitizeMetadataURL(clientID, allowPrivateIP, s.Config.AllowPrivateIPClientMetadataHosts)
+	sanitizedURL, err := validateAndSanitizeMetadataURL(clientID, allowPrivateIP, s.Config.AllowPrivateIPClientMetadataHosts, checkListedMetadataHost)
 	if err != nil {
 		s.recordCIMDFetchMetric(ctx, "blocked", fetchStart)
 		s.logMetadataFetchEvent(ctx, "client_metadata_fetch_blocked", clientID, map[string]any{
@@ -560,6 +594,7 @@ func (s *Server) createMetadataHTTPClient(timeout time.Duration) *http.Client {
 			s.Config.AllowPrivateIPClientMetadataHosts,
 			s.Config.ClientMetadataRootCAs,
 			proxytunnel.FromEnvironment(),
+			checkListedMetadataHost,
 		),
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse

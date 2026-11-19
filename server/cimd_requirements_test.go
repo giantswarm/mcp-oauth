@@ -63,9 +63,9 @@ func TestFetchClientMetadataRequiredFieldsHTTP(t *testing.T) {
 			pool.AddCert(transport.Certificate())
 			authorizationServer := &Server{
 				Config: &Config{
-					ClientMetadataFetchTimeout:        time.Second,
-					ClientMetadataRootCAs:             pool,
-					AllowPrivateIPClientMetadataHosts: []string{"127.0.0.1"},
+					ClientMetadataFetchTimeout:   time.Second,
+					ClientMetadataRootCAs:        pool,
+					AllowPrivateIPClientMetadata: true,
 				},
 				Logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
 				Instrumentation: testInstrumentation(t),
