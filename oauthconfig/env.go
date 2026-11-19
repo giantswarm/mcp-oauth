@@ -98,6 +98,10 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 		return nil, err
 	}
 
+	if err := loadClientMetadataFromEnv(prefix, cfg); err != nil {
+		return nil, err
+	}
+
 	allowLoopbackRedirectURIs, err := optionalBool(prefix+"ALLOW_LOCALHOST_REDIRECT_URIS", true)
 	if err != nil {
 		return nil, err
@@ -151,6 +155,25 @@ func loadConsentFromEnv(prefix string, cfg *server.Config) error {
 		return fmt.Errorf("%sCONSENT_COOKIE_KEY: %w", prefix, err)
 	}
 	cfg.ConsentCookieKey = key
+	return nil
+}
+
+// loadClientMetadataFromEnv reads PRE_REGISTERED_CLIENT_METADATA, a JSON array
+// of Client ID Metadata Documents, RESTRICT_CLIENT_METADATA and
+// CLIENT_METADATA_HOSTS. Unknown document fields are ignored, as in a fetched
+// document: a pinned copy of a live document may carry any RFC 7591 field.
+func loadClientMetadataFromEnv(prefix string, cfg *server.Config) error {
+	if raw := os.Getenv(prefix + "PRE_REGISTERED_CLIENT_METADATA"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &cfg.PreRegisteredClientMetadata); err != nil {
+			return fmt.Errorf("%sPRE_REGISTERED_CLIENT_METADATA: %w", prefix, err)
+		}
+	}
+	restrict, err := optionalBool(prefix+"RESTRICT_CLIENT_METADATA", false)
+	if err != nil {
+		return err
+	}
+	cfg.RestrictClientMetadata = restrict
+	loadCSVIfSet(prefix+"CLIENT_METADATA_HOSTS", &cfg.ClientMetadataHosts)
 	return nil
 }
 

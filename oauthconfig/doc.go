@@ -31,7 +31,16 @@
 //     populates server.Config.TrustedPublicRegistrationSchemes
 //   - OAUTH_ALLOW_PRIVATE_IP_CLIENT_METADATA_HOSTS — deprecated: comma-separated hostnames whose CIMD
 //     metadata URLs may resolve to private addresses (server.Config.AllowPrivateIPClientMetadataHosts);
-//     the server logs a warning, pre-register the clients in server.Config.PreRegisteredClientMetadata instead
+//     the server logs a warning, pre-register the clients in OAUTH_PRE_REGISTERED_CLIENT_METADATA instead
+//   - OAUTH_PRE_REGISTERED_CLIENT_METADATA    — JSON array of Client ID Metadata Documents, used
+//     without any fetch (server.Config.PreRegisteredClientMetadata)
+//   - OAUTH_RESTRICT_CLIENT_METADATA          (default false) — accept only pre-registered client IDs
+//     and those on OAUTH_CLIENT_METADATA_HOSTS (server.Config.RestrictClientMetadata)
+//   - OAUTH_CLIENT_METADATA_HOSTS             — comma-separated exact hostnames whose documents
+//     OAUTH_RESTRICT_CLIENT_METADATA lets the server fetch (server.Config.ClientMetadataHosts)
+//
+// The CIMD variables need server.Config.EnableClientIDMetadataDocuments, which
+// the consumer sets in code.
 //   - OAUTH_ALLOW_PRIVATE_IP_REDIRECT_URI_HOSTS — comma-separated hostnames whose redirect URIs
 //     may resolve to private addresses (server.Config.AllowPrivateIPRedirectURIHosts)
 //   - OAUTH_ALLOW_PRIVATE_IP_JWKS_HOSTS     — comma-separated hostnames whose forwarded-ID-token

@@ -66,6 +66,9 @@ func setRequired(t *testing.T, issuer string) {
 		"OAUTH_ALLOW_PRIVATE_IP_CLIENT_METADATA_HOSTS",
 		"OAUTH_ALLOW_PRIVATE_IP_REDIRECT_URI_HOSTS",
 		"OAUTH_ALLOW_PRIVATE_IP_JWKS_HOSTS",
+		"OAUTH_PRE_REGISTERED_CLIENT_METADATA",
+		"OAUTH_RESTRICT_CLIENT_METADATA",
+		"OAUTH_CLIENT_METADATA_HOSTS",
 	} {
 		t.Setenv(v, "")
 	}
@@ -564,6 +567,42 @@ func TestFromEnv_Consent(t *testing.T) {
 		RedirectURIs: []string{"https://claude.ai/api/mcp/auth_callback"},
 	}}, cfg.TrustedClients)
 	require.Equal(t, []byte("0123456789abcdef0123456789abcdef"), cfg.ConsentCookieKey)
+}
+
+func TestFromEnv_ClientMetadata(t *testing.T) {
+	setRequired(t, "https://auth.example.com")
+	t.Setenv("OAUTH_PRE_REGISTERED_CLIENT_METADATA", `[{"client_id":"https://gateway.example.com/client.json","client_name":"Gateway","redirect_uris":["https://gateway.example.com/callback"],"token_endpoint_auth_method":"none","software_id":"gateway"}]`)
+	t.Setenv("OAUTH_RESTRICT_CLIENT_METADATA", "true")
+	t.Setenv("OAUTH_CLIENT_METADATA_HOSTS", "claude.ai, muster.example.com")
+
+	cfg, err := oauthconfig.FromEnv()
+
+	require.NoError(t, err)
+	require.Equal(t, []server.ClientMetadata{{
+		ClientID:                "https://gateway.example.com/client.json",
+		ClientName:              "Gateway",
+		RedirectURIs:            []string{"https://gateway.example.com/callback"},
+		TokenEndpointAuthMethod: "none",
+	}}, cfg.PreRegisteredClientMetadata)
+	require.True(t, cfg.RestrictClientMetadata)
+	require.Equal(t, []string{"claude.ai", "muster.example.com"}, cfg.ClientMetadataHosts)
+}
+
+func TestFromEnv_ClientMetadataInvalid(t *testing.T) {
+	for name, env := range map[string]map[string]string{
+		"pre-registered not JSON":  {"OAUTH_PRE_REGISTERED_CLIENT_METADATA": "https://gateway.example.com/client.json"},
+		"pre-registered not array": {"OAUTH_PRE_REGISTERED_CLIENT_METADATA": `{"client_id":"https://gateway.example.com/client.json"}`},
+		"restrict not boolean":     {"OAUTH_RESTRICT_CLIENT_METADATA": "yes"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setRequired(t, "https://auth.example.com")
+			for k, v := range env {
+				t.Setenv(k, v)
+			}
+			_, err := oauthconfig.FromEnv()
+			require.Error(t, err)
+		})
+	}
 }
 
 func TestFromEnv_ConsentInvalid(t *testing.T) {
