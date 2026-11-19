@@ -112,3 +112,29 @@ func TestGuardedDialTriesEachValidatedAddress(t *testing.T) {
 		require.Equal(t, net.JoinHostPort(last.String(), port), requests[len(requests)-1].Host)
 	})
 }
+
+// TestDefaultDialClientNamesAProxyRefusal pins that a client on the proxy
+// environment reports a refused CONNECT as the proxy's refusal, not as the
+// bare status text net/http returns, and that discovery says how to fix it.
+func TestDefaultDialClientNamesAProxyRefusal(t *testing.T) {
+	proxy := proxytunneltest.New(t, http.StatusForbidden)
+	client := NewDefaultDialHTTPClient(5*time.Second, nil)
+	client.Transport.(*http.Transport).Proxy = http.ProxyURL(proxy.URL())
+
+	_, err := client.Get("https://dex.example.test/dex/.well-known/openid-configuration")
+	var refused *proxytunnel.ConnectRefusedError
+	require.ErrorAs(t, err, &refused)
+	require.Equal(t, http.StatusForbidden, refused.StatusCode)
+	require.Equal(t, "dex.example.test:443", refused.Target)
+	require.ErrorContains(t, err, "proxy refused CONNECT dex.example.test:443")
+
+	_, err = NewDiscoveryClient(client, time.Minute, nil).Discover(t.Context(), "https://dex.example.test/dex")
+	require.ErrorAs(t, err, &refused)
+	require.ErrorContains(t, err, "add the issuer host to NO_PROXY")
+}
+
+// TestDefaultDialClientPassesAnAcceptedConnect pins that the refusal hook
+// leaves a 200 CONNECT alone.
+func TestDefaultDialClientPassesAnAcceptedConnect(t *testing.T) {
+	require.NoError(t, refuseNonOKConnect(t.Context(), nil, &http.Request{Host: "dex.example.test:443"}, &http.Response{StatusCode: http.StatusOK}))
+}
