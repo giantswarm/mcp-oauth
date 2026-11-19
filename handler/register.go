@@ -309,6 +309,18 @@ func (h *Handler) handleRegistrationError(ctx context.Context, w http.ResponseWr
 		return
 	}
 
+	if errors.Is(err, server.ErrRedirectURIRejected) {
+		category := server.GetRedirectURIErrorCategory(err)
+		h.recordHTTPMetrics(ctx, endpointRegister, http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "redirect_uri rejected")
+		description := "redirect_uri refused"
+		if category != "" {
+			description += ": " + category
+		}
+		h.writeError(w, constants.ErrorCodeInvalidRedirectURI, description, http.StatusBadRequest)
+		return
+	}
+
 	h.logger.Error("Failed to register client", "ip", clientIP, paramError, err)
 	h.recordHTTPMetrics(ctx, endpointRegister, http.MethodPost, http.StatusInternalServerError, startTime)
 	instrumentation.RecordError(span, err)

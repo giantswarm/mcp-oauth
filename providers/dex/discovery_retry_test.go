@@ -151,7 +151,7 @@ func TestIsDiscoveryRetryable(t *testing.T) {
 		{"NXDOMAIN", wrapURL(fmt.Errorf("DNS resolution failed: %w", &net.DNSError{Err: "no such host", Name: "dex.example.com", IsNotFound: true})), false},
 		{"attempt deadline", context.DeadlineExceeded, true},
 		{"client timeout", wrapURL(&net.OpError{Op: "dial", Err: timeoutError{}}), true},
-		{"SSRF refusal", wrapURL(errors.New(`DNS rebinding attack detected: "dex.example.com" resolved to restricted IP 10.0.0.1`)), false},
+		{"SSRF refusal", wrapURL(fmt.Errorf("%w: %q resolved to restricted IP %s", oidc.ErrRestrictedAddress, "dex.example.com", "10.0.0.1")), false},
 		{"invalid document", errors.New("invalid discovery document: token_endpoint must use HTTPS"), false},
 	}
 	for _, tt := range tests {

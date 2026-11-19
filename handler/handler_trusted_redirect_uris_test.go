@@ -183,3 +183,33 @@ func TestHandler_ServeClientRegistration_TrustedSchemesAndRedirectURIs_Combined(
 
 	require.Equal(t, http.StatusUnauthorized, w.Code, "body: %s", w.Body.String())
 }
+
+// TestHandler_ServeClientRegistration_RefusedRedirectURI pins RFC 7591
+// §3.2.2: a redirect_uri the security check refuses answers 400
+// invalid_redirect_uri with the refusal's category, not a server error.
+func TestHandler_ServeClientRegistration_RefusedRedirectURI(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+	handler.server.Config.AllowPublicClientRegistration = true
+
+	body, err := json.Marshal(oauth.ClientRegistrationRequest{
+		ClientName:              "Test Client",
+		TokenEndpointAuthMethod: "none",
+		RedirectURIs:            []string{"https://client.example.com/callback#fragment"},
+	})
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPost, "/register", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = testClientRemoteAddr
+	w := httptest.NewRecorder()
+	handler.ServeClientRegistration(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
+	var resp struct {
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+	}
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	require.Equal(t, "invalid_redirect_uri", resp.Error)
+	require.Equal(t, "redirect_uri refused: fragment_not_allowed", resp.ErrorDescription)
+}

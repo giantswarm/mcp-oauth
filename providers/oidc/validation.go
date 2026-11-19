@@ -312,7 +312,7 @@ func ssrfSafeDialContext(dialer *net.Dialer, proxyFor proxytunnel.Selector) dial
 		// This prevents DNS rebinding attacks where the first IP is public but others are private
 		for _, ip := range ips {
 			if isPrivateOrRestrictedIP(ip) {
-				return nil, fmt.Errorf("%w: DNS rebinding attack detected: %q resolved to restricted IP %s", ErrRestrictedAddress, host, ip)
+				return nil, fmt.Errorf("%w: %q resolved to restricted IP %s", ErrRestrictedAddress, host, ip)
 			}
 		}
 
@@ -479,7 +479,7 @@ func refuseNonOKConnect(_ context.Context, _ *url.URL, connectReq *http.Request,
 func guardSSRF(host string, ips []net.IP) error {
 	for _, ip := range ips {
 		if isPrivateOrRestrictedIP(ip) {
-			return fmt.Errorf("%w: DNS rebinding attack detected: %q resolved to restricted IP %s", ErrRestrictedAddress, host, ip)
+			return fmt.Errorf("%w: %q resolved to restricted IP %s", ErrRestrictedAddress, host, ip)
 		}
 	}
 	return nil

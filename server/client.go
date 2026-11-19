@@ -189,7 +189,7 @@ func (s *Server) validateRedirectURIsWithAudit(ctx context.Context, redirectURIs
 		s.Logger.Warn("Client registration rejected: redirect URI validation failed",
 			logKeyError, err.Error(),
 			"client_ip", clientIP)
-		return fmt.Errorf("invalid_redirect_uri: %w", err)
+		return fmt.Errorf("%w: %w", ErrRedirectURIRejected, err)
 	}
 	return nil
 }
