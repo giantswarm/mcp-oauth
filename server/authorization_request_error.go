@@ -2,10 +2,11 @@ package server
 
 import "errors"
 
-// ErrRedirectURIRejected marks an authorization request whose redirect_uri is
-// not registered for its client or failed the authorization-time security
-// check. RFC 6749 §4.1.2.1: the error is shown to the person and never
-// redirected to that URI.
+// ErrRedirectURIRejected marks a redirect_uri the server refuses: in an
+// authorization request, one not registered for its client or failing the
+// authorization-time security check (RFC 6749 §4.1.2.1: the error is shown to
+// the person and never redirected to that URI); in a client registration, one
+// failing the security check (RFC 7591 §3.2.2 invalid_redirect_uri).
 var ErrRedirectURIRejected = errors.New("redirect_uri rejected")
 
 // AuthorizationRequestError is an authorization request refused because a
