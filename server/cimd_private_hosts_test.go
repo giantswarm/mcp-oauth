@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -319,4 +320,28 @@ func TestCheckListedMetadataHost(t *testing.T) {
 			require.Equal(t, tt.listed, checkListedMetadataHost("gateway.internal", []net.IP{ip}) == nil)
 		})
 	}
+}
+
+// TestMetadataFetchError_NamesPinningOnARefusedConnect pins the hint an
+// operator gets when a proxy that allows by domain refuses the CONNECT to the
+// checked IP.
+func TestMetadataFetchError_NamesPinningOnARefusedConnect(t *testing.T) {
+	proxy := proxytunneltest.New(t, http.StatusForbidden)
+	client := &http.Client{Transport: createSSRFProtectedTransport(false, []string{"localhost"}, nil, proxyAlways(proxy.URL()), privateaddrtest.LoopbackAsPrivate(isPrivateIP))}
+	_, err := client.Get("https://localhost:443/client.json")
+	require.Error(t, err)
+
+	fetchErr := metadataFetchError("https://localhost/client.json", err)
+	require.ErrorContains(t, fetchErr, "proxy refused CONNECT")
+	require.ErrorContains(t, fetchErr, "PreRegisteredClientMetadata")
+	var refused *proxytunnel.ConnectRefusedError
+	require.ErrorAs(t, fetchErr, &refused)
+
+	plain := metadataFetchError("https://localhost/client.json", errors.New("connection reset"))
+	require.NotContains(t, plain.Error(), "PreRegisteredClientMetadata")
+
+	authRequired := metadataFetchError("https://localhost/client.json", &proxytunnel.ConnectRefusedError{
+		Target: "127.0.0.1:443", StatusCode: http.StatusProxyAuthRequired, Status: "407 Proxy Authentication Required",
+	})
+	require.NotContains(t, authRequired.Error(), "PreRegisteredClientMetadata")
 }

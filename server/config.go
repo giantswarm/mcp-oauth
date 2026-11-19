@@ -645,7 +645,7 @@ type Config struct {
 	//
 	// Default: false
 	//
-	// Deprecated: list the hosts in AllowPrivateIPClientMetadataHosts. Setting
+	// Deprecated: pre-register the clients in PreRegisteredClientMetadata. Setting
 	// it logs a deprecation warning and still lifts the guard for every host.
 	AllowPrivateIPClientMetadata bool
 
@@ -656,6 +656,9 @@ type Config struct {
 	// connection time, so DNS rebinding stays covered. Entries match the
 	// client_id URL's hostname case-insensitively, ignoring one trailing dot (no
 	// port, no wildcard), like TrustedIssuer.AllowPrivateIPJWKSHosts.
+	//
+	// Deprecated: pre-register the clients in PreRegisteredClientMetadata instead;
+	// a pinned client needs no fetch. Setting the list logs a warning.
 	//
 	// This list deviates from draft-ietf-oauth-client-id-metadata-document-03
 	// section 10.7, which forbids fetching a metadata URL that resolves to a
@@ -917,6 +920,23 @@ type Config struct {
 	// documents you reviewed against their live URL; updates require a server
 	// restart. This does not skip authorization consent.
 	PreRegisteredClientMetadata []ClientMetadata
+
+	// RestrictClientMetadata accepts a URL client_id only when it is pinned in
+	// PreRegisteredClientMetadata or its host is in ClientMetadataHosts. Every other
+	// URL client_id is refused as invalid_client before any DNS lookup or
+	// request (draft-ietf-oauth-client-id-metadata-document-03 sections 9.2
+	// and 10.8). Requires EnableClientIDMetadataDocuments and at least one pin
+	// or host.
+	//
+	// Default: false (any URL client_id is fetched under the SSRF guard)
+	RestrictClientMetadata bool
+
+	// ClientMetadataHosts lists the hosts whose metadata documents
+	// RestrictClientMetadata lets the server fetch. Entries are exact
+	// hostnames, matched case-insensitively and ignoring one trailing dot; no
+	// wildcard, port or IP literal. A listed host gets no private-address
+	// allowance: the fetch keeps the SSRF guard. Requires RestrictClientMetadata.
+	ClientMetadataHosts []string
 
 	// TrustedClients lists the clients whose authorization requests skip the
 	// consent page, each with the exact https redirect URIs it may use. Every
@@ -1249,6 +1269,10 @@ func (c *Config) Validate() error {
 	}
 
 	if err := validatePreRegisteredClientMetadata(c); err != nil {
+		return err
+	}
+
+	if err := validateRestrictClientMetadata(c); err != nil {
 		return err
 	}
 

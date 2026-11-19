@@ -494,9 +494,9 @@ The following flags exist for non-production scenarios. Each emits a startup `WA
 | Field | Risk | Dev use case |
 |---|---|---|
 | `AllowInsecureHTTP` | Bearer tokens transmitted in clear — full credential exposure | Non-loopback HTTP test environments. RFC 8252 §7.3 loopback HTTP (`http://localhost`) is always permitted without this flag. |
-| `AllowPrivateIPClientMetadataHosts` | SSRF limited to the listed hostnames: their CIMD metadata URLs may resolve to RFC 1918 / RFC 4193 IPs; every other host keeps the guard | A known CIMD client on a private hostname (an internal load balancer, a VPN-only platform); a client served under an internal CA also needs `ClientMetadataRootCAs` |
+| `AllowPrivateIPClientMetadataHosts` | Deprecated, deviates from CIMD draft-03 §10.7: the listed hostnames' CIMD metadata URLs may resolve to RFC 1918 / RFC 4193 IPs; every other host keeps the guard | Replace with pre-registration in `PreRegisteredClientMetadata` (§9.2), which fetches nothing |
 | `AllowPrivateIPJWKSHosts` | SSRF limited to the listed hostnames: their JWKS endpoints may resolve to RFC 1918 / RFC 4193 IPs; every other host keeps the guard | A private IdP whose `jwks_uri` is on another host than its issuer (the issuer host needs no entry) |
-| `AllowPrivateIPClientMetadata` | Deprecated: SSRF into cluster for every CIMD host (CWE-918) | Replace with `AllowPrivateIPClientMetadataHosts` |
+| `AllowPrivateIPClientMetadata` | Deprecated: SSRF into cluster for every CIMD host (CWE-918) | Replace with pre-registration in `PreRegisteredClientMetadata` |
 | `AllowPrivateIPJWKS` | Deprecated: SSRF into cluster for every JWKS host (CWE-918) | Replace with `AllowPrivateIPJWKSHosts` |
 
 Every private-IP allowance follows one pattern, `AllowPrivateIP<Operation>Hosts`: a hostname list (no port, no wildcard; a redirect URI with a literal IP never reads the list), with the connection-time guard kept for every host that is not listed. Entries match case-insensitively and ignore one trailing dot; redirect URIs and client IDs are still compared byte for byte against what was registered ([RFC 9700 §4.1.3](https://datatracker.ietf.org/doc/html/rfc9700#section-4.1.3)).

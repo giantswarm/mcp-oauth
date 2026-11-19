@@ -24,14 +24,23 @@ func TestBlanketPrivateIPSwitchDeprecations(t *testing.T) {
 		absentLogs []string
 	}{
 		{
-			name: "host lists log no deprecation",
+			name: "redirect and JWKS host lists log no deprecation",
 			config: Config{
-				AllowPrivateIPClientMetadataHosts: []string{"gateway.internal"},
-				AllowPrivateIPRedirectURIHosts:    []string{"portal.internal"},
-				AllowPrivateIPJWKSHosts:           []string{"dex.internal"},
+				AllowPrivateIPRedirectURIHosts: []string{"portal.internal"},
+				AllowPrivateIPJWKSHosts:        []string{"dex.internal"},
 			},
 			wantLogs:   []string{"SECURITY WARNING: AllowPrivateIPJWKSHosts is set"},
 			absentLogs: []string{"DEPRECATED"},
+		},
+		{
+			name: "CIMD host list is deprecated in favour of pinning",
+			config: Config{
+				AllowPrivateIPClientMetadataHosts: []string{"gateway.internal"},
+			},
+			wantLogs: []string{
+				"DEPRECATED: AllowPrivateIPClientMetadataHosts fetches client metadata from private addresses, which draft-ietf-oauth-client-id-metadata-document-03 section 10.7 forbids; pre-register the clients in PreRegisteredClientMetadata instead",
+				"gateway.internal",
+			},
 		},
 		{
 			name: "blanket switches name their host list",
@@ -41,7 +50,7 @@ func TestBlanketPrivateIPSwitchDeprecations(t *testing.T) {
 				AllowPrivateIPJWKS:           true,
 			},
 			wantLogs: []string{
-				"DEPRECATED: AllowPrivateIPClientMetadata lifts the private-IP check for every host; list the hosts in AllowPrivateIPClientMetadataHosts instead",
+				"DEPRECATED: AllowPrivateIPClientMetadata lifts the private-IP check for every host; pre-register the clients in PreRegisteredClientMetadata instead",
 				"DEPRECATED: AllowPrivateIPRedirectURIs lifts the private-IP check for every host; list the hosts in AllowPrivateIPRedirectURIHosts instead",
 				"DEPRECATED: AllowPrivateIPJWKS lifts the private-IP check for every host; list the hosts in AllowPrivateIPJWKSHosts instead",
 			},

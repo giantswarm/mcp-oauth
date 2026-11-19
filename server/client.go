@@ -271,8 +271,9 @@ func (s *Server) ValidateClientCredentials(ctx context.Context, clientID, client
 // GetClient retrieves a client by ID (for use by handler)
 // Supports both pre-registered clients and URL-based Client ID Metadata Documents (MCP 2025-11-25)
 // A registered client whose record could not be read because the store did
-// not answer is ErrStorageUnavailable; the errors of a URL-based client ID
-// come from the metadata fetch and are returned unchanged.
+// not answer is ErrStorageUnavailable; a URL-based client ID that
+// RestrictClientMetadata refuses is ErrClientMetadataNotAllowed, and the other
+// errors of a URL-based client ID come from the metadata fetch unchanged.
 func (s *Server) GetClient(ctx context.Context, clientID string) (*storage.Client, error) {
 	client, err := s.getOrFetchClient(ctx, clientID)
 	if err != nil && !isClientIDMetadataDocumentURL(clientID) && storage.IsTransientError(err) {

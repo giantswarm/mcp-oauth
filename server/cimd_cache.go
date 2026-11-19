@@ -233,6 +233,14 @@ func (s *Server) getOrFetchClient(ctx context.Context, clientID string) (*storag
 		return clonePreRegisteredClient(client), nil
 	}
 
+	if err := s.checkClientMetadataAllowed(clientID); err != nil {
+		s.recordCIMDFetchMetric(ctx, "blocked", time.Now())
+		s.logMetadataFetchEvent(ctx, "client_metadata_fetch_blocked", clientID, map[string]any{
+			logKeyReason: "not_allowed",
+		})
+		return nil, err
+	}
+
 	if client, ok := s.tryGetCachedClient(ctx, clientID); ok {
 		return client, nil
 	}

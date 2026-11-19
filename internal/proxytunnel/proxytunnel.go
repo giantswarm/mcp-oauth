@@ -33,6 +33,17 @@ const (
 	defaultTunnelTimeout = time.Minute
 )
 
+// ConnectRefusedError is a proxy's non-200 answer to CONNECT Target.
+type ConnectRefusedError struct {
+	Target     string
+	StatusCode int
+	Status     string
+}
+
+func (e *ConnectRefusedError) Error() string {
+	return fmt.Sprintf("proxy refused CONNECT %s: %s", e.Target, e.Status)
+}
+
 // Selector returns the proxy for a connection to host and port, or nil to
 // connect directly.
 type Selector func(host, port string) (*url.URL, error)
@@ -227,7 +238,7 @@ func connect(ctx context.Context, conn net.Conn, proxyURL *url.URL, target strin
 		return errors.Join(fmt.Errorf("failed to read the proxy's answer to CONNECT %s", target), err, ctx.Err())
 	}
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("proxy refused CONNECT %s: %s", target, response.Status)
+		return &ConnectRefusedError{Target: target, StatusCode: response.StatusCode, Status: response.Status}
 	}
 	if reader.Buffered() > 0 {
 		return fmt.Errorf("proxy sent data after its answer to CONNECT %s", target)

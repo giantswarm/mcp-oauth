@@ -83,6 +83,9 @@ server, err := oauth.NewServer(
 | `EnableClientIDMetadataDocuments` | `bool` | `false` | Enable URL-based client_id support |
 | `ClientMetadataFetchTimeout` | `time.Duration` | `10s` | Timeout for fetching metadata from URLs |
 | `ClientMetadataCacheTTL` | `time.Duration` | `5m` | How long to cache fetched metadata |
+| `PreRegisteredClientMetadata` | `[]ClientMetadata` | empty | Pre-registered documents, used without any fetch (see [Pre-registered metadata](#pre-registered-metadata)) |
+| `RestrictClientMetadata` | `bool` | `false` | Accept only pinned client IDs and client IDs on `ClientMetadataHosts`; refuse every other URL client_id with `invalid_client` before any DNS lookup |
+| `ClientMetadataHosts` | `[]string` | empty | Exact hostnames whose documents `RestrictClientMetadata` lets the server fetch; no private-address allowance |
 
 ### Authorization Server Metadata
 
@@ -240,15 +243,29 @@ The server implements multiple layers of SSRF (Server-Side Request Forgery) prot
 4. **No Redirects**: HTTP redirects are not followed
 5. **No URL inside a document is fetched**: `jwks_uri` and every other URL in a metadata document are never requested
 
-#### Private hosts: a deviation from the draft
+#### Private hosts: deprecated, pre-register instead
 
-[draft-ietf-oauth-client-id-metadata-document-03 §10.7](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-client-id-metadata-document-03#section-10.7) says a server MUST NOT fetch a metadata URL that resolves to a special-use address. `AllowPrivateIPClientMetadataHosts` deviates from that on purpose, for platform clients that live on a private network. The rule exists because the client chooses the URL; with the list, the operator names each host and every other host keeps the guard. A listed host still gets:
+[draft-ietf-oauth-client-id-metadata-document-03 §10.7](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-client-id-metadata-document-03#section-10.7) says a server MUST NOT fetch a metadata URL that resolves to a special-use address, with no production exception. `AllowPrivateIPClientMetadataHosts` deviates from that, for platform clients that live on a private network. It is deprecated and logs a warning: pin those clients in `PreRegisteredClientMetadata` instead (§9.2, see [Pre-registered metadata](#pre-registered-metadata)), so no fetch happens. The list will be removed in the next major release. Until then, the rule's reason (the client chooses the URL) is narrowed: the operator names each host and every other host keeps the guard. A listed host still gets:
 
 - HTTPS with certificate verification (`ClientMetadataRootCAs` or the system pool), no redirects, the 1 MB and JSON content-type limits, and the `client_id` equality check;
 - the private class only (RFC 1918, RFC 4193), never loopback or link-local;
 - no fetch of any URL inside the document.
 
-The compliant alternative is to pre-register the client (§9.2) instead of resolving its metadata document. The deprecated `AllowPrivateIPClientMetadata` has none of these limits on who chooses the host.
+The deprecated `AllowPrivateIPClientMetadata` has none of these limits on who chooses the host.
+
+#### Restricting which client IDs are accepted
+
+`RestrictClientMetadata` turns the open CIMD model into an allow-list (§9.2: "no obligation to support dynamic client onboarding"; §10.8: allow-lists of trusted domains). Only a client ID pinned in `PreRegisteredClientMetadata`, or one whose host is in `ClientMetadataHosts`, is accepted. Every other URL client_id gets `invalid_client` (§6.1, a terminal failure on policy grounds) before any DNS lookup or request, and is counted as `blocked` on `oauth_cimd_fetch_total` with a `client_metadata_fetch_blocked` audit event. A server that only one gateway calls can pin that gateway's document and accept nothing else.
+
+#### Behind an egress proxy
+
+The fetch honours `HTTPS_PROXY` and `NO_PROXY`, and asks the proxy for a `CONNECT` to the IP address it checked, never to the hostname. This keeps §10.7 enforced in the server: the proxy cannot resolve the name again to a different address. A proxy that allows destinations by domain name (squid `dstdomain`) cannot match an IP address and refuses the tunnel with `403`; the error then names `PreRegisteredClientMetadata`. On such a network:
+
+1. **Pin the clients** you accept in `PreRegisteredClientMetadata` ([Pre-registered metadata](#pre-registered-metadata)). No request leaves the server for them; re-check the pinned documents against their URLs from a place that may reach the internet.
+2. **Turn on `RestrictClientMetadata`**, so unpinned client IDs are refused without any request.
+3. Only if a client must be fetched live, the proxy has to allow a `CONNECT` to its IP addresses, or the host goes in `NO_PROXY` with direct egress.
+
+Sending the hostname to the proxy instead is not supported: the last DNS lookup would then happen in the proxy, and §10.7 would hold only if the proxy refuses every RFC 6890 special-use destination. See the [OWASP SSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html).
 
 ### Consent
 
@@ -440,7 +457,15 @@ The `client_id` field in your metadata document doesn't match the URL.
 
 SSRF protection blocked the request because the hostname resolves to a private IP.
 
-**Solution**: Host your metadata document on a publicly accessible server.
+**Solution**: Host your metadata document on a publicly accessible server. For a platform client on a private network, the operator pins its document in `PreRegisteredClientMetadata`.
+
+#### "proxy refused CONNECT <ip>:443"
+
+The egress proxy refused the tunnel to the checked IP address, usually because it allows destinations by domain name only. Pin the client in `PreRegisteredClientMetadata` (see [Behind an egress proxy](#behind-an-egress-proxy)).
+
+#### "client_id metadata URL is not pre-registered and its host is not in ClientMetadataHosts"
+
+`RestrictClientMetadata` is on and the client is neither pinned nor on a listed host. Pin it or list its host if the server should accept it.
 
 #### "metadata fetch returned HTTP 404/500"
 

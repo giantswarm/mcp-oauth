@@ -302,14 +302,15 @@ func TestLogSecurityWarnings(t *testing.T) {
 			},
 		},
 		{
-			name: "AllowPrivateIPClientMetadataHosts warning",
+			name: "AllowPrivateIPClientMetadataHosts deprecation",
 			config: &Config{
 				RequirePKCE:                       true,
 				RegistrationAccessToken:           "token",
 				AllowPrivateIPClientMetadataHosts: []string{"client.internal.example"},
 			},
 			expectedWarnings: []string{
-				"SECURITY WARNING: AllowPrivateIPClientMetadataHosts is set",
+				"DEPRECATED: AllowPrivateIPClientMetadataHosts fetches client metadata from private addresses",
+				"pre-register the clients in PreRegisteredClientMetadata instead",
 				"client.internal.example",
 			},
 			notExpectedWarnings: []string{

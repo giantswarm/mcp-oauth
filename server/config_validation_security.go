@@ -234,14 +234,12 @@ func logCoreSecurityWarnings(config *Config, logger *slog.Logger) {
 	if config.AllowPrivateIPClientMetadata {
 		logger.Warn("SECURITY WARNING: AllowPrivateIPClientMetadata is enabled",
 			"risk", "CIMD fetches to private-IP / loopback ranges allowed — SSRF into cluster possible",
-			"recommendation", "List the hosts in AllowPrivateIPClientMetadataHosts instead",
+			"recommendation", "Pre-register the clients in PreRegisteredClientMetadata instead",
 			"cwe", "CWE-918")
 	}
 	if len(config.AllowPrivateIPClientMetadataHosts) > 0 {
-		logger.Warn("SECURITY WARNING: AllowPrivateIPClientMetadataHosts is set",
+		logger.Warn("DEPRECATED: AllowPrivateIPClientMetadataHosts fetches client metadata from private addresses, which draft-ietf-oauth-client-id-metadata-document-03 section 10.7 forbids; pre-register the clients in PreRegisteredClientMetadata instead",
 			"hosts", config.AllowPrivateIPClientMetadataHosts,
-			"risk", "CIMD fetches from these hosts may reach RFC 1918 / RFC 4193 addresses",
-			"recommendation", "List only hosts that serve a known client's metadata document",
 			"cwe", "CWE-918")
 	}
 	if config.AllowPrivateIPJWKS {
