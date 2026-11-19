@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/internal/privateaddr"
 	"github.com/giantswarm/mcp-oauth/internal/proxytunnel"
 )
 
@@ -473,20 +474,23 @@ func guardSSRF(host string, ips []net.IP) error {
 	return nil
 }
 
-// HostScopedPrivateIPDialContext creates a DialContext that allows private IP
-// resolution only for the explicitly listed hostnames; all other hosts are
-// subject to the normal SSRF/DNS-rebinding guard.
+// HostScopedPrivateIPDialContext creates a DialContext that lets the listed
+// hostnames resolve to RFC 1918 and RFC 4193 addresses; loopback, link-local
+// and the other special-purpose ranges stay refused for them. Hosts match
+// case-insensitively and ignore one trailing dot. All other hosts are subject
+// to the normal SSRF/DNS-rebinding guard.
 // Like SSRFSafeDialContext, it honors HTTPS_PROXY and NO_PROXY through a
 // CONNECT tunnel to the validated IP.
 func HostScopedPrivateIPDialContext(dialer *net.Dialer, allowedHosts []string) func(ctx context.Context, network, addr string) (net.Conn, error) {
-	return hostScopedPrivateIPDialContext(dialer, allowedHosts, proxytunnel.FromEnvironment())
+	return hostScopedPrivateIPDialContext(dialer, allowedHosts, proxytunnel.FromEnvironment(), privateaddr.CheckListedHost)
 }
 
-func hostScopedPrivateIPDialContext(dialer *net.Dialer, allowedHosts []string, proxyFor proxytunnel.Selector) dialContextFunc {
-	allowed := make(map[string]struct{}, len(allowedHosts))
-	for _, h := range allowedHosts {
-		allowed[h] = struct{}{}
-	}
+// listedHostCheck decides whether a listed host may be dialed at the
+// addresses it resolved to.
+type listedHostCheck func(host string, ips []net.IP) error
+
+func hostScopedPrivateIPDialContext(dialer *net.Dialer, allowedHosts []string, proxyFor proxytunnel.Selector, checkListed listedHostCheck) dialContextFunc {
+	allowed := privateaddr.NewHostSet(allowedHosts)
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
@@ -501,28 +505,34 @@ func hostScopedPrivateIPDialContext(dialer *net.Dialer, allowedHosts []string, p
 			return nil, fmt.Errorf("no IP addresses found for %q", host)
 		}
 
-		_, isAllowed := allowed[host]
-		if !isAllowed {
-			if err := guardSSRF(host, ips); err != nil {
-				return nil, err
+		if allowed.Contains(host) {
+			if err := checkListed(host, ips); err != nil {
+				return nil, fmt.Errorf("%w: %w", ErrRestrictedAddress, err)
 			}
+		} else if err := guardSSRF(host, ips); err != nil {
+			return nil, err
 		}
 
 		return dialValidated(ctx, dialer, network, host, port, ips, proxyFor)
 	}
 }
 
-// NewHostScopedPrivateIPHTTPClient creates an HTTP client that allows private
-// IP resolution only for the explicitly listed hostnames. All other hosts go
-// through the normal SSRF/DNS-rebinding guard. Use this instead of
+// NewHostScopedPrivateIPHTTPClient creates an HTTP client that lets the listed
+// hostnames resolve to RFC 1918 and RFC 4193 addresses, never to loopback,
+// link-local or other special-purpose addresses. All other hosts go through
+// the normal SSRF/DNS-rebinding guard. Use this instead of
 // NewDefaultDialHTTPClient when the private endpoint is a known in-cluster
 // service — it narrows the SSRF escape hatch to only the expected host.
 //
 // rootCAs, when non-nil, is the CA pool the client verifies the IdP's
 // certificate against; nil uses the system pool.
 func NewHostScopedPrivateIPHTTPClient(allowedHosts []string, timeout time.Duration, rootCAs *x509.CertPool) *http.Client {
+	return newHostScopedPrivateIPHTTPClient(allowedHosts, timeout, rootCAs, privateaddr.CheckListedHost)
+}
+
+func newHostScopedPrivateIPHTTPClient(allowedHosts []string, timeout time.Duration, rootCAs *x509.CertPool, checkListed listedHostCheck) *http.Client {
 	dialFor := func(dialer *net.Dialer) dialContextFunc {
-		return HostScopedPrivateIPDialContext(dialer, allowedHosts)
+		return hostScopedPrivateIPDialContext(dialer, allowedHosts, proxytunnel.FromEnvironment(), checkListed)
 	}
 	return newHTTPClient(timeout, dialFor,
 		true,  // pinHost: private IPs are allowed for the listed hosts

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/internal/privateaddr"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/mock"
@@ -227,7 +228,7 @@ func TestValidateMetadataURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Test with allowPrivateIP=false (default, SSRF protection enabled)
-			sanitizedURL, err := validateAndSanitizeMetadataURL(tt.url, false, nil)
+			sanitizedURL, err := validateAndSanitizeMetadataURL(tt.url, false, nil, privateaddr.CheckListedHost)
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("validateAndSanitizeMetadataURL(%q, false) expected error containing %q, got nil", tt.url, tt.errText)
@@ -306,7 +307,7 @@ func TestValidateMetadataURL_AllowPrivateIP(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Test with allowPrivateIP=true (SSRF protection relaxed for internal networks)
-			sanitizedURL, err := validateAndSanitizeMetadataURL(tt.url, true, nil)
+			sanitizedURL, err := validateAndSanitizeMetadataURL(tt.url, true, nil, privateaddr.CheckListedHost)
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("validateAndSanitizeMetadataURL(%q, true) expected error containing %q, got nil", tt.url, tt.errText)

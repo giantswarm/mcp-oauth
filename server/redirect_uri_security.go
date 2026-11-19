@@ -5,11 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
-	"slices"
 	"strings"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
+	"github.com/giantswarm/mcp-oauth/internal/privateaddr"
 )
 
 // Redirect URI validation stage constants for metrics.
@@ -220,8 +221,8 @@ func (s *Server) validateIPAddress(ip net.IP, rawURI string) error {
 		)
 	}
 
-	// Check for private IP ranges (RFC 1918)
-	if ip.IsPrivate() {
+	// Check for private IP ranges (RFC 1918, RFC 4193)
+	if isListablePrivateIP(ip) {
 		if !s.Config.AllowPrivateIPRedirectURIs {
 			return newRedirectURISecurityError(
 				RedirectURIErrorCategoryPrivateIP,
@@ -244,6 +245,13 @@ func (s *Server) validateIPAddress(ip net.IP, rawURI string) error {
 	}
 
 	return nil
+}
+
+// isListablePrivateIP reports whether ip is in the private class that
+// AllowPrivateIPRedirectURIs and AllowPrivateIPRedirectURIHosts lift.
+func isListablePrivateIP(ip net.IP) bool {
+	addr, ok := netip.AddrFromSlice(ip)
+	return ok && privateaddr.IsListable(addr)
 }
 
 // validateHostnameWithDNS resolves a hostname and validates the resulting IP addresses.
@@ -298,9 +306,9 @@ func (s *Server) validateHostnameWithDNS(ctx context.Context, hostname, rawURI s
 		return nil
 	}
 
-	allowPrivate := s.Config.AllowPrivateIPRedirectURIs || slices.Contains(s.Config.AllowPrivateIPRedirectURIHosts, hostname)
+	allowPrivate := s.Config.AllowPrivateIPRedirectURIs || privateaddr.NewHostSet(s.Config.AllowPrivateIPRedirectURIHosts).Contains(hostname)
 	for _, ip := range ips {
-		if ip.IsPrivate() && !allowPrivate {
+		if isListablePrivateIP(ip) && !allowPrivate {
 			return newRedirectURISecurityError(
 				RedirectURIErrorCategoryDNSPrivateIP,
 				rawURI,

@@ -81,7 +81,10 @@ config := &server.Config{
 use HTTPS with a hostname and may include a port and path. User information,
 query components and fragments are refused, including empty `?` and `#`
 delimiters. Private, loopback and link-local addresses are permitted without a
-separate setting. Validation does not resolve DNS.
+separate setting. Validation does not resolve DNS. The JWKS fetch that
+validates forwarded SSO ID tokens may also reach the issuer's host on an
+RFC 1918 or RFC 4193 address without a setting; a `jwks_uri` on another host
+needs `AllowPrivateIPJWKSHosts`.
 
 Discovery verifies the provider's TLS certificate using the system trust store
 or `dex.Config.RootCAs`, and the returned `issuer` must match `IssuerURL` exactly.

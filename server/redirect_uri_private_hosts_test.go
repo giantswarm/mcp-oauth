@@ -27,6 +27,9 @@ func TestRedirectURIPrivateHosts(t *testing.T) {
 		{"listed RFC 1918 192.168/16", privateHost, []string{"192.168.0.1"}, listedHosts, false, ""},
 		{"listed IPv6 ULA", privateHost, []string{"fd00::1"}, listedHosts, false, ""},
 		{"listed mixed public and private", privateHost, []string{"93.184.216.34", "10.0.0.1", "fd00::1"}, listedHosts, false, ""},
+		{"listed host matches case-insensitively", "Gateway.Internal.Example.COM", []string{"10.0.0.1"}, listedHosts, false, ""},
+		{"listed host matches with a trailing dot", privateHost + ".", []string{"10.0.0.1"}, listedHosts, false, ""},
+		{"list entry is normalized too", privateHost, []string{"10.0.0.1"}, []string{"GATEWAY.internal.example.com."}, false, ""},
 		{"unlisted private IPv4", "other.internal.example.com", []string{"10.0.0.1"}, listedHosts, false, RedirectURIErrorCategoryDNSPrivateIP},
 		{"unlisted IPv6 ULA", "other.internal.example.com", []string{"fd00::1"}, listedHosts, false, RedirectURIErrorCategoryDNSPrivateIP},
 		{"unlisted public host", "public.example.com", []string{"93.184.216.34"}, listedHosts, false, ""},
@@ -48,7 +51,7 @@ func TestRedirectURIPrivateHosts(t *testing.T) {
 			for _, address := range test.addresses {
 				addresses = append(addresses, net.ParseIP(address))
 			}
-			resolver.setResult(test.hostname, addresses...)
+			resolver.setResult(strings.TrimSuffix(test.hostname, "."), addresses...)
 			setup := newTestServerSetup(true)
 			server, err := setup.createServer(&Config{
 				Issuer:                         testAuthIssuer,

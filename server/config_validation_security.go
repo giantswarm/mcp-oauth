@@ -240,20 +240,20 @@ func logCoreSecurityWarnings(config *Config, logger *slog.Logger) {
 	if len(config.AllowPrivateIPClientMetadataHosts) > 0 {
 		logger.Warn("SECURITY WARNING: AllowPrivateIPClientMetadataHosts is set",
 			"hosts", config.AllowPrivateIPClientMetadataHosts,
-			"risk", "CIMD fetches from these hosts may reach private-IP / loopback ranges",
+			"risk", "CIMD fetches from these hosts may reach RFC 1918 / RFC 4193 addresses",
 			"recommendation", "List only hosts that serve a known client's metadata document",
 			"cwe", "CWE-918")
 	}
 	if config.AllowPrivateIPJWKS {
 		logger.Warn("SECURITY WARNING: AllowPrivateIPJWKS is enabled",
 			"risk", "JWKS endpoints can resolve to private/internal IP addresses — SSRF possible",
-			"recommendation", "List the IdP's JWKS host in AllowPrivateIPJWKSHosts instead",
+			"recommendation", "Remove it: the provider's issuer host may resolve privately without it; list any other JWKS host in AllowPrivateIPJWKSHosts",
 			"cwe", "CWE-918")
 	}
 	if len(config.AllowPrivateIPJWKSHosts) > 0 {
 		logger.Warn("SECURITY WARNING: AllowPrivateIPJWKSHosts is set",
 			"hosts", config.AllowPrivateIPJWKSHosts,
-			"risk", "JWKS fetches from these hosts may reach private-IP / loopback ranges",
+			"risk", "JWKS fetches from these hosts may reach RFC 1918 / RFC 4193 addresses",
 			"recommendation", "List only the JWKS hosts of trusted identity providers",
 			"cwe", "CWE-918")
 	}

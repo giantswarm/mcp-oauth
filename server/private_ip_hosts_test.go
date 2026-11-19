@@ -98,32 +98,91 @@ func TestAllowPrivateIPJWKSHosts(t *testing.T) {
 	byName := "https://" + net.JoinHostPort("localhost", serverURL.Port()) + "/keys"
 	byLoopbackIP := srv.URL + "/keys"
 
-	newServer := func(t *testing.T, config Config) *Server {
+	newServer := func(t *testing.T, issuer string, config Config, opts ...Option) *Server {
 		t.Helper()
 		store := memory.New()
 		t.Cleanup(store.Stop)
 		config.Issuer = "https://auth.example.com"
 		config.JWKSRootCAs = pool
-		server, err := New(mock.NewProvider(), store, store, store, &config, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		provider := mock.NewProvider()
+		provider.IssuerURLFunc = func() string { return issuer }
+		server, err := New(provider, store, store, store, &config, slog.New(slog.NewTextHandler(io.Discard, nil)), opts...)
 		require.NoError(t, err)
 		return server
 	}
+	const publicIssuer = "https://idp.example.com"
 
-	t.Run("listed host is fetched", func(t *testing.T) {
-		client := newServer(t, Config{AllowPrivateIPJWKSHosts: []string{"localhost"}}).getJWKSClient()
+	t.Run("listed host resolving to loopback is refused", func(t *testing.T) {
+		client := newServer(t, publicIssuer, Config{AllowPrivateIPJWKSHosts: []string{"localhost"}}).getJWKSClient()
 		_, err := client.FetchJWKS(t.Context(), byName)
-		require.NoError(t, err)
+		require.ErrorIs(t, err, oidc.ErrRestrictedAddress)
+		require.ErrorContains(t, err, errListedHost)
 	})
 
 	t.Run("unlisted loopback host is refused", func(t *testing.T) {
-		client := newServer(t, Config{AllowPrivateIPJWKSHosts: []string{"localhost"}}).getJWKSClient()
+		client := newServer(t, publicIssuer, Config{AllowPrivateIPJWKSHosts: []string{"localhost"}}).getJWKSClient()
 		_, err := client.FetchJWKS(t.Context(), byLoopbackIP)
 		require.ErrorContains(t, err, "loopback")
 	})
 
 	t.Run("no list refuses the listed name too", func(t *testing.T) {
-		client := newServer(t, Config{}).getJWKSClient()
+		client := newServer(t, publicIssuer, Config{}).getJWKSClient()
 		_, err := client.FetchJWKS(t.Context(), byName)
 		require.ErrorIs(t, err, oidc.ErrRestrictedAddress)
+		require.NotContains(t, err.Error(), errListedHost)
 	})
+
+	t.Run("issuer host gets the listed-host policy, which refuses loopback", func(t *testing.T) {
+		issuer := "https://" + net.JoinHostPort("LocalHost.", serverURL.Port())
+		client := newServer(t, issuer, Config{}).getJWKSClient()
+		_, err := client.FetchJWKS(t.Context(), byName)
+		require.ErrorIs(t, err, oidc.ErrRestrictedAddress)
+		require.ErrorContains(t, err, errListedHost)
+	})
+
+	t.Run("jwks_uri on another host than the issuer keeps the guard", func(t *testing.T) {
+		issuer := "https://" + net.JoinHostPort("localhost", serverURL.Port())
+		client := newServer(t, issuer, Config{}).getJWKSClient()
+		_, err := client.FetchJWKS(t.Context(), byLoopbackIP)
+		require.ErrorContains(t, err, "loopback")
+		require.NotContains(t, err.Error(), errListedHost)
+	})
+
+	t.Run("blanket still lifts the guard for the issuer host", func(t *testing.T) {
+		issuer := "https://" + net.JoinHostPort("localhost", serverURL.Port())
+		client := newServer(t, issuer, Config{AllowPrivateIPJWKS: true}).getJWKSClient()
+		_, err := client.FetchJWKS(t.Context(), byName)
+		require.NoError(t, err)
+	})
+
+	t.Run("trusted issuer on the provider's host gets no allowance", func(t *testing.T) {
+		issuer := "https://" + net.JoinHostPort("localhost", serverURL.Port())
+		server := newServer(t, issuer, Config{}, WithTrustedIssuers([]TrustedIssuer{{
+			Issuer:  issuer,
+			JwksURL: byName,
+			RootCAs: pool,
+		}}))
+		client := server.trustedIssuerValidator.issuerClients[issuer]
+		require.NotNil(t, client)
+		_, err := client.FetchJWKS(t.Context(), byName)
+		require.ErrorIs(t, err, oidc.ErrRestrictedAddress)
+		require.NotContains(t, err.Error(), errListedHost)
+	})
+}
+
+func TestProviderJWKSPrivateIPHosts(t *testing.T) {
+	withIssuer := func(issuer string) *mock.Provider {
+		provider := mock.NewProvider()
+		provider.IssuerURLFunc = func() string { return issuer }
+		return provider
+	}
+	listed := make([]string, 1, 4)
+	listed[0] = "keys.internal"
+
+	require.Equal(t, []string{"keys.internal", "dex.internal"},
+		providerJWKSPrivateIPHosts(withIssuer("https://dex.internal:5556/dex"), listed))
+	require.Equal(t, []string{"keys.internal"}, listed[:cap(listed)][:1], "listed must not be appended to in place")
+	require.Equal(t, listed, providerJWKSPrivateIPHosts(withIssuer(""), listed))
+	require.Equal(t, listed, providerJWKSPrivateIPHosts(withIssuer("://bad"), listed))
+	require.Equal(t, []string{"dex.internal"}, providerJWKSPrivateIPHosts(withIssuer("https://dex.internal"), nil))
 }
