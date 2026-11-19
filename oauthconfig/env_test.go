@@ -47,6 +47,7 @@ func setRequired(t *testing.T, issuer string) {
 		"OAUTH_ISSUER",
 		"OAUTH_ALLOW_INSECURE_HTTP",
 		"OAUTH_ALLOW_PUBLIC_CLIENT_REGISTRATION",
+		"OAUTH_ENABLE_CLIENT_ID_METADATA_DOCUMENTS",
 		"OAUTH_TRUST_PROXY",
 		"OAUTH_ACCESS_TOKEN_TTL",
 		"OAUTH_REFRESH_TOKEN_TTL",
@@ -74,6 +75,47 @@ func setRequired(t *testing.T, issuer string) {
 	}
 	if issuer != "" {
 		t.Setenv("OAUTH_ISSUER", issuer)
+	}
+}
+
+func TestFromEnv_ClientIDMetadataDocuments(t *testing.T) {
+	for _, prefix := range []string{"OAUTH_", "CUSTOM_OAUTH_"} {
+		for _, testCase := range []struct {
+			name    string
+			value   string
+			unset   bool
+			enabled bool
+			invalid bool
+		}{
+			{name: "unset", unset: true},
+			{name: "empty"},
+			{name: "enabled", value: "true", enabled: true},
+			{name: "disabled", value: "false"},
+			{name: "numeric true", value: "1", enabled: true},
+			{name: "numeric false", value: "0"},
+			{name: "invalid", value: "invalid", invalid: true},
+		} {
+			t.Run(prefix+testCase.name, func(t *testing.T) {
+				setRequired(t, "https://auth.example")
+				t.Setenv(prefix+"ISSUER", "https://auth.example")
+				name := prefix + "ENABLE_CLIENT_ID_METADATA_DOCUMENTS"
+				t.Setenv(name, testCase.value)
+				if testCase.unset {
+					require.NoError(t, os.Unsetenv(name))
+				}
+				if prefix != "OAUTH_" {
+					t.Setenv("OAUTH_ENABLE_CLIENT_ID_METADATA_DOCUMENTS", "invalid")
+				}
+				configuration, err := oauthconfig.FromEnvWithPrefix(prefix)
+				if testCase.invalid {
+					require.ErrorContains(t, err, name)
+					require.Nil(t, configuration)
+					return
+				}
+				require.NoError(t, err)
+				require.Equal(t, testCase.enabled, configuration.EnableClientIDMetadataDocuments)
+			})
+		}
 	}
 }
 

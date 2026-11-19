@@ -53,7 +53,7 @@ config := &server.Config{
 |-------|------|---------|-------------|
 | `DisableWWWAuthenticateMetadata` | `bool` | `false` | Disable enhanced WWW-Authenticate headers |
 | `DefaultChallengeScopes` | `[]string` | `nil` | Scopes to include in 401 challenges |
-| `EnableClientIDMetadataDocuments` | `bool` | `false` | Enable URL-based client IDs (MCP 2025-11-25) |
+| `EnableClientIDMetadataDocuments` | `bool` | `false` | Enable URL-based client IDs; `oauthconfig` reads `OAUTH_ENABLE_CLIENT_ID_METADATA_DOCUMENTS` (or the custom prefix). Unset or empty is false; malformed booleans return an error |
 
 ### Example: Production Configuration
 
@@ -450,6 +450,14 @@ oauth.WithTokenRefreshHandler(func(ctx context.Context, userID, familyID string,
 ```
 
 ## Client Registration
+
+[MCP 2026-07-28 deprecates Dynamic Client Registration (DCR)](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration#dynamic-client-registration).
+Prefer pre-registration for known clients and [CIMD](./cimd.md) for unfamiliar
+clients. DCR remains a compatibility fallback: the registration configuration,
+endpoints and discovery advertisement continue to work.
+The [specification's deprecated registry](https://modelcontextprotocol.io/specification/2026-07-28/deprecated)
+allows removal in the first specification revision released on or after
+2027-07-28. This is not a library removal date.
 
 Control dynamic client registration:
 

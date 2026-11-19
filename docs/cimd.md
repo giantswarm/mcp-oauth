@@ -1,6 +1,6 @@
 # Client ID Metadata Documents (CIMD)
 
-Client ID Metadata Documents (CIMD) let clients use HTTPS URLs as client identifiers with dynamic metadata discovery. MCP 2026-07-28 recommends CIMD and retains Dynamic Client Registration for compatibility. See the [authorization audit](./mcp-2026-07-28.md) for outstanding conformance gaps.
+Client ID Metadata Documents (CIMD) let clients use HTTPS URLs as client identifiers with dynamic metadata discovery. MCP 2026-07-28 recommends CIMD and deprecates Dynamic Client Registration (DCR), which remains a compatibility fallback. Prefer pre-registration for known clients and CIMD for unfamiliar clients. See the [authorization audit](./mcp-2026-07-28.md) for outstanding conformance gaps.
 
 ## Contents
 
@@ -50,6 +50,12 @@ CIMD may not be appropriate for:
 ## Configuration
 
 ### Enabling CIMD
+
+When using `oauthconfig.FromEnv`, set
+`OAUTH_ENABLE_CLIENT_ID_METADATA_DOCUMENTS=true`. With `FromEnvWithPrefix`,
+replace `OAUTH_` with the supplied prefix. Unset or empty values leave CIMD
+disabled; explicit `false` disables it and invalid boolean values fail startup.
+Applications can choose their own default after loading the configuration.
 
 ```go
 import (
