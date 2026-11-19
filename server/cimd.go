@@ -231,7 +231,6 @@ func createSSRFProtectedTransport(allowPrivateIP bool, allowedPrivateHosts []str
 	return transport
 }
 
-// rejectPrivateIPs returns the SSRF error for the first private/internal address host resolved to.
 // listedHostCheck decides whether a listed host may be reached at the
 // addresses it resolved to.
 type listedHostCheck func(host string, ips []net.IP) error
@@ -254,6 +253,7 @@ func checkListedIPAddrs(checkListed listedHostCheck, host string, ips []net.IPAd
 	return nil
 }
 
+// rejectPrivateIPs returns the SSRF error for the first private/internal address host resolved to.
 func rejectPrivateIPs(host string, ips []net.IPAddr) error {
 	for _, ipAddr := range ips {
 		if isPrivateIP(ipAddr.IP) {

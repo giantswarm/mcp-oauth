@@ -6,29 +6,18 @@ package privateaddr
 import (
 	"fmt"
 	"net"
-	"net/netip"
 	"strings"
 )
 
-// IsListable reports whether addr is in the private class a host list lifts:
-// RFC 1918 (10/8, 172.16/12, 192.168/16) or RFC 4193 (fc00::/7). An IPv4
-// address in IPv6 form is checked as IPv4.
-func IsListable(addr netip.Addr) bool {
-	return addr.Unmap().IsPrivate()
-}
-
 // CheckListedHost returns an error naming the first address in ips that a
 // listed host may not resolve to: one that restricted refuses and that is not
-// in the listable class. restricted is the guard the operation applies to an
+// private (net.IP.IsPrivate: RFC 1918 or RFC 4193, an IPv4 address in IPv6
+// form checked as IPv4). restricted is the guard the operation applies to an
 // unlisted host, so a listed host is never refused an address an unlisted
 // host may reach, and gains only RFC 1918 and RFC 4193.
 func CheckListedHost(host string, ips []net.IP, restricted func(net.IP) bool) error {
 	for _, ip := range ips {
-		addr, ok := netip.AddrFromSlice(ip)
-		if !ok {
-			return fmt.Errorf("listed host %q resolved to an invalid address", host)
-		}
-		if restricted(ip) && !IsListable(addr) {
+		if restricted(ip) && !ip.IsPrivate() {
 			return fmt.Errorf("listed host %q resolved to %s, which a private-IP host list does not allow (only RFC 1918 and RFC 4193 are lifted)", host, ip)
 		}
 	}
