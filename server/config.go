@@ -908,6 +908,16 @@ type Config struct {
 	// Default: false (disabled for backward compatibility)
 	EnableClientIDMetadataDocuments bool
 
+	// PreRegisteredClientMetadata pre-registers public clients by their Client
+	// ID Metadata Document (CIMD draft 03 section 9.2), for installations that
+	// cannot or must not fetch the clients' documents. Requires
+	// EnableClientIDMetadataDocuments. Exact client IDs only; these documents
+	// never expire or trigger DNS/HTTP requests, and the library never refreshes
+	// them. All other clients retain the normal CIMD fetch policy. Configure only
+	// documents you reviewed against their live URL; updates require a server
+	// restart. This does not skip authorization consent.
+	PreRegisteredClientMetadata []ClientMetadata
+
 	// TrustedClients lists the clients whose authorization requests skip the
 	// consent page, each with the exact https redirect URIs it may use. Every
 	// other client, whether a Client ID Metadata Document URL or dynamically
@@ -1235,6 +1245,10 @@ func (c *Config) Validate() error {
 	}
 
 	if err := c.validateIntrospectionResourceServers(); err != nil {
+		return err
+	}
+
+	if err := validatePreRegisteredClientMetadata(c); err != nil {
 		return err
 	}
 
