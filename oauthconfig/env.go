@@ -120,7 +120,7 @@ func loadTrustedAllowlistsFromEnv(prefix string, cfg *server.Config) error {
 	}
 	loadCSVIfSet(prefix+"TRUSTED_REDIRECT_SCHEMES", &cfg.TrustedPublicRegistrationSchemes)
 	loadCSVIfSet(prefix+"TRUSTED_REDIRECT_URIS", &cfg.TrustedPublicRegistrationRedirectURIs)
-	loadCSVIfSet(prefix+"ALLOW_PRIVATE_IP_CLIENT_METADATA_HOSTS", &cfg.AllowPrivateIPClientMetadataHosts)
+	loadCSVIfSet(prefix+"ALLOW_PRIVATE_IP_CLIENT_METADATA_HOSTS", &cfg.AllowPrivateIPClientMetadataHosts) //nolint:staticcheck // the deprecated variable keeps working until v2
 	loadCSVIfSet(prefix+"ALLOW_PRIVATE_IP_REDIRECT_URI_HOSTS", &cfg.AllowPrivateIPRedirectURIHosts)
 	loadCSVIfSet(prefix+"ALLOW_PRIVATE_IP_JWKS_HOSTS", &cfg.AllowPrivateIPJWKSHosts)
 	return nil

@@ -592,7 +592,7 @@ func TestFromEnv_AllowPrivateIPHosts(t *testing.T) {
 	cfg, err := oauthconfig.FromEnv()
 
 	require.NoError(t, err)
-	require.Equal(t, []string{"gateway.internal", "agents.internal"}, cfg.AllowPrivateIPClientMetadataHosts)
+	require.Equal(t, []string{"gateway.internal", "agents.internal"}, cfg.AllowPrivateIPClientMetadataHosts) //nolint:staticcheck // the deprecated variable keeps working until v2
 	require.Equal(t, []string{"portal.internal"}, cfg.AllowPrivateIPRedirectURIHosts)
 	require.Equal(t, []string{"dex.internal"}, cfg.AllowPrivateIPJWKSHosts)
 }
