@@ -257,6 +257,14 @@ func (h *Handler) parseAndValidateRegistrationRequest(w http.ResponseWriter, r *
 }
 
 func (h *Handler) validateClientMetadata(w http.ResponseWriter, req *clientRegistrationRequest, clientIP string) error {
+	if req.ClientType != "" && req.ClientType != server.ClientTypePublic && req.ClientType != server.ClientTypeConfidential {
+		h.writeError(w, "invalid_client_metadata", "unsupported client_type", http.StatusBadRequest)
+		return fmt.Errorf("unsupported client type")
+	}
+	if req.ClientType == server.ClientTypePublic && req.TokenEndpointAuthMethod != "" && req.TokenEndpointAuthMethod != server.TokenEndpointAuthMethodNone {
+		h.writeError(w, "invalid_client_metadata", "public clients must use token_endpoint_auth_method none", http.StatusBadRequest)
+		return fmt.Errorf("public client authentication method conflict")
+	}
 	if err := helpers.ValidateClientName(req.ClientName); err != nil {
 		h.logger.Warn("Invalid client_name in registration request",
 			"client_name_length", len(req.ClientName), paramError, err, "ip", clientIP)

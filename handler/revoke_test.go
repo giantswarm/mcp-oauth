@@ -160,7 +160,7 @@ func TestHandler_ServeTokenIntrospection_BasicFormClientIDMismatchRejected(t *te
 	require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
 	var response map[string]string
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&response))
-	require.Equal(t, constants.ErrorCodeInvalidClient, response["error"])
+	require.Equal(t, constants.ErrorCodeInvalidRequest, response["error"])
 	require.Contains(t, response["error_description"], "does not match")
 }
 

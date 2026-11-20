@@ -47,6 +47,7 @@ var ErrSubjectKeyMismatch = errors.New("subject token is key-bound; request must
 // TokenExchangeResult holds the output of a successful token exchange.
 type TokenExchangeResult struct {
 	AccessToken     string
+	TokenType       string
 	ExpiresAt       time.Time
 	Scope           string
 	IssuedTokenType string
@@ -243,6 +244,7 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 
 	return &TokenExchangeResult{
 		AccessToken:     tokenStr,
+		TokenType:       tokenTypeForKeyBinding(req.DPoPJKT),
 		ExpiresAt:       expiresAt,
 		Scope:           grantedScope,
 		IssuedTokenType: SubjectTokenTypeAccessToken,

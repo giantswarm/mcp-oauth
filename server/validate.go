@@ -605,6 +605,9 @@ func (s *Server) validateIssuedTokenBinding(ctx context.Context, accessToken str
 	if err := s.validateTokenAudience(ctx, accessToken, metadata); err != nil {
 		return err
 	}
+	if err := s.checkFamilyRevocation(ctx, metadata.FamilyID, metadata.ClientID); err != nil {
+		return err
+	}
 	return s.checkClientRevocation(ctx, metadata.ClientID)
 }
 

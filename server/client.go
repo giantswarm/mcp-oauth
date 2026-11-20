@@ -68,6 +68,12 @@ type RegisterClientResult struct {
 // access token back to the handler. It replaces RegisterClient once all call
 // sites are migrated.
 func (s *Server) RegisterClientV2(ctx context.Context, clientName, clientType, tokenEndpointAuthMethod string, redirectURIs []string, scopes []string, clientIP string, maxClientsPerIP int) (*RegisterClientResult, error) {
+	if clientType != "" && clientType != ClientTypePublic && clientType != ClientTypeConfidential {
+		return nil, fmt.Errorf("unsupported client type")
+	}
+	if clientType == ClientTypePublic && tokenEndpointAuthMethod != "" && tokenEndpointAuthMethod != TokenEndpointAuthMethodNone {
+		return nil, fmt.Errorf("public clients must use token_endpoint_auth_method none")
+	}
 	if err := s.clientStore.CheckIPLimit(ctx, clientIP, maxClientsPerIP); err != nil {
 		return nil, err
 	}
@@ -101,6 +107,9 @@ func (s *Server) RegisterClientV2(ctx context.Context, clientName, clientType, t
 		Scopes:                      scopes,
 		CreatedAt:                   now,
 		RegistrationAccessTokenHash: registrationTokenHash,
+	}
+	if err := s.EncryptClientSecret(client, clientSecret, registrationToken); err != nil {
+		return nil, fmt.Errorf("protect client credential: %w", err)
 	}
 
 	if err := s.clientStore.SaveClient(ctx, client); err != nil {

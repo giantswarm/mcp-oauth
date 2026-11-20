@@ -63,16 +63,13 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 		return nil
 	}
 
-	// Revoke at the provider (best-effort). The provider token is resolved via
-	// the shared per-user entry in the unified layout. A failed resolution
-	// (unknown token, lost reference, transient read error) must NOT
-	// short-circuit the local invalidation below: per RFC 7009 §2.2 the
-	// response is success either way, and the local records — when they exist
-	// — are what the refresh grant gates on.
-	if providerToken, err := s.resolveProviderToken(ctx, token); err == nil && providerToken.AccessToken != "" {
-		if err := s.provider.RevokeToken(ctx, providerToken.AccessToken); err != nil {
-			s.Logger.Warn("Failed to revoke token at provider", logKeyError, err)
-			// Continue with local deletion even if provider revocation fails
+	// A shared provider grant serves the user's other families and clients.
+	// Only the legacy per-token layout has a provider grant scoped to this token.
+	if _, unified := s.userProviderTokenStore(); !unified {
+		if providerToken, err := s.resolveProviderToken(ctx, token); err == nil && providerToken.AccessToken != "" {
+			if err := s.provider.RevokeToken(ctx, providerToken.AccessToken); err != nil {
+				s.Logger.Warn("Failed to revoke token at provider", logKeyError, err)
+			}
 		}
 	}
 

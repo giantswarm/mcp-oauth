@@ -267,7 +267,7 @@ func TestHandler_ServeToken_RefreshGrant(t *testing.T) {
 				}
 			},
 			wantStatus:       http.StatusBadRequest,
-			wantErrorCode:    constants.ErrorCodeInvalidClient,
+			wantErrorCode:    constants.ErrorCodeInvalidRequest,
 			wantErrorContain: "does not match",
 			wantAuditReasons: []string{"client_id_mismatch_basic_vs_form"},
 		},

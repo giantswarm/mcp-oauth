@@ -33,7 +33,8 @@ func (h *Handler) writeEndpointClientAuthenticationError(w http.ResponseWriter, 
 	if errors.As(err, &oauthError) {
 		code, description, status = oauthError.Code, oauthError.Description, oauthError.Status
 	}
-	if status == http.StatusUnauthorized && strings.HasPrefix(strings.ToLower(r.Header.Get("Authorization")), "basic ") {
+	authorization := r.Header.Get("Authorization")
+	if status == http.StatusUnauthorized && (strings.EqualFold(authorization, "Basic") || strings.HasPrefix(strings.ToLower(authorization), "basic ")) {
 		w.Header().Set("WWW-Authenticate", `Basic realm="oauth"`)
 	}
 	if grant != "" {

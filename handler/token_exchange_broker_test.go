@@ -223,6 +223,7 @@ func TestHandleBrokeredTokenExchange_WrongClientSecret(t *testing.T) {
 	h.handler.ServeToken(w, req)
 
 	requireOAuthError(t, w, http.StatusUnauthorized, constants.ErrorCodeInvalidClient)
+	require.Equal(t, `Basic realm="oauth"`, w.Header().Get("WWW-Authenticate"))
 	require.Nil(t, ex.gotReq)
 }
 

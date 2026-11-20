@@ -25,6 +25,10 @@ import (
 // return immediately. RFC 7009 allows unauthenticated revocation for public
 // clients, so a missing Basic header is not itself an error.
 func (h *Handler) authenticateRevocationClient(w http.ResponseWriter, r *http.Request, formClientID, clientIP string, startTime time.Time, span trace.Span) (string, bool, bool) {
+	if err := validateClientCredentialShape(r); err != nil {
+		h.writeEndpointClientAuthenticationError(w, r, endpointRevoke, "", span, startTime, err)
+		return "", false, false
+	}
 	basicClientID, _ := h.parseBasicAuth(r)
 
 	if h.rejectBasicFormClientIDMismatch(w, r, basicClientID, formClientID, clientIP, endpointRevoke, "", span, startTime) {
@@ -32,7 +36,7 @@ func (h *Handler) authenticateRevocationClient(w http.ResponseWriter, r *http.Re
 	}
 
 	if formClientID == "" && basicClientID == "" {
-		h.writeError(w, constants.ErrorCodeInvalidClient, "Client identification required", http.StatusUnauthorized)
+		h.writeEndpointClientAuthenticationError(w, r, endpointRevoke, "", span, startTime, oauth.ErrInvalidClient("Client identification required"))
 		return "", false, false
 	}
 	client, err := h.authenticateClientWithLookup(r, formClientID, clientIP, func(ctx context.Context, clientID string) (*storage.Client, error) {
@@ -114,7 +118,7 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 		h.writeStorageUnavailable(w, r, endpointRevoke, http.MethodPost, span, startTime, err)
 		return
 	}
-	// Per RFC 7009, return 200 even if revocation fails
+	// RFC 7009 returns success for unknown and already invalid tokens.
 
 	// Record token revoked metric
 	h.recordTokenRevoked(r.Context(), clientID)

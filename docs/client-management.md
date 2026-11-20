@@ -6,6 +6,8 @@ An update must include the registered client ID. If `client_secret` is supplied,
 it must match the issued secret; empty, null and mismatched values are rejected
 without changing metadata or rotating the registration access token. Standard
 `scope` strings use RFC 6749 scope tokens separated by single ASCII spaces.
+Unknown `client_type` values and public clients requesting secret authentication
+are rejected as invalid client metadata.
 
 Deleting a registration permanently retires its client ID. Memory and Valkey keep a revocation marker, and issued opaque and self-issued JWT access tokens are checked against that marker on every validation. Existing access tokens, refresh requests and further client authentication are refused after deletion; another client's grants remain usable. A storage read failure returns an unavailable response instead of accepting a token or presenting an outage as invalid credentials.
 
@@ -20,6 +22,11 @@ on a replica with no cached metadata. Token ownership is checked before mutation
 unknown, already revoked and other-client tokens receive the same HTTP 200 response.
 With built-in stores, revoking a refresh token invalidates its family's access
 tokens while leaving other families and clients usable.
+Family-scoped revocation preserves the shared upstream provider grant. Explicit
+broader security operations, such as authorization-code reuse handling, can
+revoke that grant and require the user's other clients to sign in again.
+The stores fence concurrent family issuance and retain revocation state through
+every issued token's acceptance horizon, including configured clock skew.
 A storage write failure returns HTTP 503 with `Retry-After`; retry the same
 revocation because some writes may already have completed. Unknown, invalid and
 other-client tokens retain the RFC 7009 success response for authenticated clients.
@@ -51,6 +58,41 @@ Each dynamically registered client receives a **registration access token (RAT)*
 ```
 
 The RAT is initially issued in the registration response and stored only as a hash (`RegistrationAccessTokenHash`). A successful GET echoes the authenticated request's RAT; it cannot recover a lost token. Treat it like a bearer token and store it securely on the client side.
+
+## Current client credentials
+
+Successful GET and PUT responses include the current `client_secret` and
+`client_secret_expires_at: 0` for secret authentication methods, as required by
+[RFC 7592 Appendix A.1](https://www.rfc-editor.org/rfc/rfc7592.html#appendix-A.1).
+The secret does not rotate during metadata reads or updates. Public clients
+have neither field. Responses carry `Cache-Control: no-store` and `Pragma: no-cache`.
+
+The credential store keeps a bcrypt hash for authentication and an AES-GCM
+encrypted copy for management responses. Its encryption key is derived with
+HKDF-SHA256 from the high-entropy RAT, bound to the issuer and client ID. The
+store never receives a plaintext secret or the encryption key. PUT reseals the
+unchanged secret under the replacement RAT and saves both values atomically.
+
+Hash-only registrations cannot supply a successful GET response until the
+current secret is supplied in an authenticated PUT. GET returns `server_error`
+(HTTP 500); PUT without that secret returns `invalid_client_metadata` (HTTP 400).
+Neither failure changes credentials or metadata. A PUT with the matching
+`client_secret` backfills encrypted recovery data without rotating that secret.
+If the client lost its secret or RAT, deliberately register a replacement client.
+
+Upgrade all replicas before using management writes. Older replicas can discard
+encrypted fields or rotate RATs without resealing credentials. After a rollback,
+perform the same explicit backfill when needed. Keep protected traffic closed
+when relying on retirement or family-revocation state that older replicas do not enforce.
+
+Custom stores must implement `storage.ClientRegistrationUpdater` for PUT. Its
+atomic comparison checks the previous RAT and secret hashes; a concurrent update,
+credential replacement or deletion must not be overwritten. A stale PUT returns
+HTTP 401 with a Bearer challenge. A storage outage returns HTTP 503 with
+`Retry-After`; a failure before the save leaves the old RAT
+usable. If the save commits but the response is lost, the replacement RAT may
+be unrecoverable: a GET with the old RAT can confirm it still works, but cannot
+recover a lost replacement token. Deliberate replacement registration is then required.
 
 ## Endpoints
 

@@ -48,6 +48,7 @@ type tokenExchangeHarnessConfig struct {
 	validator          server.SubjectTokenValidator
 	maxRequestBodySize int64
 	nonceProvider      server.DPoPNonceProvider
+	replayCache        server.DPoPReplayCache
 }
 
 func withSubjectValidator(v server.SubjectTokenValidator) tokenExchangeHarnessOption {
@@ -102,6 +103,9 @@ func setupTokenExchangeHandler(t *testing.T, opts ...tokenExchangeHarnessOption)
 	}
 	if cfg.nonceProvider != nil {
 		srvOpts = append(srvOpts, server.WithDPoPNonceProvider(cfg.nonceProvider))
+	}
+	if cfg.replayCache != nil {
+		srvOpts = append(srvOpts, server.WithDPoPReplayCache(cfg.replayCache))
 	}
 
 	srv, err := server.New(mock.NewProvider(), store, store, store, serverCfg, logger, srvOpts...)
