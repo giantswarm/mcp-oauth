@@ -37,6 +37,7 @@ type clientRegistrationRequest struct {
 	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
 	RedirectURIs            []string `json:"redirect_uris"`
 	Scopes                  []string `json:"scopes"`
+	Scope                   string   `json:"scope"`
 }
 
 // checkClientRegistrationRateLimit checks if client registration is rate limited
@@ -264,6 +265,13 @@ func (h *Handler) parseAndValidateRegistrationRequest(w http.ResponseWriter, r *
 		return nil, fmt.Errorf("unsupported auth method")
 	}
 
+	if req.Scope != "" {
+		if len(req.Scopes) != 0 || len(req.Scope) > h.server.Config.MaxScopeLength {
+			h.writeError(w, "invalid_client_metadata", "Invalid scope metadata", http.StatusBadRequest)
+			return nil, fmt.Errorf("invalid scope metadata")
+		}
+		req.Scopes = strings.Fields(req.Scope)
+	}
 	return &req, nil
 }
 
@@ -397,6 +405,9 @@ func (h *Handler) writeRegistrationResponse(w http.ResponseWriter, client *stora
 	if clientSecret != "" {
 		response["client_secret"] = clientSecret
 		response["client_secret_expires_at"] = 0
+	}
+	if len(client.Scopes) > 0 {
+		response["scope"] = strings.Join(client.Scopes, " ")
 	}
 
 	if h.server.Config.EnableClientManagementEndpoint && registrationToken != "" {
