@@ -315,7 +315,7 @@ This feature relies on **two layers of protection**:
 
 1. **PKCE (Primary Defense):** Even if an attacker intercepts the authorization code via scheme hijacking, they cannot exchange it without the `code_verifier`. PKCE is enforced by default and is the primary security control.
 
-2. **Custom URI Scheme Registration:** Custom URI schemes (e.g., `cursor://`, `vscode://`) are typically registered at the OS level, making them harder to hijack than web URLs.
+2. **Redirect Validation:** Strict matching limits this registration exemption to the configured schemes. It does not authenticate an application: anyone can submit a matching redirect URI, and another application may claim the same OS scheme. OS routing is not proof that the requester is Cursor.
 
 **Platform Considerations:**
 
@@ -325,10 +325,10 @@ Custom URI scheme protection varies by platform:
 |----------|-----------------|-------|
 | macOS/iOS | Moderate | Schemes registered per-app, but no verification of who registered first |
 | Windows | Moderate | Any app can register a scheme; first-installer-wins |
-| Android | Strong (App Links) | App Links provide verified ownership; traditional schemes are weaker |
+| Android | Unverified for private-use schemes | App Links verify claimed HTTPS links, not private-use schemes such as `cursor://` |
 | Linux | Weak | Depends on desktop environment configuration |
 
-**Because platform protection varies, PKCE enforcement is critical.** The library requires PKCE by default (`RequirePKCE=true`, `AllowPKCEPlain=false`), which mitigates scheme hijacking attacks on all platforms.
+**Because platform protection varies, PKCE enforcement is critical.** The library always requires PKCE; plain challenges are disabled by default (`AllowPKCEPlain=false`). This protects code redemption, not the identity displayed to the user.
 
 **Automatic Security Filtering:**
 
@@ -344,6 +344,31 @@ The following schemes are automatically **blocked** from `TrustedPublicRegistrat
 | `DisableStrictSchemeMatching` | `false` | Set to `true` to allow mixed schemes (not recommended) |
 
 Strict scheme matching is automatically enabled when `TrustedPublicRegistrationSchemes` is configured. This ensures ALL redirect URIs must use trusted schemes for unauthenticated registration.
+
+#### Why Cursor compatibility still needs the exemption
+
+Retain the `cursor` exemption where existing Desktop clients depend on custom-scheme registration. [Cursor documents localhost and HTTPS callbacks](https://cursor.com/docs/mcp#static-redirect-url), but [Cursor staff also describe a Desktop fallback to `cursor://`](https://forum.cursor.com/t/oauth-redirect-uri-changed-from-cursor-to-http-localhost-for-streamable-http-mcp/165019/6). Inspection of the official Linux x64 Desktop 3.30.14 MCP bundle confirms a custom-scheme path when loopback is disabled by remote configuration or a server denylist, and a registration retry with the selected callback alone. Desktop sign-in was not executed during this check.
+
+This setting exempts matching requests from registration authentication. It does not enable loopback redirects or control the separate custom-scheme redirect policy. With public registration disabled and no other applicable registration allowance, removing `cursor` rejects fresh registrations that use that path. Keeping it does not enable HTTPS or localhost registration under strict matching; do not disable strict matching or enable unrestricted public registration as a workaround.
+
+An explicit CIMD client ID provides an alternative for compatible clients. On 2026-11-20, Linux x64 Cursor CLI `2026.11.19-f005e9d` completed browser authorization and listed 10 MCP tools against an HTTPS mcp-kubernetes 1.15.1 server using this configuration:
+
+```json
+{
+  "mcpServers": {
+    "example": {
+      "url": "https://mcp.example.com/mcp",
+      "auth": {
+        "CLIENT_ID": "https://cursor.com/oauth/mcp-client.json"
+      }
+    }
+  }
+}
+```
+
+The server must enable `EnableClientIDMetadataDocuments` and permit this exact client ID under its metadata policy, either through a validated fetch of [Cursor's document](https://cursor.com/oauth/mcp-client.json) or pinned `PreRegisteredClientMetadata`. Restricting metadata to other platform clients does not admit Cursor automatically. No client secret is needed for this public client.
+
+URL-only automatic registration failed in the CLI test, even though the server advertised CIMD support. The explicit configuration proves that client can use CIMD; it does not prove automatic CIMD selection or Desktop compatibility. The deployed scheme exemption remained enabled during the successful test, so this was not an end-to-end test with the setting removed. Migrate client configurations and verify fresh Desktop and CLI sign-in before removing an installation's exemption. Retention has no scheduled expiry; the compatibility decision is recorded in [giantswarm/giantswarm#39131](https://github.com/giantswarm/giantswarm/issues/39131).
 
 **Audit Logging:**
 
