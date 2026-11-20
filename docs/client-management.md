@@ -8,6 +8,8 @@ Retired IDs cannot be registered again. Provision a new client for replacement; 
 
 Custom client stores must implement `storage.ClientRevocationStore` for server-side deletion. A store without that capability cannot complete a deletion that would leave its access tokens valid. This capability does not revoke the shared upstream identity-provider token, which may serve other clients belonging to the same person.
 
+Losing revocation state can make previously retired, unexpired self-issued JWTs validate again if their signing keys are retained. After a wipe or rollback, JWT deployments must replace the access-token signing keys or keep protected traffic closed until previously issued tokens have expired. Opaque grants depend on stored token records, which a complete wipe removes.
+
 ## Enabling
 
 ```go
@@ -51,6 +53,7 @@ Authorization: Bearer rat-<token>
 {
   "client_id": "abc123",
   "client_name": "My App",
+  "registration_access_token": "rat-<token>",
   "redirect_uris": ["https://app.example.com/callback"],
   "token_endpoint_auth_method": "client_secret_basic",
   "grant_types": ["authorization_code", "refresh_token"],
