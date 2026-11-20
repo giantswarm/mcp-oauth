@@ -508,13 +508,11 @@ type Config struct {
 	// unauthenticated client registration. Clients registering with redirect URIs
 	// using ONLY these schemes do NOT need a RegistrationAccessToken.
 	//
-	// This enables compatibility with MCP clients like Cursor that don't support
-	// registration tokens, while maintaining security for other clients.
-	//
-	// Security: Custom URI schemes (cursor://, vscode://) can only be intercepted
-	// by the application that registered the scheme with the OS. This makes them
-	// inherently safe for public registration - an attacker cannot register a
-	// malicious client with cursor:// because they can't receive the callback.
+	// Native clients without registration-token support can use this exemption
+	// when registering custom-scheme callbacks. It does not authenticate the
+	// application: any requester can submit a matching URI, and OS scheme
+	// ownership is not verified. PKCE protects authorization-code redemption.
+	// See docs/security.md for Cursor compatibility and the CIMD alternative.
 	//
 	// Scheme matching is case-insensitive (per RFC 3986 Section 3.1).
 	// Schemes are normalized to lowercase during configuration validation.
