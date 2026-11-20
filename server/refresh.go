@@ -172,7 +172,7 @@ func (s *Server) handleSharedProviderTokenError(ctx context.Context, err error, 
 	s.Auditor.LogEvent(ctx, security.Event{
 		Type: security.EventAuthFailure, UserID: userID, ClientID: clientID,
 		Details: map[string]any{
-			logKeySeverity: "warning",
+			logKeySeverity: severityWarning,
 			logKeyReason:   reason,
 			logKeyAction:   "re_login_required",
 		},
@@ -239,16 +239,10 @@ func (s *Server) rotateRefreshToken(ctx context.Context, oldRefreshToken, userID
 	var generation int
 
 	if supportsFamilies {
-		family, err := familyStore.GetRefreshTokenFamily(ctx, oldRefreshToken)
-		if err == nil {
-			familyID = family.FamilyID
-			generation = family.Generation + 1
-		} else {
-			if storage.IsTransientError(err) {
-				return "", "", false, s.storageUnavailable(ctx, "read refresh token family", clientID, userID, err)
-			}
-			familyID = generateRandomToken()
-			generation = 1
+		var err error
+		familyID, generation, err = s.nextRefreshTokenFamily(ctx, oldRefreshToken, userID, clientID, familyStore)
+		if err != nil {
+			return "", "", false, err
 		}
 	}
 
@@ -264,6 +258,9 @@ func (s *Server) rotateRefreshToken(ctx context.Context, oldRefreshToken, userID
 	if supportsFamilies && familyID != "" {
 		if err := familyStore.SaveRefreshTokenWithFamily(ctx, newRefreshToken, userID, clientID, familyID, generation, refreshTokenExpiry); err != nil {
 			s.discardTokenPair(ctx, "", newRefreshToken)
+			if errors.Is(err, storage.ErrRefreshTokenFamilyRevoked) {
+				return "", "", false, errInvalidGrant
+			}
 			return "", "", false, s.storageUnavailable(ctx, "save refresh token family", clientID, userID, err)
 		}
 	} else {
@@ -274,6 +271,20 @@ func (s *Server) rotateRefreshToken(ctx context.Context, oldRefreshToken, userID
 	}
 
 	return newRefreshToken, familyID, true, nil
+}
+
+func (s *Server) nextRefreshTokenFamily(ctx context.Context, refreshToken, userID, clientID string, store storage.RefreshTokenFamilyStore) (string, int, error) {
+	family, err := store.GetRefreshTokenFamily(ctx, refreshToken)
+	if err != nil {
+		if storage.IsTransientError(err) {
+			return "", 0, s.storageUnavailable(ctx, "read refresh token family", clientID, userID, err)
+		}
+		return generateRandomToken(), 1, nil
+	}
+	if family.Revoked {
+		return "", 0, errInvalidGrant
+	}
+	return family.FamilyID, family.Generation + 1, nil
 }
 
 // consumeRefreshToken atomically consumes the refresh token and returns its
@@ -365,6 +376,9 @@ func (s *Server) resolveRefreshGrant(ctx context.Context, refreshToken, clientID
 	if err = s.validateRefreshTokenClientBinding(ctx, storedClientID, clientID, userID); err != nil {
 		return "", nil, unified, err
 	}
+	if err = s.checkRefreshFamilyRevocation(ctx, metadata.FamilyID, clientID); err != nil {
+		return "", nil, unified, err
+	}
 	if err = s.refuseUnservedRefreshAudience(ctx, metadata.Audience, userID, clientID); err != nil {
 		return "", nil, unified, err
 	}
@@ -407,7 +421,32 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 // compared after normalization; any other value is refused with an error
 // wrapping ErrInvalidTarget (RFC 8707 §2.2) and the refresh token stays
 // usable. An empty resource behaves as RefreshAccessToken.
+// The caller authenticates the client and enforces request proof requirements.
 func (s *Server) RefreshAccessTokenForResource(ctx context.Context, refreshToken, clientID, resource string) (*oauth2.Token, error) {
+	return s.refreshAccessTokenForResource(ctx, refreshToken, clientID, resource, nil)
+}
+
+// RefreshAccessTokenWithDPoP refreshes a grant using a validated token-endpoint
+// proof thumbprint. An empty thumbprint represents a request without a proof.
+// The caller authenticates the client and validates the proof.
+// Public-client refresh bindings are enforced before provider calls or rotation;
+// confidential clients authenticate separately and can bind a new access key.
+func (s *Server) RefreshAccessTokenWithDPoP(ctx context.Context, refreshToken string, client *storage.Client, resource, thumbprint string) (*oauth2.Token, error) {
+	if client == nil {
+		return nil, errInvalidGrant
+	}
+	return s.refreshAccessTokenForResource(ctx, refreshToken, client.ClientID, resource, &refreshDPoPBinding{thumbprint: thumbprint, confidential: client.IsConfidential()})
+}
+
+type refreshDPoPBinding struct {
+	thumbprint   string
+	confidential bool
+}
+
+func (s *Server) refreshAccessTokenForResource(ctx context.Context, refreshToken, clientID, resource string, proof *refreshDPoPBinding) (*oauth2.Token, error) {
+	if err := refreshGrantError(s.checkClientRevocation(ctx, clientID)); err != nil {
+		return nil, err
+	}
 	// Check if storage supports token family tracking (OAuth 2.1 reuse detection)
 	familyStore, supportsFamilies := s.tokenStore.(storage.RefreshTokenFamilyStore)
 
@@ -417,6 +456,10 @@ func (s *Server) RefreshAccessTokenForResource(ctx context.Context, refreshToken
 	}
 	if metadata == nil {
 		metadata = &storage.TokenMetadata{}
+	}
+	metadata, err = s.refreshProofMetadata(ctx, clientID, metadata, proof)
+	if err != nil {
+		return nil, err
 	}
 
 	userID, providerToken, unified, err := s.resolveRefreshGrant(ctx, refreshToken, clientID, resource, metadata, familyStore, supportsFamilies)
@@ -446,6 +489,19 @@ func (s *Server) RefreshAccessTokenForResource(ctx context.Context, refreshToken
 	baseMetadata := *metadata
 	baseMetadata.UserID = userID
 	return s.issueRefreshedTokens(ctx, refreshToken, newProviderToken, baseMetadata)
+}
+
+func (s *Server) refreshProofMetadata(ctx context.Context, clientID string, metadata *storage.TokenMetadata, proof *refreshDPoPBinding) (*storage.TokenMetadata, error) {
+	if proof == nil {
+		return metadata, nil
+	}
+	if !proof.confidential && metadata.JKT != "" && subtle.ConstantTimeCompare([]byte(metadata.JKT), []byte(proof.thumbprint)) != 1 {
+		s.Auditor.LogAuthFailure(ctx, metadata.UserID, clientID, "", "refresh_dpop_key_mismatch")
+		return nil, errInvalidGrant
+	}
+	updated := *metadata
+	updated.JKT = proof.thumbprint
+	return &updated, nil
 }
 
 const auditReasonRefreshResourceNotServed = "refresh_resource_not_served"
@@ -508,12 +564,12 @@ func (s *Server) issueRefreshedTokens(ctx context.Context, refreshToken string, 
 	}
 	committed := false
 	var newAccessToken string
+	var stagedRefreshToken string
+	if rotated {
+		stagedRefreshToken = newRefreshToken
+	}
 	defer func() {
 		if !committed {
-			stagedRefreshToken := newRefreshToken
-			if !rotated {
-				stagedRefreshToken = ""
-			}
 			s.discardTokenPair(ctx, newAccessToken, stagedRefreshToken)
 		}
 	}()
@@ -543,7 +599,7 @@ func (s *Server) issueRefreshedTokens(ctx context.Context, refreshToken string, 
 		AccessToken:  newAccessToken,
 		RefreshToken: newRefreshToken,
 		Expiry:       expiry,
-		TokenType:    tokenTypeBearer,
+		TokenType:    tokenTypeForKeyBinding(metadata.JKT),
 	}
 
 	// OIDC Core §12.2 binds nonce to the authentication request, not refresh.
@@ -569,6 +625,9 @@ func (s *Server) issueRefreshedTokens(ctx context.Context, refreshToken string, 
 		JKT:       metadata.JKT,
 	}
 	if err := s.saveTokenPairMetadata(ctx, newAccessToken, newRefreshToken, baseMetadata, refreshExpiry); err != nil {
+		return nil, err
+	}
+	if err := s.checkRefreshFamilyRevocation(ctx, familyID, clientID); err != nil {
 		return nil, err
 	}
 	if rotated {

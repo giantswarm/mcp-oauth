@@ -62,10 +62,12 @@ type AuthorizationServerMetadata struct {
 	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
 
 	// RevocationEndpoint is the URL of the OAuth 2.0 token revocation endpoint (RFC 7009)
-	RevocationEndpoint string `json:"revocation_endpoint,omitempty"`
+	RevocationEndpoint                     string   `json:"revocation_endpoint,omitempty"`
+	RevocationEndpointAuthMethodsSupported []string `json:"revocation_endpoint_auth_methods_supported,omitempty"`
 
 	// IntrospectionEndpoint is the URL of the OAuth 2.0 token introspection endpoint (RFC 7662)
-	IntrospectionEndpoint string `json:"introspection_endpoint,omitempty"`
+	IntrospectionEndpoint                     string   `json:"introspection_endpoint,omitempty"`
+	IntrospectionEndpointAuthMethodsSupported []string `json:"introspection_endpoint_auth_methods_supported,omitempty"`
 
 	// ClientIDMetadataDocumentSupported indicates support for Client ID Metadata Documents (MCP 2025-11-25)
 	ClientIDMetadataDocumentSupported bool `json:"client_id_metadata_document_supported,omitempty"`

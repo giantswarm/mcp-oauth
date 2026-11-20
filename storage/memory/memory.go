@@ -37,6 +37,7 @@ const (
 	// This prevents memory exhaustion attacks via repeated token rotation
 	// Set to 5x the warning threshold for safety margin
 	hardMaxFamilyMetadataEntries = 50000
+	refreshTokenType             = "refresh"
 )
 
 // RefreshTokenFamily tracks a family of refresh tokens for reuse detection (OAuth 2.1)
@@ -74,13 +75,15 @@ type Store struct {
 	refreshTokens        map[string]string              // refresh token -> user ID
 	refreshTokenExpiries map[string]time.Time           // refresh token -> expiry time
 	refreshTokenFamilies map[string]*RefreshTokenFamily // refresh token -> family metadata
+	familyRetainUntil    map[string]time.Time           // family ID -> latest token acceptance horizon
 
 	// Token metadata tracking (for revocation by user+client)
 	tokenMetadata map[string]*storage.TokenMetadata // token ID (access or refresh) -> metadata
 
 	// Client storage
-	clients      map[string]*storage.Client
-	clientsPerIP map[string]int // IP address -> client count (for DoS protection)
+	clients        map[string]*storage.Client
+	revokedClients map[string]bool
+	clientsPerIP   map[string]int // IP address -> client count (for DoS protection)
 
 	// Flow storage
 	authStates        map[string]*storage.AuthorizationState
@@ -185,8 +188,10 @@ func New(opts ...Option) *Store {
 		refreshTokens:              make(map[string]string),
 		refreshTokenExpiries:       make(map[string]time.Time),
 		refreshTokenFamilies:       make(map[string]*RefreshTokenFamily),
+		familyRetainUntil:          make(map[string]time.Time),
 		tokenMetadata:              make(map[string]*storage.TokenMetadata),
 		clients:                    make(map[string]*storage.Client),
+		revokedClients:             make(map[string]bool),
 		clientsPerIP:               make(map[string]int),
 		authStates:                 make(map[string]*storage.AuthorizationState),
 		authCodes:                  make(map[string]*storage.AuthorizationCode),
@@ -515,6 +520,10 @@ func (s *Store) SaveClient(ctx context.Context, client *storage.Client) error {
 	defer s.mu.Unlock()
 
 	// Track if this is a new client (for atomic counter)
+	if s.revokedClients[client.ClientID] {
+		err = storage.ErrClientNotFound
+		return err
+	}
 	_, existed := s.clients[client.ClientID]
 
 	s.clients[client.ClientID] = client
@@ -537,8 +546,15 @@ func (s *Store) DeleteClient(_ context.Context, clientID string) error {
 		return storage.ErrClientNotFound
 	}
 	delete(s.clients, clientID)
+	s.revokedClients[clientID] = true
 	s.clientsCountAtomic.Add(-1)
 	return nil
+}
+
+func (s *Store) IsClientRevoked(_ context.Context, clientID string) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.revokedClients[clientID], nil
 }
 
 // CheckIPLimit checks if an IP has reached the client registration limit
@@ -614,6 +630,12 @@ func (s *Store) SaveRefreshTokenWithFamily(_ context.Context, refreshToken, user
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	for _, family := range s.refreshTokenFamilies {
+		if family.FamilyID == familyID && family.Revoked {
+			return storage.ErrRefreshTokenFamilyRevoked
+		}
+	}
+
 	// SECURITY: Enforce hard limit on family metadata to prevent memory exhaustion attacks
 	// Check if we're adding a NEW family entry (not updating existing)
 	if _, exists := s.refreshTokenFamilies[refreshToken]; !exists {
@@ -626,6 +648,9 @@ func (s *Store) SaveRefreshTokenWithFamily(_ context.Context, refreshToken, user
 				"client_id", clientID)
 			return fmt.Errorf("refresh token family metadata limit exceeded (%d entries) - possible memory exhaustion attack", currentCount)
 		}
+	}
+	if err := s.retainFamilyUntilLocked(familyID, expiresAt); err != nil {
+		return err
 	}
 
 	// Save basic refresh token info
@@ -649,7 +674,7 @@ func (s *Store) SaveRefreshTokenWithFamily(_ context.Context, refreshToken, user
 		existing.UserID = userID
 		existing.ClientID = clientID
 		existing.IssuedAt = time.Now()
-		existing.TokenType = "refresh"
+		existing.TokenType = refreshTokenType
 		if existing.FamilyID == "" {
 			existing.FamilyID = familyID
 		}
@@ -658,7 +683,7 @@ func (s *Store) SaveRefreshTokenWithFamily(_ context.Context, refreshToken, user
 			UserID:    userID,
 			ClientID:  clientID,
 			IssuedAt:  time.Now(),
-			TokenType: "refresh",
+			TokenType: refreshTokenType,
 			FamilyID:  familyID,
 		}
 	}
@@ -1247,17 +1272,30 @@ func (s *Store) cleanupRevokedFamilies() int {
 	if retentionDays == 0 {
 		retentionDays = 90
 	}
-	threshold := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+	now := time.Now()
+	threshold := now.Add(-time.Duration(retentionDays) * 24 * time.Hour)
 	for refreshToken, family := range s.refreshTokenFamilies {
 		if family.Revoked {
 			revokedTime := family.RevokedAt
 			if revokedTime.IsZero() {
 				revokedTime = family.IssuedAt
 			}
-			if revokedTime.Before(threshold) {
+			if revokedTime.Before(threshold) && !s.familyRetainUntil[family.FamilyID].After(now) {
 				delete(s.refreshTokenFamilies, refreshToken)
 				cleaned++
 			}
+		}
+	}
+	return cleaned
+}
+
+func (s *Store) cleanupExpiredFamilyRetention() int {
+	now := time.Now()
+	cleaned := 0
+	for familyID, retainUntil := range s.familyRetainUntil {
+		if !retainUntil.After(now) {
+			delete(s.familyRetainUntil, familyID)
+			cleaned++
 		}
 	}
 	return cleaned
@@ -1301,6 +1339,7 @@ func (s *Store) cleanup() {
 	cleaned += s.cleanupExpiredAuthCodes()
 	cleaned += s.cleanupExpiredRefreshTokens()
 	cleaned += s.cleanupRevokedFamilies()
+	cleaned += s.cleanupExpiredFamilyRetention()
 	cleaned += s.cleanupExpiredProviderTokenRefs()
 	cleaned += s.cleanupExpiredUserProviderTokens()
 	cleaned += s.cleanupExpiredProviderRefreshLocks()
@@ -1337,6 +1376,15 @@ func (s *Store) SaveTokenMetadata(_ context.Context, tokenID string, metadata st
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if metadata.FamilyID != "" && (metadata.TokenType == "access" || metadata.TokenType == refreshTokenType) {
+		retainUntil := metadata.ExpiresAt
+		if metadata.RetainUntil.After(retainUntil) {
+			retainUntil = metadata.RetainUntil
+		}
+		if err := s.retainFamilyUntilLocked(metadata.FamilyID, retainUntil); err != nil {
+			return err
+		}
+	}
 	s.tokenMetadata[tokenID] = &metadata
 
 	s.logger.Debug("Saved token metadata",
@@ -1347,6 +1395,22 @@ func (s *Store) SaveTokenMetadata(_ context.Context, tokenID string, metadata st
 		"scopes", metadata.Scopes,
 		"family_id", metadata.FamilyID)
 
+	return nil
+}
+
+// retainFamilyUntilLocked preserves revocation state beyond deleted token metadata.
+func (s *Store) retainFamilyUntilLocked(familyID string, retainUntil time.Time) error {
+	if retainUntil.IsZero() {
+		return nil
+	}
+	current, exists := s.familyRetainUntil[familyID]
+	if !retainUntil.After(current) {
+		return nil
+	}
+	if !exists && len(s.familyRetainUntil) >= hardMaxFamilyMetadataEntries {
+		return fmt.Errorf("token family retention limit exceeded (%d entries)", len(s.familyRetainUntil))
+	}
+	s.familyRetainUntil[familyID] = retainUntil
 	return nil
 }
 

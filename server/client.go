@@ -68,6 +68,12 @@ type RegisterClientResult struct {
 // access token back to the handler. It replaces RegisterClient once all call
 // sites are migrated.
 func (s *Server) RegisterClientV2(ctx context.Context, clientName, clientType, tokenEndpointAuthMethod string, redirectURIs []string, scopes []string, clientIP string, maxClientsPerIP int) (*RegisterClientResult, error) {
+	if clientType != "" && clientType != ClientTypePublic && clientType != ClientTypeConfidential {
+		return nil, fmt.Errorf("unsupported client type")
+	}
+	if clientType == ClientTypePublic && tokenEndpointAuthMethod != "" && tokenEndpointAuthMethod != TokenEndpointAuthMethodNone {
+		return nil, fmt.Errorf("public clients must use token_endpoint_auth_method none")
+	}
 	if err := s.clientStore.CheckIPLimit(ctx, clientIP, maxClientsPerIP); err != nil {
 		return nil, err
 	}
@@ -101,6 +107,9 @@ func (s *Server) RegisterClientV2(ctx context.Context, clientName, clientType, t
 		Scopes:                      scopes,
 		CreatedAt:                   now,
 		RegistrationAccessTokenHash: registrationTokenHash,
+	}
+	if err := s.EncryptClientSecret(client, clientSecret, registrationToken); err != nil {
+		return nil, fmt.Errorf("protect client credential: %w", err)
 	}
 
 	if err := s.clientStore.SaveClient(ctx, client); err != nil {
@@ -287,9 +296,19 @@ func (s *Server) SaveClient(ctx context.Context, client *storage.Client) error {
 	return s.clientStore.SaveClient(ctx, client)
 }
 
-// DeleteClient removes a client by ID (RFC 7592 §2.4).
+// DeleteClient permanently retires a client ID (RFC 7592 §2.3).
 func (s *Server) DeleteClient(ctx context.Context, clientID string) error {
-	return s.clientStore.DeleteClient(ctx, clientID)
+	if _, ok := s.clientStore.(storage.ClientRevocationStore); !ok {
+		return fmt.Errorf("client store does not support durable client revocation")
+	}
+	if err := s.clientStore.DeleteClient(ctx, clientID); err != nil {
+		return err
+	}
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type: security.EventClientDeleted, ClientID: clientID,
+		Details: map[string]any{logKeyReason: "client_deleted", logKeySeverity: "info"},
+	})
+	return nil
 }
 
 // CanRegisterWithTrustedScheme checks if a registration request can proceed without
@@ -388,4 +407,16 @@ func (s *Server) CanRegisterWithTrustedRedirectURI(redirectURIs []string) (allow
 	}
 
 	return true, firstMatch, nil
+}
+
+// GetRegisteredClient loads registered or configured metadata without fetching a URL.
+func (s *Server) GetRegisteredClient(ctx context.Context, clientID string) (*storage.Client, error) {
+	if client, ok := s.preRegisteredClients[clientID]; ok {
+		return clonePreRegisteredClient(client), nil
+	}
+	client, err := s.clientStore.GetClient(ctx, clientID)
+	if storage.IsTransientError(err) {
+		return nil, s.storageUnavailable(ctx, "load registered client", clientID, "", err)
+	}
+	return client, err
 }

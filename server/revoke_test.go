@@ -1445,6 +1445,7 @@ func TestServer_RevokeToken_DeletesRecordEvenWithoutProviderTokenRef(t *testing.
 	userID := "refless-user"
 	rt := "refless-refresh-token"
 	require.NoError(t, store.SaveRefreshToken(ctx, rt, userID, time.Now().Add(time.Hour)))
+	require.NoError(t, store.SaveTokenMetadata(ctx, rt, storage.TokenMetadata{ClientID: "refless-client", UserID: userID, TokenType: "refresh", ExpiresAt: time.Now().Add(time.Hour)}))
 
 	require.NoError(t, srv.RevokeToken(ctx, rt, "refless-client", "127.0.0.1"))
 
@@ -1548,13 +1549,11 @@ func TestServer_RevokeToken_TransientFamilyLookupErrorSurfaces(t *testing.T) {
 
 	err = srv.RevokeToken(ctx, rt, "transient-client", "127.0.0.1")
 	require.Error(t, err, "a transient family-lookup failure must surface, not be swallowed as 'no family'")
-	require.ErrorContains(t, err, "family lookup failed")
-
-	// Local invalidation of the presented token must have happened regardless.
+	require.ErrorIs(t, err, ErrStorageUnavailable)
 	_, err = inner.GetRefreshTokenInfo(ctx, rt)
-	require.ErrorIs(t, err, storage.ErrTokenNotFound, "presented token must be deleted even when the family lookup fails")
+	require.NoError(t, err, "unresolved ownership must not mutate the token")
 	_, err = inner.GetProviderTokenRef(ctx, rt)
-	require.ErrorIs(t, err, storage.ErrTokenNotFound)
+	require.NoError(t, err)
 }
 
 // TestServer_RevokeAllTokensForUserClient_DeletesDeadSharedProviderEntry

@@ -290,8 +290,8 @@ func TestHandler_ServeToken_AuthorizationCode_BasicAuthAndFormClientIDMismatch_R
 	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
 		t.Fatalf("failed to decode error response: %v", err)
 	}
-	if errResp.Error != constants.ErrorCodeInvalidClient {
-		t.Errorf("error = %q, want %q", errResp.Error, constants.ErrorCodeInvalidClient)
+	if errResp.Error != constants.ErrorCodeInvalidRequest {
+		t.Errorf("error = %q, want %q", errResp.Error, constants.ErrorCodeInvalidRequest)
 	}
 	if !strings.Contains(errResp.ErrorDescription, "does not match") {
 		t.Errorf("error_description = %q, want it to contain %q", errResp.ErrorDescription, "does not match")

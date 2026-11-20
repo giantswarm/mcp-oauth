@@ -2,10 +2,12 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/giantswarm/mcp-oauth/internal/constants"
@@ -42,8 +44,8 @@ func (h *Handler) ServeClientManagement(w http.ResponseWriter, r *http.Request) 
 
 	switch r.Method {
 	case http.MethodGet:
-		h.recordHTTPMetrics(r.Context(), endpointClientManagement, http.MethodGet, http.StatusOK, startTime)
-		h.writeClientMetadata(w, client)
+		status := h.writeClientMetadata(w, r, client)
+		h.recordHTTPMetrics(r.Context(), endpointClientManagement, http.MethodGet, status, startTime)
 	case http.MethodPut:
 		h.handleClientManagementPut(w, r, client, clientIP, startTime)
 	case http.MethodDelete:
@@ -58,6 +60,10 @@ func (h *Handler) ServeClientManagement(w http.ResponseWriter, r *http.Request) 
 // and constant-time-compares the Bearer token. Returns the client and true on
 // success; writes the appropriate error response and returns false on failure.
 func (h *Handler) authenticateManagementRequest(w http.ResponseWriter, r *http.Request, clientID, clientIP string) (*storage.Client, bool) {
+	if len(r.Header.Values("Authorization")) > 1 {
+		h.writeError(w, constants.ErrorCodeInvalidRequest, "Multiple Authorization credentials", http.StatusBadRequest)
+		return nil, false
+	}
 	authHeader := r.Header.Get("Authorization")
 	parts := strings.SplitN(authHeader, " ", 2)
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") || parts[1] == "" {
@@ -68,13 +74,18 @@ func (h *Handler) authenticateManagementRequest(w http.ResponseWriter, r *http.R
 	}
 	bearerToken := parts[1]
 
-	client, err := h.server.GetClient(r.Context(), clientID)
+	client, err := h.server.GetRegisteredClient(r.Context(), clientID)
 	if err != nil {
 		if storage.IsNotFoundError(err) {
 			// Perform a dummy bcrypt comparison to prevent timing-based enumeration.
 			_ = bcrypt.CompareHashAndPassword([]byte(storage.DummyBcryptHash), []byte(bearerToken))
 			h.logger.Warn("Client management: client not found", "ip", clientIP, "client_id", clientID)
-			h.writeError(w, constants.ErrorCodeInvalidToken, "client not found", http.StatusNotFound)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="client_management"`)
+			h.writeError(w, constants.ErrorCodeInvalidToken, "invalid registration_access_token", http.StatusUnauthorized)
+			return nil, false
+		}
+		if errors.Is(err, server.ErrStorageUnavailable) {
+			h.writeStorageUnavailable(w, r, endpointClientManagement, r.Method, trace.SpanFromContext(r.Context()), time.Now(), err)
 			return nil, false
 		}
 		h.logger.Error("Client management: failed to retrieve client", "ip", clientIP, "client_id", clientID, paramError, err)
@@ -125,61 +136,122 @@ func (h *Handler) buildClientResponseBody(client *storage.Client) map[string]any
 }
 
 // writeClientMetadata serialises the stored client to the RFC 7592 §3 shape.
-func (h *Handler) writeClientMetadata(w http.ResponseWriter, client *storage.Client) {
+func (h *Handler) writeClientMetadata(w http.ResponseWriter, r *http.Request, client *storage.Client) int {
+	registrationToken := strings.SplitN(r.Header.Get("Authorization"), " ", 2)[1]
+	clientSecret, err := h.server.DecryptClientSecret(client, registrationToken)
+	if err != nil {
+		h.writeError(w, constants.ErrorCodeServerError, "current credential unavailable; PUT the existing client_secret to enable credential retrieval", http.StatusInternalServerError)
+		return http.StatusInternalServerError
+	}
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	body := h.buildClientResponseBody(client)
+	body["registration_access_token"] = registrationToken
+	addClientSecretResponse(body, clientSecret)
 	w.Header().Set("Content-Type", "application/json")
 	h.writeJSON(w, body)
+	return http.StatusOK
 }
 
-// handleClientManagementPut handles PUT /oauth/register/{client_id}.
-// It validates the request body (same rules as DCR), replaces mutable fields,
-// and rotates the registration access token per RFC 7592 §2.3.
-func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Request, existing *storage.Client, clientIP string, startTime time.Time) {
+func addClientSecretResponse(body map[string]any, clientSecret string) {
+	if clientSecret != "" {
+		body["client_secret"] = clientSecret
+		body["client_secret_expires_at"] = int64(0)
+	}
+}
+
+// readClientManagementUpdate validates replacement metadata before mutation.
+func (h *Handler) readClientManagementUpdate(w http.ResponseWriter, r *http.Request, existing *storage.Client, clientIP string, startTime time.Time) (*clientRegistrationRequest, string) {
 	r.Body = http.MaxBytesReader(w, r.Body, h.server.Config.MaxRequestBodySize)
 
-	var req clientRegistrationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var metadata clientRegistrationRequest
+	if err := json.NewDecoder(r.Body).Decode(&metadata); err != nil {
 		if isMaxBytesError(err) {
 			h.recordHTTPMetrics(r.Context(), endpointClientManagement, http.MethodPut, http.StatusRequestEntityTooLarge, startTime)
 			h.writeError(w, constants.ErrorCodeInvalidRequest, "Request body too large", http.StatusRequestEntityTooLarge)
-			return
+			return nil, ""
 		}
 		h.writeError(w, constants.ErrorCodeInvalidRequest, "Invalid JSON", http.StatusBadRequest)
-		return
+		return nil, ""
 	}
 
-	if req.TokenEndpointAuthMethod != "" && !isValidAuthMethod(req.TokenEndpointAuthMethod) {
-		h.writeError(w, constants.ErrorCodeInvalidRequest,
-			"unsupported token_endpoint_auth_method", http.StatusBadRequest)
+	if metadata.ClientID != existing.ClientID {
+		h.writeError(w, "invalid_client_metadata", "client_id must match the authenticated registration", http.StatusBadRequest)
+		return nil, ""
+	}
+	var clientSecret string
+	if len(metadata.ClientSecret) != 0 {
+		if json.Unmarshal(metadata.ClientSecret, &clientSecret) != nil || bcrypt.CompareHashAndPassword([]byte(existing.ClientSecretHash), []byte(clientSecret)) != nil {
+			h.writeError(w, "invalid_client_metadata", "client_secret must match the registered credential", http.StatusBadRequest)
+			return nil, ""
+		}
+	}
+	if metadata.TokenEndpointAuthMethod == "" {
+		metadata.TokenEndpointAuthMethod = server.TokenEndpointAuthMethodBasic
+	}
+	if err := h.validateClientMetadata(w, &metadata, clientIP); err != nil {
+		return nil, ""
+	}
+	if err := h.server.ValidateRedirectURIsForRegistration(r.Context(), metadata.RedirectURIs); err != nil {
+		h.writeError(w, constants.ErrorCodeInvalidRedirectURI, "redirect_uris refused", http.StatusBadRequest)
+		return nil, ""
+	}
+	return &metadata, clientSecret
+}
+
+func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Request, existing *storage.Client, clientIP string, startTime time.Time) {
+	metadata, clientSecret := h.readClientManagementUpdate(w, r, existing, clientIP, startTime)
+	if metadata == nil {
 		return
 	}
-
+	updated := *existing
+	updated.ClientName = metadata.ClientName
+	updated.RedirectURIs = metadata.RedirectURIs
+	updated.Scopes = metadata.Scopes
+	updated.TokenEndpointAuthMethod = metadata.TokenEndpointAuthMethod
+	switch updated.TokenEndpointAuthMethod {
+	case server.TokenEndpointAuthMethodNone:
+		updated.ClientType = server.ClientTypePublic
+		updated.ClientSecretHash = ""
+		updated.ClientSecretEncrypted = ""
+		clientSecret = ""
+	default:
+		if updated.ClientSecretHash == "" {
+			h.writeError(w, "invalid_client_metadata", "Register a replacement client to obtain a client secret", http.StatusBadRequest)
+			return
+		}
+		updated.ClientType = server.ClientTypeConfidential
+	}
+	if updated.ClientSecretHash != "" && clientSecret == "" {
+		var err error
+		clientSecret, err = h.server.DecryptClientSecret(existing, strings.SplitN(r.Header.Get("Authorization"), " ", 2)[1])
+		if err != nil {
+			h.writeError(w, "invalid_client_metadata", "include the existing client_secret to enable credential retrieval", http.StatusBadRequest)
+			return
+		}
+	}
 	newToken, newHash, err := server.GenerateRegistrationAccessToken()
 	if err != nil {
 		h.logger.Error("Client management: failed to rotate registration token", "ip", clientIP, "client_id", existing.ClientID, paramError, err)
 		h.writeError(w, constants.ErrorCodeServerError, "failed to rotate registration token", http.StatusInternalServerError)
 		return
 	}
-
-	now := time.Now()
-	updated := *existing
-	if req.ClientName != "" {
-		updated.ClientName = req.ClientName
-	}
-	if len(req.RedirectURIs) > 0 {
-		updated.RedirectURIs = req.RedirectURIs
-	}
-	if len(req.Scopes) > 0 {
-		updated.Scopes = req.Scopes
-	}
-	if req.TokenEndpointAuthMethod != "" {
-		updated.TokenEndpointAuthMethod = req.TokenEndpointAuthMethod
-	}
-	updated.UpdatedAt = now
+	updated.UpdatedAt = time.Now()
 	updated.RegistrationAccessTokenHash = newHash
+	if err := h.server.EncryptClientSecret(&updated, clientSecret, newToken); err != nil {
+		h.writeError(w, constants.ErrorCodeServerError, "failed to protect client credential", http.StatusInternalServerError)
+		return
+	}
 
-	if err := h.server.SaveClient(r.Context(), &updated); err != nil {
+	if err := h.server.UpdateClientRegistration(r.Context(), &updated, existing); err != nil {
+		if errors.Is(err, storage.ErrInvalidClientCredentials) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="client_management"`)
+			h.writeError(w, constants.ErrorCodeInvalidToken, "registration changed; use its current registration access token", http.StatusUnauthorized)
+			return
+		}
+		if errors.Is(err, server.ErrStorageUnavailable) {
+			h.writeStorageUnavailable(w, r, endpointClientManagement, r.Method, trace.SpanFromContext(r.Context()), startTime, err)
+			return
+		}
 		h.logger.Error("Client management: failed to update client", "ip", clientIP, "client_id", existing.ClientID, paramError, err)
 		h.recordHTTPMetrics(r.Context(), endpointClientManagement, http.MethodPut, http.StatusInternalServerError, startTime)
 		h.writeError(w, constants.ErrorCodeServerError, "failed to update client", http.StatusInternalServerError)
@@ -190,6 +262,7 @@ func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Reque
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	body := h.buildClientResponseBody(&updated)
 	body["registration_access_token"] = newToken
+	addClientSecretResponse(body, clientSecret)
 	w.Header().Set("Content-Type", "application/json")
 	h.writeJSON(w, body)
 }

@@ -11,8 +11,8 @@ import (
 // ErrStorageUnavailable marks a request that failed because the token store did
 // not answer: the backend was unreachable, refused the connection, or did not
 // reply within its per-operation deadline (see storage.DefaultOperationTimeout).
-// The presented grant was neither validated nor rejected and nothing was
-// consumed, rotated or revoked, so the client must retry the same request.
+// Clients retry the same request. Revocation may have completed some writes
+// before another storage operation failed; retries are idempotent.
 // HTTP handlers answer it as 503 with a Retry-After
 // header — never as invalid_grant, which clients read as "the token is dead"
 // and answer by discarding the token and forcing a new sign-in.

@@ -497,6 +497,7 @@ func TestSelfIssuedExchange_DPoP(t *testing.T) {
 	require.NoError(t, parsed.Claims(signingKey.Public(), &claims))
 
 	require.NotNil(t, claims.Cnf, "cnf claim must be present for DPoP-bound token")
+	require.Equal(t, tokenTypeDPoP, result.TokenType)
 	require.Equal(t, jkt, claims.Cnf.JKT, "cnf.jkt must match the DPoP key thumbprint")
 }
 

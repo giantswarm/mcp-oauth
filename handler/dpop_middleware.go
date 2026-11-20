@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -83,6 +84,10 @@ func serveDPoP(w http.ResponseWriter, r *http.Request, next http.Handler, replay
 		next.ServeHTTP(w, r)
 		return
 	}
+	if len(r.Header.Values("Authorization")) > 1 || len(r.Header.Values("DPoP")) > 1 {
+		writeDPoPError(w, logger, dpopWWWAuthenticate(constants.ErrorCodeInvalidRequest, "Multiple authorization credentials or DPoP proofs"), "", constants.ErrorCodeInvalidRequest, "Multiple authorization credentials or DPoP proofs", http.StatusUnauthorized)
+		return
+	}
 	accessToken := auth[len("DPoP "):] // preserve original token value
 	proof := r.Header.Get("DPoP")
 	if proof == "" {
@@ -111,6 +116,13 @@ func serveDPoP(w http.ResponseWriter, r *http.Request, next http.Handler, replay
 }
 
 func writeDPoPValidationError(w http.ResponseWriter, r *http.Request, err error, nonceProvider server.DPoPNonceProvider, logger *slog.Logger) {
+	if errors.Is(err, server.ErrStorageUnavailable) {
+		w.Header().Set("Retry-After", strconv.Itoa(storageUnavailableRetryAfterSeconds))
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Pragma", "no-cache")
+		http.Error(w, "DPoP replay store unavailable; retry the request", http.StatusServiceUnavailable)
+		return
+	}
 	if errors.Is(err, server.ErrDPoPNonceInvalid) {
 		nonce := ""
 		if nonceProvider != nil {

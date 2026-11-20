@@ -198,6 +198,7 @@ func TestRevokeToken_SelfIssuedJWT(t *testing.T) {
 	srv, _, _ := setupJWTFlowTestServer(t)
 	now := time.Now().UTC()
 	tok, err := srv.accessTokenIssuer.Issue(context.Background(), AccessTokenClaims{
+		ClientID:  "client-x",
 		Subject:   "user-1",
 		Audience:  srv.Config.GetResourceIdentifier(),
 		ExpiresAt: now.Add(15 * time.Minute),

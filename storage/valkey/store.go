@@ -931,18 +931,18 @@ return cjson.encode({user_id = userID, client_id = clientID, token = cjson.decod
 // RESP2-only servers. EVAL, TTL and plain EXPIRE are available everywhere.
 const luaAtomicSaddExtendOnlyTTL = `
 redis.call('SADD', KEYS[1], ARGV[1])
-local horizon = tonumber(ARGV[2])
-local cur = redis.call('TTL', KEYS[1])
+local horizon = tonumber(ARGV[2]) * 1000
+local cur = redis.call('PTTL', KEYS[1])
 if cur == -1 then
     local init = horizon
     if init <= 0 then
-        init = tonumber(ARGV[3])
+        init = tonumber(ARGV[3]) * 1000
     end
     if init > 0 then
-        redis.call('EXPIRE', KEYS[1], init)
+        redis.call('PEXPIRE', KEYS[1], init)
     end
 elseif cur >= 0 and horizon > cur then
-    redis.call('EXPIRE', KEYS[1], horizon)
+    redis.call('PEXPIRE', KEYS[1], horizon)
 end
 return redis.status_reply('OK')
 `
@@ -966,18 +966,18 @@ return redis.status_reply('OK')
 const luaAtomicZaddPruneExtendOnlyTTL = `
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', '(' .. ARGV[4])
 redis.call('ZADD', KEYS[1], ARGV[5], ARGV[1])
-local horizon = tonumber(ARGV[2])
-local cur = redis.call('TTL', KEYS[1])
+local horizon = tonumber(ARGV[2]) * 1000
+local cur = redis.call('PTTL', KEYS[1])
 if cur == -1 then
     local init = horizon
     if init <= 0 then
-        init = tonumber(ARGV[3])
+        init = tonumber(ARGV[3]) * 1000
     end
     if init > 0 then
-        redis.call('EXPIRE', KEYS[1], init)
+        redis.call('PEXPIRE', KEYS[1], init)
     end
 elseif cur >= 0 and horizon > cur then
-    redis.call('EXPIRE', KEYS[1], horizon)
+    redis.call('PEXPIRE', KEYS[1], horizon)
 end
 return redis.status_reply('OK')
 `
@@ -987,7 +987,7 @@ return redis.status_reply('OK')
 // KEYS[1] = key to extend
 // ARGV[1] = new bound in whole seconds (always >= 1)
 //
-// TTL(KEYS[1]) returns -2 (missing), -1 (present, no expiry) or >= 0 (seconds
+// PTTL(KEYS[1]) returns -2 (missing), -1 (present, no expiry) or >= 0 (milliseconds
 // remaining), so the rules are:
 //   - missing key      -> no-op, the key is not created;
 //   - no current expiry -> no-op, an unbounded key is already longer-lived than
@@ -997,9 +997,10 @@ return redis.status_reply('OK')
 // This is EXPIRE ... GT semantics, written as a script because the GT option
 // needs a 7.0+ server and the store supports older, RESP2-only servers.
 const luaExtendOnlyTTL = `
-local cur = redis.call('TTL', KEYS[1])
-if cur >= 0 and tonumber(ARGV[1]) > cur then
-    redis.call('EXPIRE', KEYS[1], ARGV[1])
+local cur = redis.call('PTTL', KEYS[1])
+local horizon = tonumber(ARGV[1]) * 1000
+if cur >= 0 and horizon > cur then
+    redis.call('PEXPIRE', KEYS[1], horizon)
 end
 return redis.status_reply('OK')
 `
@@ -1158,8 +1159,10 @@ func fromAuthorizationStateJSON(j *authorizationStateJSON) *storage.Authorizatio
 
 // clientJSON is the JSON representation of an OAuth client
 type clientJSON struct {
+	Revoked                     bool     `json:"revoked,omitempty"`
 	ClientID                    string   `json:"client_id"`
 	ClientSecretHash            string   `json:"client_secret_hash,omitempty"`
+	ClientSecretEncrypted       string   `json:"client_secret_encrypted,omitempty"`
 	ClientType                  string   `json:"client_type"`
 	RedirectURIs                []string `json:"redirect_uris"`
 	TokenEndpointAuthMethod     string   `json:"token_endpoint_auth_method,omitempty"`
@@ -1176,6 +1179,7 @@ func toClientJSON(client *storage.Client) *clientJSON {
 	j := &clientJSON{
 		ClientID:                    client.ClientID,
 		ClientSecretHash:            client.ClientSecretHash,
+		ClientSecretEncrypted:       client.ClientSecretEncrypted,
 		ClientType:                  client.ClientType,
 		RedirectURIs:                client.RedirectURIs,
 		TokenEndpointAuthMethod:     client.TokenEndpointAuthMethod,
@@ -1193,12 +1197,13 @@ func toClientJSON(client *storage.Client) *clientJSON {
 }
 
 func fromClientJSON(j *clientJSON) *storage.Client {
-	if j == nil {
+	if j == nil || j.Revoked {
 		return nil
 	}
 	c := &storage.Client{
 		ClientID:                    j.ClientID,
 		ClientSecretHash:            j.ClientSecretHash,
+		ClientSecretEncrypted:       j.ClientSecretEncrypted,
 		ClientType:                  j.ClientType,
 		RedirectURIs:                j.RedirectURIs,
 		TokenEndpointAuthMethod:     j.TokenEndpointAuthMethod,
@@ -1261,30 +1266,38 @@ func fromRefreshTokenFamilyJSON(j *refreshTokenFamilyJSON) *storage.RefreshToken
 
 // tokenMetadataJSON is the JSON representation of token metadata
 type tokenMetadataJSON struct {
-	UserID    string   `json:"user_id"`
-	ClientID  string   `json:"client_id"`
-	IssuedAt  int64    `json:"issued_at,omitempty"`
-	ExpiresAt int64    `json:"expires_at,omitempty"`
-	TokenType string   `json:"token_type"`
-	Audience  string   `json:"audience,omitempty"`
-	Scopes    []string `json:"scopes,omitempty"`
-	FamilyID  string   `json:"family_id,omitempty"`
+	UserID      string         `json:"user_id"`
+	ClientID    string         `json:"client_id"`
+	IssuedAt    int64          `json:"issued_at,omitempty"`
+	ExpiresAt   int64          `json:"expires_at,omitempty"`
+	RetainUntil int64          `json:"retain_until,omitempty"`
+	TokenType   string         `json:"token_type"`
+	Audience    string         `json:"audience,omitempty"`
+	Scopes      []string       `json:"scopes,omitempty"`
+	FamilyID    string         `json:"family_id,omitempty"`
+	JKT         string         `json:"jkt,omitempty"`
+	ExtraClaims map[string]any `json:"extra_claims,omitempty"`
 }
 
 func toTokenMetadataJSON(meta *storage.TokenMetadata) *tokenMetadataJSON {
 	j := &tokenMetadataJSON{
-		UserID:    meta.UserID,
-		ClientID:  meta.ClientID,
-		TokenType: meta.TokenType,
-		Audience:  meta.Audience,
-		Scopes:    meta.Scopes,
-		FamilyID:  meta.FamilyID,
+		UserID:      meta.UserID,
+		ClientID:    meta.ClientID,
+		TokenType:   meta.TokenType,
+		Audience:    meta.Audience,
+		Scopes:      meta.Scopes,
+		FamilyID:    meta.FamilyID,
+		JKT:         meta.JKT,
+		ExtraClaims: meta.ExtraClaims,
 	}
 	if !meta.IssuedAt.IsZero() {
 		j.IssuedAt = meta.IssuedAt.Unix()
 	}
 	if !meta.ExpiresAt.IsZero() {
 		j.ExpiresAt = meta.ExpiresAt.Unix()
+	}
+	if !meta.RetainUntil.IsZero() {
+		j.RetainUntil = meta.RetainUntil.Unix()
 	}
 	return j
 }
@@ -1294,18 +1307,23 @@ func fromTokenMetadataJSON(j *tokenMetadataJSON) *storage.TokenMetadata {
 		return nil
 	}
 	meta := &storage.TokenMetadata{
-		UserID:    j.UserID,
-		ClientID:  j.ClientID,
-		TokenType: j.TokenType,
-		Audience:  j.Audience,
-		Scopes:    j.Scopes,
-		FamilyID:  j.FamilyID,
+		UserID:      j.UserID,
+		ClientID:    j.ClientID,
+		TokenType:   j.TokenType,
+		Audience:    j.Audience,
+		Scopes:      j.Scopes,
+		FamilyID:    j.FamilyID,
+		JKT:         j.JKT,
+		ExtraClaims: j.ExtraClaims,
 	}
 	if j.IssuedAt > 0 {
 		meta.IssuedAt = time.Unix(j.IssuedAt, 0)
 	}
 	if j.ExpiresAt > 0 {
 		meta.ExpiresAt = time.Unix(j.ExpiresAt, 0)
+	}
+	if j.RetainUntil > 0 {
+		meta.RetainUntil = time.Unix(j.RetainUntil, 0)
 	}
 	return meta
 }

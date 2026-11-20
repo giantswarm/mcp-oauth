@@ -71,7 +71,7 @@ func ValidateDPoPProof(ctx context.Context, proof, method, uri, accessToken stri
 
 	seen, err := replay.Seen(ctx, claims.ID, dpopProofTTL)
 	if err != nil {
-		return nil, fmt.Errorf("dpop: replay cache error: %w", err)
+		return nil, fmt.Errorf("%w: dpop replay cache: %w", ErrStorageUnavailable, err)
 	}
 	if seen {
 		return nil, fmt.Errorf("dpop: proof jti has already been used (replay detected)")
