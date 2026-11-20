@@ -1,9 +1,11 @@
 package valkey
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -36,4 +38,26 @@ func TestClientRetirement(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, revoked)
 	require.ErrorIs(t, observer.SaveClient(t.Context(), client), storage.ErrClientNotFound)
+}
+
+func TestClientRetirementLookupBoundsOutages(t *testing.T) {
+	for _, failure := range []string{"dead", "unresponsive"} {
+		t.Run(failure, func(t *testing.T) {
+			store, proxy := proxiedStore(t, 300*time.Millisecond)
+			client := &storage.Client{ClientID: "retired-client"}
+			require.NoError(t, store.SaveClient(t.Context(), client))
+			require.NoError(t, store.DeleteClient(t.Context(), client.ClientID))
+			if failure == "dead" {
+				proxy.closeAll()
+			} else {
+				proxy.unresponsive()
+			}
+			requestContext, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			_, err := store.IsClientRevoked(requestContext, client.ClientID)
+			require.Error(t, err)
+			require.True(t, storage.IsTransientError(err), "got %v", err)
+			require.NoError(t, requestContext.Err(), "the store must time out before the caller's deadline")
+		})
+	}
 }

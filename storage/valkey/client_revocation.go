@@ -6,8 +6,10 @@ import (
 	"fmt"
 )
 
-func (s *Store) IsClientRevoked(ctx context.Context, clientID string) (bool, error) {
-	data, err := s.client.Do(ctx, s.client.B().Get().Key(s.clientKey(clientID)).Build()).ToString()
+func (s *Store) IsClientRevoked(ctx context.Context, clientID string) (revoked bool, err error) {
+	operation := s.startTracedOp(ctx, "is_client_revoked")
+	defer operation.end(&err)
+	data, err := s.client.Do(operation.ctx, s.client.B().Get().Key(s.clientKey(clientID)).Build()).ToString()
 	if isNilError(err) {
 		return false, nil
 	}
