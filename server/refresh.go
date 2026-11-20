@@ -408,6 +408,12 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 // wrapping ErrInvalidTarget (RFC 8707 §2.2) and the refresh token stays
 // usable. An empty resource behaves as RefreshAccessToken.
 func (s *Server) RefreshAccessTokenForResource(ctx context.Context, refreshToken, clientID, resource string) (*oauth2.Token, error) {
+	if err := s.checkClientRevocation(ctx, clientID); err != nil {
+		if errors.Is(err, ErrStorageUnavailable) {
+			return nil, err
+		}
+		return nil, errInvalidGrant
+	}
 	// Check if storage supports token family tracking (OAuth 2.1 reuse detection)
 	familyStore, supportsFamilies := s.tokenStore.(storage.RefreshTokenFamilyStore)
 

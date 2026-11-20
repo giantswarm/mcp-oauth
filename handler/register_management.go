@@ -43,7 +43,7 @@ func (h *Handler) ServeClientManagement(w http.ResponseWriter, r *http.Request) 
 	switch r.Method {
 	case http.MethodGet:
 		h.recordHTTPMetrics(r.Context(), endpointClientManagement, http.MethodGet, http.StatusOK, startTime)
-		h.writeClientMetadata(w, client)
+		h.writeClientMetadata(w, r, client)
 	case http.MethodPut:
 		h.handleClientManagementPut(w, r, client, clientIP, startTime)
 	case http.MethodDelete:
@@ -74,7 +74,8 @@ func (h *Handler) authenticateManagementRequest(w http.ResponseWriter, r *http.R
 			// Perform a dummy bcrypt comparison to prevent timing-based enumeration.
 			_ = bcrypt.CompareHashAndPassword([]byte(storage.DummyBcryptHash), []byte(bearerToken))
 			h.logger.Warn("Client management: client not found", "ip", clientIP, "client_id", clientID)
-			h.writeError(w, constants.ErrorCodeInvalidToken, "client not found", http.StatusNotFound)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="client_management"`)
+			h.writeError(w, constants.ErrorCodeInvalidToken, "invalid registration_access_token", http.StatusUnauthorized)
 			return nil, false
 		}
 		h.logger.Error("Client management: failed to retrieve client", "ip", clientIP, "client_id", clientID, paramError, err)
@@ -125,9 +126,10 @@ func (h *Handler) buildClientResponseBody(client *storage.Client) map[string]any
 }
 
 // writeClientMetadata serialises the stored client to the RFC 7592 §3 shape.
-func (h *Handler) writeClientMetadata(w http.ResponseWriter, client *storage.Client) {
+func (h *Handler) writeClientMetadata(w http.ResponseWriter, r *http.Request, client *storage.Client) {
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	body := h.buildClientResponseBody(client)
+	body["registration_access_token"] = strings.SplitN(r.Header.Get("Authorization"), " ", 2)[1]
 	w.Header().Set("Content-Type", "application/json")
 	h.writeJSON(w, body)
 }
@@ -149,34 +151,48 @@ func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if req.TokenEndpointAuthMethod != "" && !isValidAuthMethod(req.TokenEndpointAuthMethod) {
-		h.writeError(w, constants.ErrorCodeInvalidRequest,
-			"unsupported token_endpoint_auth_method", http.StatusBadRequest)
+	if req.ClientID != existing.ClientID {
+		h.writeError(w, "invalid_client_metadata", "client_id must match the authenticated registration", http.StatusBadRequest)
+		return
+	}
+	if req.ClientSecret != "" && bcrypt.CompareHashAndPassword([]byte(existing.ClientSecretHash), []byte(req.ClientSecret)) != nil {
+		h.writeError(w, "invalid_client_metadata", "client_secret must match the registered credential", http.StatusBadRequest)
+		return
+	}
+	if req.TokenEndpointAuthMethod == "" {
+		req.TokenEndpointAuthMethod = server.TokenEndpointAuthMethodBasic
+	}
+	if err := h.validateClientMetadata(w, &req, clientIP); err != nil {
+		return
+	}
+	if err := h.server.ValidateRedirectURIsForRegistration(r.Context(), req.RedirectURIs); err != nil {
+		h.writeError(w, constants.ErrorCodeInvalidRedirectURI, "redirect_uris refused", http.StatusBadRequest)
 		return
 	}
 
+	updated := *existing
+	updated.ClientName = req.ClientName
+	updated.RedirectURIs = req.RedirectURIs
+	updated.Scopes = req.Scopes
+	updated.TokenEndpointAuthMethod = req.TokenEndpointAuthMethod
+	switch updated.TokenEndpointAuthMethod {
+	case server.TokenEndpointAuthMethodNone:
+		updated.ClientType = server.ClientTypePublic
+		updated.ClientSecretHash = ""
+	default:
+		if updated.ClientSecretHash == "" {
+			h.writeError(w, "invalid_client_metadata", "Register a replacement client to obtain a client secret", http.StatusBadRequest)
+			return
+		}
+		updated.ClientType = server.ClientTypeConfidential
+	}
 	newToken, newHash, err := server.GenerateRegistrationAccessToken()
 	if err != nil {
 		h.logger.Error("Client management: failed to rotate registration token", "ip", clientIP, "client_id", existing.ClientID, paramError, err)
 		h.writeError(w, constants.ErrorCodeServerError, "failed to rotate registration token", http.StatusInternalServerError)
 		return
 	}
-
-	now := time.Now()
-	updated := *existing
-	if req.ClientName != "" {
-		updated.ClientName = req.ClientName
-	}
-	if len(req.RedirectURIs) > 0 {
-		updated.RedirectURIs = req.RedirectURIs
-	}
-	if len(req.Scopes) > 0 {
-		updated.Scopes = req.Scopes
-	}
-	if req.TokenEndpointAuthMethod != "" {
-		updated.TokenEndpointAuthMethod = req.TokenEndpointAuthMethod
-	}
-	updated.UpdatedAt = now
+	updated.UpdatedAt = time.Now()
 	updated.RegistrationAccessTokenHash = newHash
 
 	if err := h.server.SaveClient(r.Context(), &updated); err != nil {

@@ -422,10 +422,12 @@ func (h *Handler) addOptionalMetadata(metadata map[string]any) {
 
 	if h.server.Config.EnableRevocationEndpoint {
 		metadata["revocation_endpoint"] = h.server.Config.RevocationEndpoint()
+		metadata["revocation_endpoint_auth_methods_supported"] = oauth.SupportedTokenAuthMethods
 	}
 
 	if h.server.Config.EnableIntrospectionEndpoint {
 		metadata["introspection_endpoint"] = h.server.Config.IntrospectionEndpoint()
+		metadata["introspection_endpoint_auth_methods_supported"] = []string{server.TokenEndpointAuthMethodBasic, server.TokenEndpointAuthMethodPost}
 	}
 
 	if h.server.Config.EnableUserInfoEndpoint {

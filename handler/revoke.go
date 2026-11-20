@@ -4,13 +4,13 @@ import (
 	"context"
 	_ "embed"
 	"errors"
-	"fmt"
 	"net/http"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -30,20 +30,16 @@ func (h *Handler) authenticateRevocationClient(w http.ResponseWriter, r *http.Re
 		return "", false, false
 	}
 
-	if basicClientID == "" {
-		return formClientID, false, true
-	}
-
-	if err := h.validateBasicClientSecret(r.Context(), r, basicClientID); err != nil {
-		h.logger.Warn("Client authentication failed for revocation", "client_id", basicClientID, "ip", clientIP)
-		h.server.Auditor.LogAuthFailure(r.Context(), "", basicClientID, clientIP, "revocation_auth_failed")
-		h.recordHTTPMetrics(r.Context(), endpointRevoke, http.MethodPost, http.StatusUnauthorized, startTime)
-		instrumentation.RecordError(span, err)
-		instrumentation.SetSpanError(span, "client authentication failed")
-		h.writeError(w, constants.ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
+	if formClientID == "" && basicClientID == "" {
+		h.writeError(w, constants.ErrorCodeInvalidClient, "Client identification required", http.StatusUnauthorized)
 		return "", false, false
 	}
-	return basicClientID, true, true
+	client, err := h.authenticateClient(r, formClientID, clientIP)
+	if err != nil {
+		h.writeEndpointClientAuthenticationError(w, r, endpointRevoke, "", span, startTime, err)
+		return "", false, false
+	}
+	return client.ClientID, client.IsConfidential(), true
 }
 
 // ServeTokenRevocation handles the RFC 7009 token revocation endpoint
@@ -112,7 +108,8 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 	if err := h.server.RevokeToken(r.Context(), token, clientID, clientIP); err != nil {
 		h.logger.Error("Failed to revoke token", "client_id", clientID, "ip", clientIP, paramError, err)
 		instrumentation.RecordError(span, err)
-		// Per RFC 7009, don't fail the request even if revocation failed
+		h.writeStorageUnavailable(w, r, endpointRevoke, http.MethodPost, span, startTime, err)
+		return
 	}
 	// Per RFC 7009, return 200 even if revocation fails
 
@@ -186,7 +183,7 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 	clientID, err := h.authenticateIntrospectionClient(r, clientIP)
 	if err != nil {
 		instrumentation.SetSpanError(span, "client authentication failed")
-		h.writeError(w, constants.ErrorCodeInvalidClient, err.Error(), http.StatusUnauthorized)
+		h.writeEndpointClientAuthenticationError(w, r, endpointIntrospect, "", span, startTime, err)
 		return
 	}
 
@@ -230,29 +227,18 @@ func (h *Handler) writeIntrospectionError(w http.ResponseWriter, r *http.Request
 // authenticateIntrospectionClient validates client credentials for token introspection.
 // Returns the client ID on success, or an error if authentication fails.
 func (h *Handler) authenticateIntrospectionClient(r *http.Request, clientIP string) (string, error) {
-	ctx := r.Context()
-	authClientID, _ := h.parseBasicAuth(r)
-
-	if authClientID != "" {
-		if err := h.validateBasicClientSecret(ctx, r, authClientID); err != nil {
-			h.logger.Warn("Client authentication failed for introspection", "client_id", authClientID, "ip", clientIP)
-			h.server.Auditor.LogAuthFailure(ctx, "", authClientID, clientIP, "introspection_auth_failed")
-			return "", fmt.Errorf("client authentication failed")
-		}
-		return authClientID, nil
+	basicClientID, _ := h.parseBasicAuth(r)
+	if r.Form.Get("client_id") == "" && basicClientID == "" {
+		return "", oauth.ErrInvalidClient("Client authentication required for token introspection")
 	}
-
-	// No Basic Auth - check for client_id in form (but we still reject without credentials)
-	clientID := r.Form.Get("client_id")
-	if clientID == "" {
-		h.logger.Warn("Token introspection rejected: missing client authentication", "ip", clientIP)
-		h.server.Auditor.LogAuthFailure(ctx, "", "", clientIP, "introspection_missing_auth")
-		return "", fmt.Errorf("client authentication required for token introspection")
+	client, err := h.authenticateClient(r, r.Form.Get("client_id"), clientIP)
+	if err != nil {
+		return "", err
 	}
-
-	h.logger.Warn("Token introspection rejected: client_id without credentials", "client_id", clientID, "ip", clientIP)
-	h.server.Auditor.LogAuthFailure(ctx, "", clientID, clientIP, "introspection_missing_credentials")
-	return "", fmt.Errorf("client authentication required for token introspection")
+	if !client.IsConfidential() {
+		return "", oauth.ErrInvalidClient("Client authentication required for token introspection")
+	}
+	return client.ClientID, nil
 }
 
 // recordTokenRevoked records when a token is revoked.

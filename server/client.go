@@ -287,8 +287,11 @@ func (s *Server) SaveClient(ctx context.Context, client *storage.Client) error {
 	return s.clientStore.SaveClient(ctx, client)
 }
 
-// DeleteClient removes a client by ID (RFC 7592 §2.4).
+// DeleteClient permanently retires a client ID (RFC 7592 §2.3).
 func (s *Server) DeleteClient(ctx context.Context, clientID string) error {
+	if _, ok := s.clientStore.(storage.ClientRevocationStore); !ok {
+		return fmt.Errorf("client store does not support durable client revocation")
+	}
 	return s.clientStore.DeleteClient(ctx, clientID)
 }
 

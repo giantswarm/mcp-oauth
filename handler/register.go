@@ -32,12 +32,14 @@ const (
 
 // clientRegistrationRequest represents the JSON request for client registration
 type clientRegistrationRequest struct {
+	ClientID                string   `json:"client_id"`
+	ClientSecret            string   `json:"client_secret"`
+	Scope                   string   `json:"scope"`
 	ClientName              string   `json:"client_name"`
 	ClientType              string   `json:"client_type"`
 	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
 	RedirectURIs            []string `json:"redirect_uris"`
 	Scopes                  []string `json:"scopes"`
-	Scope                   string   `json:"scope"`
 }
 
 // checkClientRegistrationRateLimit checks if client registration is rate limited
@@ -248,12 +250,18 @@ func (h *Handler) parseAndValidateRegistrationRequest(w http.ResponseWriter, r *
 		return nil, err
 	}
 
-	// Validate client_name to prevent potential stored XSS and log injection (defense-in-depth)
+	if err := h.validateClientMetadata(w, &req, clientIP); err != nil {
+		return nil, err
+	}
+	return &req, nil
+}
+
+func (h *Handler) validateClientMetadata(w http.ResponseWriter, req *clientRegistrationRequest, clientIP string) error {
 	if err := helpers.ValidateClientName(req.ClientName); err != nil {
 		h.logger.Warn("Invalid client_name in registration request",
 			"client_name_length", len(req.ClientName), paramError, err, "ip", clientIP)
 		h.writeError(w, constants.ErrorCodeInvalidRequest, err.Error(), http.StatusBadRequest)
-		return nil, err
+		return err
 	}
 
 	if req.TokenEndpointAuthMethod != "" && !isValidAuthMethod(req.TokenEndpointAuthMethod) {
@@ -262,17 +270,17 @@ func (h *Handler) parseAndValidateRegistrationRequest(w http.ResponseWriter, r *
 		h.writeError(w, constants.ErrorCodeInvalidRequest,
 			fmt.Sprintf("Unsupported token_endpoint_auth_method: %s", req.TokenEndpointAuthMethod),
 			http.StatusBadRequest)
-		return nil, fmt.Errorf("unsupported auth method")
+		return fmt.Errorf("unsupported auth method")
 	}
 
 	if req.Scope != "" {
 		if len(req.Scopes) != 0 || len(req.Scope) > h.server.Config.MaxScopeLength {
 			h.writeError(w, "invalid_client_metadata", "Invalid scope metadata", http.StatusBadRequest)
-			return nil, fmt.Errorf("invalid scope metadata")
+			return fmt.Errorf("invalid scope metadata")
 		}
 		req.Scopes = strings.Fields(req.Scope)
 	}
-	return &req, nil
+	return nil
 }
 
 // getMaxClientsPerIP returns the max clients per IP with default.

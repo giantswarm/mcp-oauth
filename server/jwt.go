@@ -96,6 +96,10 @@ func (s *Server) validateSelfIssuedJWT(ctx context.Context, tokenString string) 
 	if err := s.checkJWTFamily(ctx, claims, tokenString); err != nil {
 		return nil, nil, err
 	}
+	clientID, _ := claims[paramClientID].(string)
+	if err := s.checkClientRevocation(ctx, clientID); err != nil {
+		return nil, nil, err
+	}
 
 	userInfo, err := userInfoFromJWTClaims(claims)
 	if err != nil {
@@ -364,6 +368,9 @@ func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID,
 		return true
 	}
 	jti, _ := claims[claimJTI].(string)
+	if owner, _ := claims[paramClientID].(string); owner == "" || owner != clientID {
+		return true
+	}
 	expVal, _ := claims["exp"].(float64)
 	if jti == "" || expVal == 0 {
 		s.Logger.Debug("Self-issued JWT missing jti or exp during revocation",

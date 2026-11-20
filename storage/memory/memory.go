@@ -79,8 +79,9 @@ type Store struct {
 	tokenMetadata map[string]*storage.TokenMetadata // token ID (access or refresh) -> metadata
 
 	// Client storage
-	clients      map[string]*storage.Client
-	clientsPerIP map[string]int // IP address -> client count (for DoS protection)
+	clients        map[string]*storage.Client
+	revokedClients map[string]bool
+	clientsPerIP   map[string]int // IP address -> client count (for DoS protection)
 
 	// Flow storage
 	authStates        map[string]*storage.AuthorizationState
@@ -187,6 +188,7 @@ func New(opts ...Option) *Store {
 		refreshTokenFamilies:       make(map[string]*RefreshTokenFamily),
 		tokenMetadata:              make(map[string]*storage.TokenMetadata),
 		clients:                    make(map[string]*storage.Client),
+		revokedClients:             make(map[string]bool),
 		clientsPerIP:               make(map[string]int),
 		authStates:                 make(map[string]*storage.AuthorizationState),
 		authCodes:                  make(map[string]*storage.AuthorizationCode),
@@ -515,6 +517,10 @@ func (s *Store) SaveClient(ctx context.Context, client *storage.Client) error {
 	defer s.mu.Unlock()
 
 	// Track if this is a new client (for atomic counter)
+	if s.revokedClients[client.ClientID] {
+		err = storage.ErrClientNotFound
+		return err
+	}
 	_, existed := s.clients[client.ClientID]
 
 	s.clients[client.ClientID] = client
@@ -537,8 +543,15 @@ func (s *Store) DeleteClient(_ context.Context, clientID string) error {
 		return storage.ErrClientNotFound
 	}
 	delete(s.clients, clientID)
+	s.revokedClients[clientID] = true
 	s.clientsCountAtomic.Add(-1)
 	return nil
+}
+
+func (s *Store) IsClientRevoked(_ context.Context, clientID string) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.revokedClients[clientID], nil
 }
 
 // CheckIPLimit checks if an IP has reached the client registration limit

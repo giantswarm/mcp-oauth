@@ -1158,6 +1158,7 @@ func fromAuthorizationStateJSON(j *authorizationStateJSON) *storage.Authorizatio
 
 // clientJSON is the JSON representation of an OAuth client
 type clientJSON struct {
+	Revoked                     bool     `json:"revoked,omitempty"`
 	ClientID                    string   `json:"client_id"`
 	ClientSecretHash            string   `json:"client_secret_hash,omitempty"`
 	ClientType                  string   `json:"client_type"`
@@ -1193,6 +1194,9 @@ func toClientJSON(client *storage.Client) *clientJSON {
 }
 
 func fromClientJSON(j *clientJSON) *storage.Client {
+	if j.Revoked {
+		return nil
+	}
 	if j == nil {
 		return nil
 	}

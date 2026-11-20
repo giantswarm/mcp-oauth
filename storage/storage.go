@@ -514,6 +514,13 @@ type ClientStore interface {
 	CheckIPLimit(ctx context.Context, ip string, maxClientsPerIP int) error
 }
 
+// ClientRevocationStore records permanently retired client IDs independently
+// of issued tokens. Retired IDs cannot be registered again.
+// DeleteClient must atomically retire the ID, and SaveClient must reject it.
+type ClientRevocationStore interface {
+	IsClientRevoked(ctx context.Context, clientID string) (bool, error)
+}
+
 // ClientIPTracker is an optional capability implemented by ClientStore
 // implementations that can record the most recent client IP per client_id.
 type ClientIPTracker interface {
@@ -635,7 +642,7 @@ type Client struct {
 // IsPublic reports whether the client is a public client (no secret).
 func (c *Client) IsPublic() bool { return c.ClientType == ClientTypePublic }
 
-// IsConfidential reports whether the client is a confidential client (has secret).
+// IsConfidential reports whether the client is a confidential client with registered credentials.
 func (c *Client) IsConfidential() bool { return c.ClientType == ClientTypeConfidential }
 
 // AuthorizationState represents the state of an ongoing authorization flow

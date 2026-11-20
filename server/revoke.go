@@ -54,6 +54,13 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 	if s.revokeSelfIssuedJWT(ctx, token, clientID, clientIP) {
 		return nil
 	}
+	owned, err := s.revocationClientMatches(ctx, token, clientID)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return nil
+	}
 
 	// Revoke at the provider (best-effort). The provider token is resolved via
 	// the shared per-user entry in the unified layout. A failed resolution

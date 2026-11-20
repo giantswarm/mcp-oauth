@@ -125,25 +125,7 @@ func (h *Handler) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Re
 	// Authenticate client
 	client, err := h.authenticateClient(r, clientID, clientIP)
 	if err != nil {
-		if errors.Is(err, server.ErrStorageUnavailable) {
-			h.writeTokenStorageUnavailable(w, r, grantTypeAuthorizationCode, span, startTime, err)
-			return
-		}
-		instrumentation.RecordError(span, err)
-		instrumentation.SetSpanError(span, "client authentication failed")
-		// authenticateClient returns *Error; read its Status before recording
-		// the HTTP metric so a 400 (client_id mismatch) is not mis-labelled as
-		// 401 (unauthorized) in dashboards.
-		var oauthErr *oauth.Error
-		if errors.As(err, &oauthErr) {
-			h.recordTokenFailure(r.Context(), grantTypeAuthorizationCode, oauthErr.Code)
-			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, oauthErr.Status, startTime)
-			h.writeError(w, oauthErr.Code, oauthErr.Description, oauthErr.Status)
-		} else {
-			h.recordTokenFailure(r.Context(), grantTypeAuthorizationCode, constants.ErrorCodeInvalidClient)
-			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusUnauthorized, startTime)
-			h.writeError(w, constants.ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
-		}
+		h.writeClientAuthenticationError(w, r, grantTypeAuthorizationCode, span, startTime, err)
 		return
 	}
 
@@ -317,23 +299,10 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 // store that did not answer is written as 503.
 func (h *Handler) authenticateRefreshTokenClient(ctx context.Context, w http.ResponseWriter, r *http.Request, clientID, clientIP string, startTime time.Time, span trace.Span) (string, bool, error) {
 	basicClientID, _ := h.parseBasicAuth(r)
-	if r.PostForm.Get("client_secret") != "" || basicClientID != "" {
+	if r.Form.Has("client_secret") || basicClientID != "" {
 		client, err := h.authenticateClient(r, clientID, clientIP)
 		if err != nil {
-			if errors.Is(err, server.ErrStorageUnavailable) {
-				h.writeTokenStorageUnavailable(w, r, grantTypeRefreshToken, span, startTime, err)
-			} else {
-				var oauthError *oauth.Error
-				if errors.As(err, &oauthError) {
-					h.recordTokenFailure(ctx, grantTypeRefreshToken, oauthError.Code)
-					h.recordHTTPMetrics(ctx, endpointToken, http.MethodPost, oauthError.Status, startTime)
-					h.writeError(w, oauthError.Code, oauthError.Description, oauthError.Status)
-				} else {
-					h.recordTokenFailure(ctx, grantTypeRefreshToken, constants.ErrorCodeInvalidClient)
-					h.recordHTTPMetrics(ctx, endpointToken, http.MethodPost, http.StatusUnauthorized, startTime)
-					h.writeError(w, constants.ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
-				}
-			}
+			h.writeClientAuthenticationError(w, r, grantTypeRefreshToken, span, startTime, err)
 			return "", false, err
 		}
 		return client.ClientID, client.IsConfidential(), nil
@@ -484,6 +453,9 @@ func (h *Handler) rejectBasicFormClientIDMismatch(
 // store that did not answer yields server.ErrStorageUnavailable, which callers
 // answer with 503 rather than a client-authentication failure.
 func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string) (*storage.Client, error) {
+	if err := validateClientCredentialShape(r); err != nil {
+		return nil, err
+	}
 	basicClientID, basicClientSecret := h.parseBasicAuth(r)
 	formClientID := clientID
 
@@ -495,10 +467,7 @@ func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string)
 	}
 
 	authClientSecret := basicClientSecret
-	if r.PostForm.Get("client_secret") != "" {
-		if r.Header.Get("Authorization") != "" {
-			return nil, oauth.ErrInvalidRequest("Multiple client authentication methods")
-		}
+	if r.PostForm.Has("client_secret") {
 		authClientSecret = r.PostForm.Get("client_secret")
 	}
 	if basicClientID != "" {

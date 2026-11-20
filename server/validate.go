@@ -559,11 +559,7 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 		s.Auditor.LogAuthFailure(ctx, "", "", "", "invalid_access_token_metadata")
 		return nil, errInvalidAccessToken
 	}
-	if !metadata.ExpiresAt.IsZero() && security.IsTokenExpiredWithGracePeriod(metadata.ExpiresAt, time.Duration(s.Config.ClockSkewGracePeriod)*time.Second) {
-		s.Auditor.LogAuthFailure(ctx, "", "", "", "access_token_expired")
-		return nil, fmt.Errorf("access token expired: %w", errInvalidAccessToken)
-	}
-	if err := s.validateTokenAudience(ctx, accessToken, metadata); err != nil {
+	if err := s.validateIssuedTokenBinding(ctx, accessToken, metadata); err != nil {
 		return nil, err
 	}
 
@@ -599,6 +595,17 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 	}
 
 	return storedToken, nil
+}
+
+func (s *Server) validateIssuedTokenBinding(ctx context.Context, accessToken string, metadata *storage.TokenMetadata) error {
+	if !metadata.ExpiresAt.IsZero() && security.IsTokenExpiredWithGracePeriod(metadata.ExpiresAt, time.Duration(s.Config.ClockSkewGracePeriod)*time.Second) {
+		s.Auditor.LogAuthFailure(ctx, "", "", "", "access_token_expired")
+		return fmt.Errorf("access token expired: %w", errInvalidAccessToken)
+	}
+	if err := s.validateTokenAudience(ctx, accessToken, metadata); err != nil {
+		return err
+	}
+	return s.checkClientRevocation(ctx, metadata.ClientID)
 }
 
 // TokenMetadata returns the metadata recorded when this server issued
