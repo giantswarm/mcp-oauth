@@ -54,10 +54,12 @@ func TestClientRetirementLookupBoundsOutages(t *testing.T) {
 			}
 			requestContext, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
+			started := time.Now()
 			_, err := store.IsClientRevoked(requestContext, client.ClientID)
 			require.Error(t, err)
 			require.True(t, storage.IsTransientError(err), "got %v", err)
 			require.NoError(t, requestContext.Err(), "the store must time out before the caller's deadline")
+			require.Less(t, time.Since(started), 3*time.Second, "the operation must not use the five-second request budget")
 		})
 	}
 }
