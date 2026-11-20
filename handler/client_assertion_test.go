@@ -39,7 +39,7 @@ func TestPrivateKeyJWTCodeAndRefresh(t *testing.T) {
 	sign := func(identifier string) string {
 		signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: jose.JSONWebKey{Key: key, KeyID: "primary"}}, nil)
 		require.NoError(t, err)
-		assertion, err := jwt.Signed(signer).Claims(jwt.Claims{Issuer: result.Client.ClientID, Subject: result.Client.ClientID, Audience: jwt.Audience{h.server.Config.TokenEndpoint()}, IssuedAt: jwt.NewNumericDate(time.Now()), Expiry: jwt.NewNumericDate(time.Now().Add(time.Minute)), ID: identifier}).Serialize()
+		assertion, err := jwt.Signed(signer).Claims(jwt.Claims{Issuer: result.Client.ClientID, Subject: result.Client.ClientID, Audience: jwt.Audience{h.server.Config.Issuer}, IssuedAt: jwt.NewNumericDate(time.Now()), Expiry: jwt.NewNumericDate(time.Now().Add(time.Minute)), ID: identifier}).Serialize()
 		require.NoError(t, err)
 		return assertion
 	}
@@ -145,7 +145,7 @@ func TestPrivateKeyJWTEndpointAuthentication(t *testing.T) {
 			require.NoError(t, err)
 			signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: jose.JSONWebKey{Key: key, KeyID: "one"}}, nil)
 			require.NoError(t, err)
-			signed, err := jwt.Signed(signer).Claims(jwt.Claims{Issuer: client.Client.ClientID, Subject: client.Client.ClientID, Audience: jwt.Audience{h.server.Config.TokenEndpoint()}, IssuedAt: jwt.NewNumericDate(time.Now()), Expiry: jwt.NewNumericDate(time.Now().Add(time.Minute)), ID: endpoint}).Serialize()
+			signed, err := jwt.Signed(signer).Claims(jwt.Claims{Issuer: client.Client.ClientID, Subject: client.Client.ClientID, Audience: jwt.Audience{h.server.Config.Issuer}, IssuedAt: jwt.NewNumericDate(time.Now()), Expiry: jwt.NewNumericDate(time.Now().Add(time.Minute)), ID: endpoint}).Serialize()
 			require.NoError(t, err)
 			invoke := func(form url.Values, basic bool) *httptest.ResponseRecorder {
 				request := httptest.NewRequest(http.MethodPost, "/oauth/"+endpoint, strings.NewReader(form.Encode()))

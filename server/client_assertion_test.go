@@ -54,7 +54,7 @@ func signedAssertion(t *testing.T, key jose.JSONWebKey, claims jwt.Claims) strin
 
 func validAssertionClaims() jwt.Claims {
 	now := time.Now()
-	return jwt.Claims{Issuer: "key-client", Subject: "key-client", Audience: jwt.Audience{"https://auth.example.com/oauth/token"}, IssuedAt: jwt.NewNumericDate(now), Expiry: jwt.NewNumericDate(now.Add(time.Minute)), ID: "unique"}
+	return jwt.Claims{Issuer: "key-client", Subject: "key-client", Audience: jwt.Audience{"https://auth.example.com"}, IssuedAt: jwt.NewNumericDate(now), Expiry: jwt.NewNumericDate(now.Add(time.Minute)), ID: "unique"}
 }
 
 func TestClientAssertion(t *testing.T) {
@@ -68,7 +68,12 @@ func TestClientAssertion(t *testing.T) {
 				reason string
 			}{
 				{"valid", func(*jwt.Claims) {}, ""},
-				{"issuer audience", func(c *jwt.Claims) { c.Audience = jwt.Audience{"https://auth.example.com"} }, ""},
+				{"token endpoint audience", func(c *jwt.Claims) { c.Audience = jwt.Audience{"https://auth.example.com/oauth/token"} }, "assertion_audience"},
+				{"multiple audiences", func(c *jwt.Claims) {
+					c.Audience = jwt.Audience{"https://auth.example.com", "https://other.example.com"}
+				}, "assertion_audience"},
+				{"duplicate issuer audience", func(c *jwt.Claims) { c.Audience = jwt.Audience{"https://auth.example.com", "https://auth.example.com"} }, "assertion_audience"},
+				{"normalized issuer audience", func(c *jwt.Claims) { c.Audience = jwt.Audience{"https://AUTH.example.com/"} }, "assertion_audience"},
 				{"wrong issuer", func(c *jwt.Claims) { c.Issuer = "other" }, "assertion_identity"},
 				{"wrong subject", func(c *jwt.Claims) { c.Subject = "other" }, "assertion_identity"},
 				{"wrong audience", func(c *jwt.Claims) { c.Audience = jwt.Audience{"https://other"} }, "assertion_audience"},

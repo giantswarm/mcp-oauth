@@ -65,7 +65,7 @@ func matrixClientRequest(t *testing.T, handler *Handler, endpoint string, client
 	case "private_key_jwt":
 		signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: jose.JSONWebKey{Key: client.key, KeyID: "matrix"}}, nil)
 		require.NoError(t, err)
-		assertion, err := jwt.Signed(signer).Claims(jwt.Claims{Issuer: client.client.ClientID, Subject: client.client.ClientID, Audience: jwt.Audience{handler.server.Config.TokenEndpoint()}, IssuedAt: jwt.NewNumericDate(time.Now()), Expiry: jwt.NewNumericDate(time.Now().Add(time.Minute)), ID: rand.Text()}).Serialize()
+		assertion, err := jwt.Signed(signer).Claims(jwt.Claims{Issuer: client.client.ClientID, Subject: client.client.ClientID, Audience: jwt.Audience{handler.server.Config.Issuer}, IssuedAt: jwt.NewNumericDate(time.Now()), Expiry: jwt.NewNumericDate(time.Now().Add(time.Minute)), ID: rand.Text()}).Serialize()
 		require.NoError(t, err)
 		form.Set("client_assertion_type", server.ClientAssertionTypeJWTBearer)
 		form.Set("client_assertion", assertion)
@@ -109,6 +109,21 @@ func TestAuthenticationMethodMissingAndMixedCredentials(t *testing.T) {
 				require.Equal(t, http.StatusBadRequest, mixed.Code)
 				require.Contains(t, mixed.Body.String(), "invalid_request")
 			}
+		})
+	}
+}
+
+func TestMixedAssertionCredentialsWithDifferentIdentifiers(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	t.Cleanup(store.Stop)
+	client := newMatrixClient(t, handler, "private_key_jwt")
+	for _, endpoint := range []string{server.EndpointPathToken, server.EndpointPathRevoke, server.EndpointPathIntrospect} {
+		t.Run(endpoint, func(t *testing.T) {
+			response := matrixClientRequest(t, handler, endpoint, client, "private_key_jwt", url.Values{
+				"grant_type": {"authorization_code"}, "code": {"unconsumed-code"}, "token": {"unknown-token"},
+			}, func(request *http.Request) { request.SetBasicAuth("other-client", "other-secret") })
+			require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+			require.Contains(t, response.Body.String(), "invalid_request")
 		})
 	}
 }

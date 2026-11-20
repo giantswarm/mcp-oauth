@@ -24,7 +24,7 @@ const (
 	TokenEndpointAuthMethodPrivateKeyJWT = "private_key_jwt" //nolint:gosec // OAuth authentication method identifier.
 	// ClientAssertionTypeJWTBearer is the RFC 7523 client assertion type.
 	ClientAssertionTypeJWTBearer = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer" //nolint:gosec // Protocol identifier, not a credential.
-	clientSigningKeyUse          = "sig"
+	signingKeyUse                = "sig"
 	clientAssertionSkew          = 30 * time.Second
 )
 
@@ -154,7 +154,7 @@ func validateClientJWK(encoded json.RawMessage, algorithm string) (*jose.JSONWeb
 	if json.Unmarshal(encoded, &key) != nil || !key.Valid() || !key.IsPublic() {
 		return nil, errors.New("invalid public JWK")
 	}
-	if key.Use != "" && key.Use != clientSigningKeyUse || key.Algorithm != "" && key.Algorithm != algorithm {
+	if key.Use != "" && key.Use != signingKeyUse || key.Algorithm != "" && key.Algorithm != algorithm {
 		return nil, errors.New("incompatible key algorithm or use")
 	}
 	switch public := key.Key.(type) {
@@ -176,7 +176,7 @@ func (s *Server) validateAssertionClaims(clientID string, claims jwt.Claims, now
 	if claims.Issuer != clientID || claims.Subject != clientID {
 		return errors.New("assertion_identity")
 	}
-	if !claims.Audience.Contains(s.Config.Issuer) && !claims.Audience.Contains(s.Config.TokenEndpoint()) {
+	if len(claims.Audience) != 1 || claims.Audience[0] != s.Config.Issuer {
 		return errors.New("assertion_audience")
 	}
 	if claims.Expiry == nil || claims.IssuedAt == nil {

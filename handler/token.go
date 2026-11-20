@@ -337,14 +337,6 @@ func formDecode(value string) string {
 // too: a client that does not form-encode its credentials sends a secret
 // holding '+' or '%' unchanged.
 func (h *Handler) validateBasicClientSecret(ctx context.Context, r *http.Request, clientID string) error {
-	client, lookupError := h.server.GetRegisteredClient(ctx, clientID)
-	if lookupError != nil {
-		return lookupError
-	}
-	if client.TokenEndpointAuthMethod == server.TokenEndpointAuthMethodPrivateKeyJWT {
-		h.logAuthFailure(ctx, client.ClientID, r.RemoteAddr, "assertion_required", "Client authentication failed")
-		return oauth.ErrInvalidClient("Client authentication failed")
-	}
 	_, sent, _ := r.BasicAuth()
 	decoded := formDecode(sent)
 	err := h.server.ValidateClientCredentials(ctx, clientID, decoded)

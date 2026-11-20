@@ -25,4 +25,12 @@ func TestClientAssertionReplayStore(t *testing.T) {
 	ttl, err := client.Do(t.Context(), client.B().Ttl().Key(prefix+"shared").Build()).AsInt64()
 	require.NoError(t, err)
 	require.EqualValues(t, 2, ttl)
+
+	dpop := valkeystore.NewDPoPReplayCache(client, prefix+"dpop:")
+	seen, err = dpop.Seen(t.Context(), "shared", 1500*time.Millisecond)
+	require.NoError(t, err)
+	require.False(t, seen)
+	ttl, err = client.Do(t.Context(), client.B().Ttl().Key(prefix+"dpop:shared").Build()).AsInt64()
+	require.NoError(t, err)
+	require.EqualValues(t, 2, ttl)
 }

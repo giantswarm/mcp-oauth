@@ -1,9 +1,9 @@
 # Private key client authentication
 
 Confidential clients can authenticate with `private_key_jwt` (RFC 7523 §2.2,
-OIDC Core §9). The authorization code flow still requires S256 PKCE. Assertions
-authenticate the client; they do not grant access to an MCP resource or replace
-its access token.
+updated by RFC 10070 §4, and OIDC Core §9). The authorization code flow still
+requires S256 PKCE. Assertions authenticate the client; they do not grant access
+to an MCP resource or replace its access token.
 
 Register with the existing registration bearer token:
 
@@ -48,14 +48,17 @@ Do not send Basic credentials or a client secret alongside an assertion.
 
 Discovery advertises authentication methods and signing algorithms separately
 for the token, revocation and introspection endpoints. Lifecycle authentication
-uses registered or configured clients without fetching a submitted metadata URL.
+does not fetch a submitted metadata URL; public CIMD revocation uses the issued
+token's client binding, and confidential authentication uses registered keys.
 Revocation verifies token ownership before invalidating a token or its family.
 
 Claims must contain `iss = sub = client_id`, `exp`, `iat` and a unique
-nonempty `jti`. An optional form `client_id` must match. The audience may be a
-string or array containing either the exact configured token endpoint URL or
-the exact issuer identifier. No URL normalization or request-host inference is
-performed. These audiences also apply at revocation and introspection.
+nonempty `jti`. An optional form `client_id` must match. The audience is the exact
+authorization-server issuer identifier, expressed as a string or a one-element
+array. The token endpoint and additional audience values are rejected. No URL
+normalization or request-host inference is performed. The same issuer audience
+applies at revocation and introspection. New clients should use the protected
+`typ` header `client-authentication+jwt`; an absent `typ` alone is not rejected.
 
 Requiring `iat` and enforcing `0 < exp - iat <= 300 seconds` are this server's
 local security policy, stricter than the baseline OIDC assertion definition.
