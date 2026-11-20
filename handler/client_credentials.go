@@ -7,6 +7,9 @@ import (
 )
 
 func validateClientCredentialShape(request *http.Request) error {
+	if hasClientAssertion(request) && (request.Header.Get("Authorization") != "" || request.Form.Has("client_secret")) {
+		return oauth.ErrInvalidRequest("Multiple client authentication methods")
+	}
 	if len(request.Form["client_id"]) > 1 {
 		return oauth.ErrInvalidRequest("Multiple client identifiers")
 	}

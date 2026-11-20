@@ -108,7 +108,7 @@ var (
 	SupportedCodeChallengeMethods = []string{"S256"}
 
 	// SupportedTokenAuthMethods are the supported token endpoint auth methods
-	SupportedTokenAuthMethods = []string{"client_secret_basic", "client_secret_post", "none"}
+	SupportedTokenAuthMethods = []string{"client_secret_basic", "client_secret_post", "none", "private_key_jwt"}
 )
 
 // OAuth client types

@@ -137,7 +137,7 @@ func TestSliceConstants(t *testing.T) {
 	})
 
 	t.Run("SupportedTokenAuthMethods", func(t *testing.T) {
-		expected := []string{"client_secret_basic", "client_secret_post", "none"}
+		expected := []string{"client_secret_basic", "client_secret_post", "none", "private_key_jwt"}
 		if len(SupportedTokenAuthMethods) != len(expected) {
 			t.Errorf("len(SupportedTokenAuthMethods) = %d, want %d", len(SupportedTokenAuthMethods), len(expected))
 		}

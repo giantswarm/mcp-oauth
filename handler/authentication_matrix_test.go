@@ -1,6 +1,9 @@
 package handler
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -11,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/require"
 
 	oauth "github.com/giantswarm/mcp-oauth"
@@ -22,14 +27,24 @@ import (
 type matrixClient struct {
 	client            *storage.Client
 	secret            string
+	key               *ecdsa.PrivateKey
 	registrationToken string
 }
 
 func newMatrixClient(t *testing.T, handler *Handler, method string) matrixClient {
 	t.Helper()
-	registered, err := handler.server.RegisterClientV2(t.Context(), "matrix", "confidential", method, []string{"https://example.com/callback"}, []string{"mcp"}, "192.0.2.1", 100)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
-	return matrixClient{client: registered.Client, secret: registered.ClientSecret, registrationToken: registered.RegistrationToken}
+	var keys json.RawMessage
+	algorithm := ""
+	if method == "private_key_jwt" {
+		algorithm = "ES256"
+		keys, err = json.Marshal(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &key.PublicKey, KeyID: "matrix", Algorithm: algorithm, Use: "sig"}}})
+		require.NoError(t, err)
+	}
+	registered, err := handler.server.RegisterClientWithKeys(t.Context(), "matrix", "confidential", method, []string{"https://example.com/callback"}, []string{"mcp"}, "192.0.2.1", 100, keys, algorithm)
+	require.NoError(t, err)
+	return matrixClient{client: registered.Client, secret: registered.ClientSecret, key: key, registrationToken: registered.RegistrationToken}
 }
 
 func matrixTokenRequest(t *testing.T, handler *Handler, client matrixClient, method string, form url.Values, mutations ...func(*http.Request)) *httptest.ResponseRecorder {
@@ -47,6 +62,13 @@ func matrixClientRequest(t *testing.T, handler *Handler, endpoint string, client
 	switch method {
 	case "client_secret_post":
 		form.Set("client_secret", secret)
+	case "private_key_jwt":
+		signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: jose.JSONWebKey{Key: client.key, KeyID: "matrix"}}, nil)
+		require.NoError(t, err)
+		assertion, err := jwt.Signed(signer).Claims(jwt.Claims{Issuer: client.client.ClientID, Subject: client.client.ClientID, Audience: jwt.Audience{handler.server.Config.TokenEndpoint()}, IssuedAt: jwt.NewNumericDate(time.Now()), Expiry: jwt.NewNumericDate(time.Now().Add(time.Minute)), ID: rand.Text()}).Serialize()
+		require.NoError(t, err)
+		form.Set("client_assertion_type", server.ClientAssertionTypeJWTBearer)
+		form.Set("client_assertion", assertion)
 	}
 	request := httptest.NewRequest(http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -69,7 +91,7 @@ func matrixClientRequest(t *testing.T, handler *Handler, endpoint string, client
 }
 
 func TestAuthenticationMethodMissingAndMixedCredentials(t *testing.T) {
-	for _, method := range []string{"client_secret_basic", "client_secret_post"} {
+	for _, method := range []string{"client_secret_basic", "client_secret_post", "private_key_jwt"} {
 		t.Run(method, func(t *testing.T) {
 			handler, store := setupTestHandler(t)
 			t.Cleanup(store.Stop)
@@ -92,7 +114,7 @@ func TestAuthenticationMethodMissingAndMixedCredentials(t *testing.T) {
 }
 
 func TestAuthenticationMethodMatrix(t *testing.T) {
-	methods := []string{"client_secret_basic", "client_secret_post"}
+	methods := []string{"client_secret_basic", "client_secret_post", "private_key_jwt"}
 	for _, registeredMethod := range methods {
 		for _, presentedMethod := range methods {
 			t.Run(registeredMethod+"/"+presentedMethod, func(t *testing.T) {

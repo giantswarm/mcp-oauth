@@ -116,6 +116,10 @@ func (h *Handler) buildClientResponseBody(client *storage.Client) map[string]any
 		"response_types":             client.ResponseTypes,
 		"registration_client_uri":    h.server.Config.Issuer + server.EndpointPathClientManagement + client.ClientID,
 	}
+	if len(client.JWKS) > 0 {
+		body["jwks"] = client.JWKS
+		body["token_endpoint_auth_signing_alg"] = client.TokenEndpointAuthSigningAlg
+	}
 	if !client.UpdatedAt.IsZero() {
 		body["client_updated_at"] = client.UpdatedAt.Unix()
 	}
@@ -178,7 +182,12 @@ func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Reque
 	updated.RedirectURIs = req.RedirectURIs
 	updated.Scopes = req.Scopes
 	updated.TokenEndpointAuthMethod = req.TokenEndpointAuthMethod
+	updated.JWKS = req.JWKS
+	updated.TokenEndpointAuthSigningAlg = req.TokenEndpointAuthSigningAlg
 	switch updated.TokenEndpointAuthMethod {
+	case server.TokenEndpointAuthMethodPrivateKeyJWT:
+		updated.ClientType = server.ClientTypeConfidential
+		updated.ClientSecretHash = ""
 	case server.TokenEndpointAuthMethodNone:
 		updated.ClientType = server.ClientTypePublic
 		updated.ClientSecretHash = ""

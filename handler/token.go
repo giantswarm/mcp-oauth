@@ -337,6 +337,14 @@ func formDecode(value string) string {
 // too: a client that does not form-encode its credentials sends a secret
 // holding '+' or '%' unchanged.
 func (h *Handler) validateBasicClientSecret(ctx context.Context, r *http.Request, clientID string) error {
+	client, lookupError := h.server.GetRegisteredClient(ctx, clientID)
+	if lookupError != nil {
+		return lookupError
+	}
+	if client.TokenEndpointAuthMethod == server.TokenEndpointAuthMethodPrivateKeyJWT {
+		h.logAuthFailure(ctx, client.ClientID, r.RemoteAddr, "assertion_required", "Client authentication failed")
+		return oauth.ErrInvalidClient("Client authentication failed")
+	}
 	_, sent, _ := r.BasicAuth()
 	decoded := formDecode(sent)
 	err := h.server.ValidateClientCredentials(ctx, clientID, decoded)
@@ -401,6 +409,9 @@ func (h *Handler) authenticateClientWithLookup(r *http.Request, clientID, client
 		h.logAuthFailure(r.Context(), clientID, clientIP, "client_credentials_malformed", "Client authentication failed")
 		return nil, err
 	}
+	if hasClientAssertion(r) {
+		return h.authenticateAssertion(r, clientID, clientIP)
+	}
 	basicClientID, basicClientSecret := h.parseBasicAuth(r)
 	formClientID := clientID
 
@@ -446,6 +457,10 @@ func (h *Handler) authenticateClientWithLookup(r *http.Request, clientID, client
 // validateConfidentialClient validates credentials for confidential clients.
 func (h *Handler) validateConfidentialClient(r *http.Request, client *storage.Client, secret, clientIP string) error {
 	ctx := r.Context()
+	if client.TokenEndpointAuthMethod == server.TokenEndpointAuthMethodPrivateKeyJWT {
+		h.logAuthFailure(ctx, client.ClientID, clientIP, "assertion_required", "Client authentication failed")
+		return oauth.ErrInvalidClient("Client authentication failed")
+	}
 	if !client.IsConfidential() {
 		return nil
 	}
