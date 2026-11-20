@@ -340,22 +340,11 @@ func (s *Server) logSelfIssuedJWTAccepted(ctx context.Context, tokenString strin
 }
 
 // revokeSelfIssuedJWT extracts the jti and exp from a self-issued JWT and
-// writes them to RevokedTokenStore. Returns true when the input was
-// recognized as a self-issued JWT (regardless of whether the denylist
-// write succeeded — RFC 7009 forbids surfacing the difference); returns
-// false when the input is not a JWT or not one we issued, so the caller
-// can fall through to opaque revocation.
-func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID, clientIP string) bool {
+// writes them to RevokedTokenStore. The boolean identifies self-issued JWTs;
+// errors distinguish unavailable revocation storage from invalid tokens.
+func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID, clientIP string) (bool, error) {
 	if !s.Config.IsJWTAccessTokenFormat() || !s.looksLikeSelfIssuedJWT(tokenString) {
-		return false
-	}
-	if s.revokedTokenStore == nil {
-		// Operator was warned at startup; we still consume the bearer so
-		// the caller does not also try opaque revocation, which would log
-		// a misleading "token not found" path.
-		s.Logger.Warn("Cannot revoke self-issued JWT: RevokedTokenStore not configured",
-			"token_suffix", helpers.TokenSuffix(tokenString, 8))
-		return true
+		return false, nil
 	}
 
 	_, claims, err := s.parseAndVerifyJWTSignature(tokenString)
@@ -365,26 +354,28 @@ func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID,
 		s.Logger.Debug("Self-issued JWT revocation: signature/parse failed",
 			logKeyError, err,
 			"token_suffix", helpers.TokenSuffix(tokenString, 8))
-		return true
+		return true, nil
 	}
 	jti, _ := claims[claimJTI].(string)
 	if owner, _ := claims[paramClientID].(string); owner == "" || owner != clientID {
-		return true
+		return true, nil
 	}
 	expVal, _ := claims["exp"].(float64)
 	if jti == "" || expVal == 0 {
 		s.Logger.Debug("Self-issued JWT missing jti or exp during revocation",
 			"token_suffix", helpers.TokenSuffix(tokenString, 8))
-		return true
+		return true, nil
 	}
-	expiresAt := time.Unix(int64(expVal), 0)
+	expiresAt := time.Unix(int64(expVal), 0).Add(time.Duration(s.Config.ClockSkewGracePeriod) * time.Second)
+	if !expiresAt.After(time.Now()) {
+		return true, nil
+	}
+	if s.revokedTokenStore == nil {
+		return true, s.storageUnavailable(ctx, "revoke JWT", clientID, "", errors.New("JWT revocation store is not configured"))
+	}
 
 	if err := s.revokedTokenStore.RevokeJTI(ctx, jti, expiresAt); err != nil {
-		s.Logger.Warn("Failed to write revoked JWT jti to denylist",
-			logKeyError, err,
-			claimJTI, jti,
-			"token_suffix", helpers.TokenSuffix(tokenString, 8))
-		return true
+		return true, s.storageUnavailable(ctx, "revoke JWT", clientID, "", err)
 	}
 
 	userID, _ := claims[claimSub].(string)
@@ -403,7 +394,7 @@ func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID,
 		paramClientID, clientID,
 		"ip", clientIP,
 		"expires_at", expiresAt)
-	return true
+	return true, nil
 }
 
 // logSelfIssuedJWTAuthFailure records a hard rejection for audit trails.

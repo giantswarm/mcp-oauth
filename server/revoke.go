@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"time"
@@ -41,9 +42,9 @@ func (s *Server) unregisterTokenPairIfPresent(token string) {
 // Three input shapes are accepted:
 //   - Self-issued JWT access token: jti is added to RevokedTokenStore so
 //     the next ValidateToken call rejects it. The denylist entry
-//     auto-expires at the JWT's own exp.
+//     expires after the JWT's expiration and configured clock-skew allowance.
 //   - Opaque access token: TokenStore deletion.
-//   - Refresh token: TokenStore deletion + family revocation.
+//   - Refresh token: family invalidation and associated-token deletion.
 //
 // Per RFC 7009 §2.2 revocation always returns success when the token is
 // not found or already invalid — clients have no way to distinguish "this
@@ -51,14 +52,14 @@ func (s *Server) unregisterTokenPairIfPresent(token string) {
 // "revocation succeeded", and surfacing those distinctions enables token
 // scanning attacks.
 func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP string) error {
-	if s.revokeSelfIssuedJWT(ctx, token, clientID, clientIP) {
-		return nil
-	}
-	owned, err := s.revocationClientMatches(ctx, token, clientID)
-	if err != nil {
+	if recognized, err := s.revokeSelfIssuedJWT(ctx, token, clientID, clientIP); recognized {
 		return err
 	}
-	if !owned {
+	owner, family, err := s.revocationTokenOwner(ctx, token)
+	if err != nil {
+		return s.storageUnavailable(ctx, "read revocation token owner", clientID, "", err)
+	}
+	if owner == "" || owner != clientID {
 		return nil
 	}
 
@@ -75,10 +76,6 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 		}
 	}
 
-	// Look up family metadata BEFORE deleting the token, since DeleteToken may
-	// remove data that GetRefreshTokenFamily depends on in some store implementations.
-	family, famErr := s.lookupRefreshTokenFamily(ctx, token)
-
 	// Delete locally. Unified layout: the token's reference AND its
 	// refresh-token record are removed. The record is what the refresh grant
 	// gates on (GetRefreshTokenInfo / AtomicConsumeRefreshToken), and family
@@ -88,36 +85,34 @@ func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP stri
 	// provider entry stays, since the user's other sessions still resolve to
 	// it (matching the legacy behavior where each session held its own copy
 	// and only this one was deleted).
-	if upts, unified := s.userProviderTokenStore(); unified {
-		if err := upts.DeleteProviderTokenRef(ctx, token); err != nil {
-			s.Logger.Warn("Failed to delete provider token reference", logKeyError, err)
-		}
-		if err := s.tokenStore.DeleteRefreshToken(ctx, token); err != nil {
-			s.Logger.Warn("Failed to delete refresh token record", logKeyError, err)
-		}
-	} else if err := s.tokenStore.DeleteToken(ctx, token); err != nil {
-		s.Logger.Warn("Failed to delete token locally", logKeyError, err)
-	}
+	deleteError := s.deleteRevokedToken(ctx, token)
 	s.unregisterTokenPairIfPresent(token)
-
-	if famErr != nil {
-		// Transient storage failure: we cannot know whether the token belongs
-		// to a family whose sibling tokens must also be revoked. The presented
-		// token itself was invalidated above; surface the failure instead of
-		// silently treating it as "no family" — RFC 7009 §2.2 mandates success
-		// for invalid TOKENS, not for storage outages (the HTTP handler owns
-		// the transport response and logs this error).
-		s.Logger.Error("Failed to look up refresh token family during revocation",
-			paramClientID, clientID, "ip", clientIP, logKeyError, famErr)
-		return fmt.Errorf("token revocation incomplete: refresh token family lookup failed: %w", famErr)
+	familyError := s.revokeTokenFamilyIfNeeded(ctx, family, clientID, clientIP)
+	if err := errors.Join(deleteError, familyError); err != nil {
+		return s.storageUnavailable(ctx, "revoke token", clientID, "", err)
 	}
-
-	s.revokeTokenFamilyIfNeeded(ctx, family, clientID, clientIP)
 
 	s.Auditor.LogTokenRevoked(ctx, "", clientID, clientIP, "access_or_refresh")
 
 	s.Logger.Debug("Token revoked", paramClientID, clientID, "ip", clientIP)
 	return nil
+}
+
+func (s *Server) deleteRevokedToken(ctx context.Context, token string) error {
+	if store, unified := s.userProviderTokenStore(); unified {
+		return errors.Join(
+			revocationWriteError(store.DeleteProviderTokenRef(ctx, token)),
+			revocationWriteError(s.tokenStore.DeleteRefreshToken(ctx, token)),
+		)
+	}
+	return revocationWriteError(s.tokenStore.DeleteToken(ctx, token))
+}
+
+func revocationWriteError(err error) error {
+	if storage.IsNotFoundError(err) || storage.IsExpiredError(err) {
+		return nil
+	}
+	return err
 }
 
 // lookupRefreshTokenFamily returns the family metadata for token, or
@@ -140,17 +135,22 @@ func (s *Server) lookupRefreshTokenFamily(ctx context.Context, token string) (*s
 	return f, nil
 }
 
-func (s *Server) revokeTokenFamilyIfNeeded(ctx context.Context, family *storage.RefreshTokenFamilyMetadata, clientID, clientIP string) {
-	if family == nil || family.Revoked {
-		return
+func (s *Server) revokeTokenFamilyIfNeeded(ctx context.Context, family *storage.RefreshTokenFamilyMetadata, clientID, clientIP string) error {
+	if family == nil {
+		return nil
 	}
 	familyStore, ok := s.tokenStore.(storage.RefreshTokenFamilyStore)
 	if !ok {
-		return
+		return nil
 	}
-	if err := familyStore.RevokeRefreshTokenFamily(ctx, family.FamilyID); err != nil {
-		s.Logger.Warn("Failed to revoke refresh token family", logKeyFamilyID, family.FamilyID, logKeyError, err)
-		return
+	var revocationError error
+	if store, ok := s.tokenStore.(storage.TokenFamilyRevocationStore); ok {
+		_, revocationError = store.RevokeTokensForFamily(ctx, family.UserID, clientID, family.FamilyID)
+	} else {
+		revocationError = familyStore.RevokeRefreshTokenFamily(ctx, family.FamilyID)
+	}
+	if revocationError != nil {
+		return revocationError
 	}
 	s.Logger.Debug("Revoked refresh token family on explicit revocation",
 		logKeyFamilyID, family.FamilyID, paramClientID, clientID, "ip", clientIP)
@@ -169,6 +169,7 @@ func (s *Server) revokeTokenFamilyIfNeeded(ctx context.Context, family *storage.
 			"ip":           clientIP,
 		},
 	})
+	return nil
 }
 
 // RevokeAllTokensForUserClient revokes all tokens (access + refresh) for a specific user+client combination.

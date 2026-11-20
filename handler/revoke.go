@@ -15,6 +15,7 @@ import (
 	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
+	"github.com/giantswarm/mcp-oauth/storage"
 )
 
 // authenticateRevocationClient resolves the client for /revoke. It enforces
@@ -34,7 +35,9 @@ func (h *Handler) authenticateRevocationClient(w http.ResponseWriter, r *http.Re
 		h.writeError(w, constants.ErrorCodeInvalidClient, "Client identification required", http.StatusUnauthorized)
 		return "", false, false
 	}
-	client, err := h.authenticateRegisteredClient(r, formClientID, clientIP)
+	client, err := h.authenticateClientWithLookup(r, formClientID, clientIP, func(ctx context.Context, clientID string) (*storage.Client, error) {
+		return h.server.GetRevocationClient(ctx, clientID)
+	})
 	if err != nil {
 		h.writeEndpointClientAuthenticationError(w, r, endpointRevoke, "", span, startTime, err)
 		return "", false, false

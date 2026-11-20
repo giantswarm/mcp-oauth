@@ -2,6 +2,11 @@
 
 RFC 7592 extends Dynamic Client Registration (RFC 7591) with a per-client management endpoint. Clients that registered dynamically can read, update, or delete their own registration without operator involvement.
 
+An update must include the registered client ID. If `client_secret` is supplied,
+it must match the issued secret; empty, null and mismatched values are rejected
+without changing metadata or rotating the registration access token. Standard
+`scope` strings use RFC 6749 scope tokens separated by single ASCII spaces.
+
 Deleting a registration permanently retires its client ID. Memory and Valkey keep a revocation marker, and issued opaque and self-issued JWT access tokens are checked against that marker on every validation. Existing access tokens, refresh requests and further client authentication are refused after deletion; another client's grants remain usable. A storage read failure returns an unavailable response instead of accepting a token or presenting an outage as invalid credentials.
 
 Retired IDs cannot be registered again. Provision a new client for replacement; use metadata updates for signing-key rotation without deleting the client. Valkey stores the compact marker in the client record without an expiry, so replica reconnects do not lose retirement state. Persistence and backup policies must preserve these records: restoring an older snapshot can restore older authorization state. Upgrade all authorization-server replicas before relying on this behavior; old binaries do not check retirement markers.
@@ -9,6 +14,17 @@ Retired IDs cannot be registered again. Provision a new client for replacement; 
 Custom client stores must implement `storage.ClientRevocationStore` for server-side deletion. A store without that capability cannot complete a deletion that would leave its access tokens valid. This capability does not revoke the shared upstream identity-provider token, which may serve other clients belonging to the same person.
 
 Losing revocation state can make previously retired, unexpired self-issued JWTs validate again if their signing keys are retained. After a wipe or rollback, JWT deployments must replace the access-token signing keys or keep protected traffic closed until previously issued tokens have expired. Opaque grants depend on stored token records, which a complete wipe removes.
+
+Token revocation identifies public CIMD clients without fetching metadata, even
+on a replica with no cached metadata. Token ownership is checked before mutation;
+unknown, already revoked and other-client tokens receive the same HTTP 200 response.
+With built-in stores, revoking a refresh token invalidates its family's access
+tokens while leaving other families and clients usable.
+A storage write failure returns HTTP 503 with `Retry-After`; retry the same
+revocation because some writes may already have completed. Unknown, invalid and
+other-client tokens retain the RFC 7009 success response for authenticated clients.
+Client deletion and rejected use of a deleted client's tokens emit audit reasons
+`client_deleted` and `client_revoked`.
 
 ## Enabling
 

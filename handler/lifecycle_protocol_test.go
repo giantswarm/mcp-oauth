@@ -87,7 +87,7 @@ func TestClientAuthenticationEndpointMatrix(t *testing.T) {
 }
 
 func TestManagementReplacementValidation(t *testing.T) {
-	for _, invalid := range []string{"missing identity", "different identity", "different secret", "missing redirects", "unsafe redirect", "invalid name", "scope conflict"} {
+	for _, invalid := range []string{"missing identity", "different identity", "different secret", "empty secret", "null secret", "missing redirects", "unsafe redirect", "invalid name", "scope conflict"} {
 		t.Run(invalid, func(t *testing.T) {
 			handler := setupManagementHandler(t)
 			clientID, registrationToken := registerAndExtractToken(t, handler)
@@ -99,6 +99,10 @@ func TestManagementReplacementValidation(t *testing.T) {
 				metadata["client_id"] = "another-client"
 			case "different secret":
 				metadata["client_secret"] = "not-the-registered-secret"
+			case "empty secret":
+				metadata["client_secret"] = ""
+			case "null secret":
+				metadata["client_secret"] = nil
 			case "missing redirects":
 				delete(metadata, "redirect_uris")
 			case "unsafe redirect":
@@ -173,7 +177,11 @@ func TestLifecycleAuthenticationDoesNotFetchMetadata(t *testing.T) {
 	handler.server.Config.ClientMetadataRootCAs.AddCert(metadataServer.Certificate())
 	for _, endpoint := range []string{server.EndpointPathRevoke, server.EndpointPathIntrospect} {
 		response := matrixClientRequest(t, handler, endpoint, matrixClient{client: &storage.Client{ClientID: clientID}}, "none", url.Values{"token": {"unissued"}})
-		require.Equal(t, http.StatusUnauthorized, response.Code, response.Body.String())
+		expected := http.StatusUnauthorized
+		if endpoint == server.EndpointPathRevoke {
+			expected = http.StatusOK
+		}
+		require.Equal(t, expected, response.Code, response.Body.String())
 	}
 	request := httptest.NewRequest(http.MethodGet, server.EndpointPathClientManagement+clientID, nil)
 	request.Header.Set("Authorization", "Bearer unissued-registration-token")

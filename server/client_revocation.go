@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 
+	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
@@ -16,6 +17,10 @@ func (s *Server) checkClientRevocation(ctx context.Context, clientID string) err
 		return s.storageUnavailable(ctx, "read client revocation", clientID, "", err)
 	}
 	if revoked {
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type: security.EventAuthFailure, ClientID: clientID,
+			Details: map[string]any{logKeyReason: "client_revoked", logKeySeverity: severityWarning},
+		})
 		return errInvalidAccessToken
 	}
 	return nil

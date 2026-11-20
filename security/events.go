@@ -54,6 +54,9 @@ const (
 	// EventClientRegistered is logged when a new OAuth client is registered
 	EventClientRegistered = "client_registered"
 
+	// EventClientDeleted is logged after a client ID is permanently retired.
+	EventClientDeleted = "client_deleted"
+
 	// EventClientRegisteredViaTrustedScheme is logged when a client is registered without a token
 	// because it uses only trusted custom URI schemes (e.g., cursor://, vscode://).
 	// This enables compatibility with MCP clients that don't support registration tokens.

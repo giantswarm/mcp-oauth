@@ -239,7 +239,7 @@ func (s *Server) validatePublicClientPKCE(ctx context.Context, client *storage.C
 			UserID:   authCode.UserID,
 			ClientID: client.ClientID,
 			Details: map[string]any{
-				logKeySeverity: "warning", "client_type": client.ClientType, "config": "AllowPublicClientsWithoutPKCE=true",
+				logKeySeverity: severityWarning, "client_type": client.ClientType, "config": "AllowPublicClientsWithoutPKCE=true",
 			},
 		})
 	}

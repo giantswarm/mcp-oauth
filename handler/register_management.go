@@ -155,9 +155,12 @@ func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Reque
 		h.writeError(w, "invalid_client_metadata", "client_id must match the authenticated registration", http.StatusBadRequest)
 		return
 	}
-	if req.ClientSecret != "" && bcrypt.CompareHashAndPassword([]byte(existing.ClientSecretHash), []byte(req.ClientSecret)) != nil {
-		h.writeError(w, "invalid_client_metadata", "client_secret must match the registered credential", http.StatusBadRequest)
-		return
+	if len(req.ClientSecret) != 0 {
+		var clientSecret string
+		if json.Unmarshal(req.ClientSecret, &clientSecret) != nil || bcrypt.CompareHashAndPassword([]byte(existing.ClientSecretHash), []byte(clientSecret)) != nil {
+			h.writeError(w, "invalid_client_metadata", "client_secret must match the registered credential", http.StatusBadRequest)
+			return
+		}
 	}
 	if req.TokenEndpointAuthMethod == "" {
 		req.TokenEndpointAuthMethod = server.TokenEndpointAuthMethodBasic

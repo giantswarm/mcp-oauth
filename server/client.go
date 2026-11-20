@@ -292,7 +292,14 @@ func (s *Server) DeleteClient(ctx context.Context, clientID string) error {
 	if _, ok := s.clientStore.(storage.ClientRevocationStore); !ok {
 		return fmt.Errorf("client store does not support durable client revocation")
 	}
-	return s.clientStore.DeleteClient(ctx, clientID)
+	if err := s.clientStore.DeleteClient(ctx, clientID); err != nil {
+		return err
+	}
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type: security.EventClientDeleted, ClientID: clientID,
+		Details: map[string]any{logKeyReason: "client_deleted", logKeySeverity: "info"},
+	})
+	return nil
 }
 
 // CanRegisterWithTrustedScheme checks if a registration request can proceed without

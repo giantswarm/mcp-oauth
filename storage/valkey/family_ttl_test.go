@@ -167,7 +167,7 @@ func TestRevokedFamilySet_RetainedWhenMemberStateUnknown(t *testing.T) {
 		Key(store.refreshTokenMetaKey(token)).Value("not-json").
 		ExSeconds(3600).Build()).Error())
 
-	require.NoError(t, store.RevokeRefreshTokenFamily(ctx, familyID))
+	require.Error(t, store.RevokeRefreshTokenFamily(ctx, familyID))
 
 	retentionSeconds := int64((time.Duration(store.revokedFamilyRetentionDays) * 24 * time.Hour).Seconds())
 	require.Greater(t, ttlSeconds(t, store, familySetKey), retentionSeconds-60,

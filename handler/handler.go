@@ -288,9 +288,8 @@ func (h *Handler) writeError(w http.ResponseWriter, code, description string, st
 
 // writeStorageUnavailable answers a request that could not be processed
 // because the token store did not answer (server.ErrStorageUnavailable): 503
-// with a Retry-After header and no WWW-Authenticate challenge. The presented grant or bearer was neither validated nor
-// rejected and nothing was consumed, so the client retries the same request;
-// it must not read the answer as a dead token. endpoint and method label the
+// with a Retry-After header and no WWW-Authenticate challenge. Clients retry
+// the same request, including partially completed revocations. endpoint and method label the
 // HTTP metric; span may be nil (the bearer middleware runs without one). The
 // metric and span are recorded here, so the caller returns right after. The
 // log line names the endpoint only: the server logged the failed operation

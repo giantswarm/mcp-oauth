@@ -32,14 +32,14 @@ const (
 
 // clientRegistrationRequest represents the JSON request for client registration
 type clientRegistrationRequest struct {
-	ClientID                string   `json:"client_id"`
-	ClientSecret            string   `json:"client_secret"`
-	Scope                   string   `json:"scope"`
-	ClientName              string   `json:"client_name"`
-	ClientType              string   `json:"client_type"`
-	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
-	RedirectURIs            []string `json:"redirect_uris"`
-	Scopes                  []string `json:"scopes"`
+	ClientID                string          `json:"client_id"`
+	ClientSecret            json.RawMessage `json:"client_secret"`
+	Scope                   string          `json:"scope"`
+	ClientName              string          `json:"client_name"`
+	ClientType              string          `json:"client_type"`
+	TokenEndpointAuthMethod string          `json:"token_endpoint_auth_method"`
+	RedirectURIs            []string        `json:"redirect_uris"`
+	Scopes                  []string        `json:"scopes"`
 }
 
 // checkClientRegistrationRateLimit checks if client registration is rate limited
@@ -278,7 +278,11 @@ func (h *Handler) validateClientMetadata(w http.ResponseWriter, req *clientRegis
 			h.writeError(w, "invalid_client_metadata", "Invalid scope metadata", http.StatusBadRequest)
 			return fmt.Errorf("invalid scope metadata")
 		}
-		req.Scopes = strings.Fields(req.Scope)
+		req.Scopes = strings.Split(req.Scope, " ")
+	}
+	if err := helpers.ValidateScopes(req.Scopes); err != nil {
+		h.writeError(w, "invalid_client_metadata", "Invalid scope metadata", http.StatusBadRequest)
+		return err
 	}
 	return nil
 }

@@ -172,7 +172,7 @@ func (s *Server) handleSharedProviderTokenError(ctx context.Context, err error, 
 	s.Auditor.LogEvent(ctx, security.Event{
 		Type: security.EventAuthFailure, UserID: userID, ClientID: clientID,
 		Details: map[string]any{
-			logKeySeverity: "warning",
+			logKeySeverity: severityWarning,
 			logKeyReason:   reason,
 			logKeyAction:   "re_login_required",
 		},
