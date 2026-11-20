@@ -48,12 +48,12 @@ func TestClientSecretPostAuthentication(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
-			_, authenticated, err := handler.authenticateRefreshTokenClient(t.Context(), httptest.NewRecorder(), request, client.ClientID, "192.0.2.1", time.Now(), trace.SpanFromContext(t.Context()))
+			authenticatedClient, err := handler.authenticateRefreshTokenClient(t.Context(), httptest.NewRecorder(), request, client.ClientID, "192.0.2.1", time.Now(), trace.SpanFromContext(t.Context()))
 			if test.wantError {
 				require.Error(t, err)
 			} else {
 				require.NoError(t, err)
-				require.True(t, authenticated)
+				require.True(t, authenticatedClient.IsConfidential())
 			}
 		})
 	}

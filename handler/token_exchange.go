@@ -8,7 +8,6 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
-	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -63,20 +62,7 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 
 	dpopJKT, err := h.extractDPoPJKT(r)
 	if err != nil {
-		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
-		instrumentation.SetSpanError(span, "dpop proof invalid")
-		if errors.Is(err, server.ErrDPoPNonceInvalid) {
-			if provider := h.server.DPoPNonceProvider(); provider != nil {
-				w.Header().Set("DPoP-Nonce", provider.Nonce(r.Context()))
-			}
-			h.logAuthFailure(r.Context(), "", clientIP, "token_exchange_dpop_nonce_required",
-				"token exchange: dpop nonce required")
-			h.writeError(w, constants.ErrorCodeUseDPoPNonce, "A DPoP nonce is required.", http.StatusBadRequest)
-			return
-		}
-		h.logAuthFailure(r.Context(), "", clientIP, "token_exchange_dpop_proof_invalid",
-			"token exchange: dpop proof invalid")
-		h.writeError(w, constants.ErrorCodeInvalidDPoPProof, err.Error(), http.StatusBadRequest)
+		h.writeTokenDPoPError(w, r, server.GrantTypeTokenExchange, "", span, startTime, err)
 		return
 	}
 
@@ -114,22 +100,7 @@ func (h *Handler) handleBrokeredTokenExchange(
 ) {
 	client, err := h.authenticateClient(r, r.Form.Get("client_id"), clientIP)
 	if err != nil {
-		if errors.Is(err, server.ErrStorageUnavailable) {
-			h.writeTokenStorageUnavailable(w, r, server.GrantTypeTokenExchange, span, startTime, err)
-			return
-		}
-		instrumentation.RecordError(span, err)
-		instrumentation.SetSpanError(span, "client authentication failed")
-		var oauthErr *oauth.Error
-		if errors.As(err, &oauthErr) {
-			h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, oauthErr.Code)
-			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, oauthErr.Status, startTime)
-			h.writeError(w, oauthErr.Code, oauthErr.Description, oauthErr.Status)
-		} else {
-			h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, constants.ErrorCodeInvalidClient)
-			h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusUnauthorized, startTime)
-			h.writeError(w, constants.ErrorCodeInvalidClient, "Client authentication failed", http.StatusUnauthorized)
-		}
+		h.writeClientAuthenticationError(w, r, server.GrantTypeTokenExchange, span, startTime, err)
 		return
 	}
 
@@ -298,11 +269,15 @@ func (h *Handler) writeTokenExchangeResponse(w http.ResponseWriter, result *serv
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 
 	expiresIn := max(int64(time.Until(result.ExpiresAt).Seconds()), 0)
+	tokenType := result.TokenType
+	if tokenType == "" {
+		tokenType = tokenTypeBearer
+	}
 
 	response := map[string]any{
 		"access_token":      result.AccessToken,
 		"issued_token_type": result.IssuedTokenType,
-		"token_type":        tokenTypeBearer,
+		"token_type":        tokenType,
 		"expires_in":        expiresIn,
 	}
 	if result.Scope != "" {

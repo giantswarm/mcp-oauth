@@ -522,6 +522,13 @@ type ClientRevocationStore interface {
 	IsClientRevoked(ctx context.Context, clientID string) (bool, error)
 }
 
+// ClientRegistrationUpdater atomically replaces a registration only if its
+// registration token and secret hashes still match the authenticated version.
+// A stale or deleted registration returns ErrInvalidClientCredentials.
+type ClientRegistrationUpdater interface {
+	UpdateClientRegistration(ctx context.Context, client *Client, registrationTokenHash, clientSecretHash string) error
+}
+
 // ClientIPTracker is an optional capability implemented by ClientStore
 // implementations that can record the most recent client IP per client_id.
 type ClientIPTracker interface {
@@ -630,6 +637,7 @@ type Client struct {
 	TokenEndpointAuthSigningAlg string
 	ClientID                    string
 	ClientSecretHash            string // bcrypt hash
+	ClientSecretEncrypted       string // AES-GCM envelope keyed by the registration access token
 	ClientType                  string // ClientTypePublic or ClientTypeConfidential
 	RedirectURIs                []string
 	TokenEndpointAuthMethod     string
@@ -726,6 +734,7 @@ type TokenMetadata struct {
 	ClientID    string         // Client who owns this token
 	IssuedAt    time.Time      // Issuer-set: the instant the token was issued
 	ExpiresAt   time.Time      // Issuer-set: the instant the token expires; zero means unknown
+	RetainUntil time.Time      // Minimum family revocation-state horizon, including acceptance clock skew
 	TokenType   string         // "access", "refresh", or "id"
 	Audience    string         // RFC 8707: Intended resource server identifier (for audience validation)
 	Scopes      []string       // MCP 2025-11-25: Scopes granted to this token (for scope validation)

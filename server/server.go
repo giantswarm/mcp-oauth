@@ -443,7 +443,16 @@ func (s *Server) saveTokenMetadata(ctx context.Context, tokenID string, metadata
 	if !ok {
 		return errors.New("token store does not support token metadata writes")
 	}
+	if !metadata.ExpiresAt.IsZero() {
+		horizon := metadata.ExpiresAt.Add(time.Duration(s.Config.ClockSkewGracePeriod) * time.Second)
+		if horizon.After(metadata.RetainUntil) {
+			metadata.RetainUntil = horizon
+		}
+	}
 	if err := store.SaveTokenMetadata(ctx, tokenID, metadata); err != nil {
+		if errors.Is(err, storage.ErrRefreshTokenFamilyRevoked) {
+			return errInvalidGrant
+		}
 		return s.storageUnavailable(ctx, "save token metadata", metadata.ClientID, metadata.UserID, err)
 	}
 	return nil

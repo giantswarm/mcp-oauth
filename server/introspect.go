@@ -126,7 +126,7 @@ var jwtStandardClaims = map[string]struct{}{
 func introspectionResponseFromJWTClaims(claims map[string]any, tokenBoundClient string) map[string]any {
 	response := map[string]any{
 		fieldActive:    true,
-		fieldTokenType: tokenTypeBearer,
+		fieldTokenType: tokenTypeForKeyBinding(confirmationJKTFromClaims(claims)),
 	}
 	if tokenBoundClient != "" {
 		response[paramClientID] = tokenBoundClient
@@ -204,7 +204,7 @@ func (s *Server) introspectOpaqueToken(ctx context.Context, accessToken, request
 func (s *Server) introspectionResponseFromOpaqueToken(_ context.Context, _ string, tokenMetadata *storage.TokenMetadata, userInfo *providers.UserInfo) map[string]any {
 	response := map[string]any{
 		fieldActive:    true,
-		fieldTokenType: tokenTypeBearer,
+		fieldTokenType: tokenTypeForKeyBinding(tokenMetadata.JKT),
 		paramClientID:  tokenMetadata.ClientID,
 		claimSub:       userInfo.ID,
 		claimIss:       s.Config.Issuer,
@@ -229,8 +229,13 @@ func (s *Server) introspectionResponseFromOpaqueToken(_ context.Context, _ strin
 	if !tokenMetadata.ExpiresAt.IsZero() {
 		response["exp"] = tokenMetadata.ExpiresAt.Unix()
 	}
+	if tokenMetadata.JKT != "" {
+		response["cnf"] = map[string]any{"jkt": tokenMetadata.JKT}
+	}
 	for k, v := range tokenMetadata.ExtraClaims {
-		response[k] = v
+		if _, reserved := jwtStandardClaims[k]; !reserved {
+			response[k] = v
+		}
 	}
 	return response
 }

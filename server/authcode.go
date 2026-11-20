@@ -1390,7 +1390,7 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 		Expiry:       expiry,
-		TokenType:    tokenTypeBearer,
+		TokenType:    tokenTypeForKeyBinding(dpopJKT),
 	}
 
 	// OIDC Compliance: Forward id_token from upstream provider to client
@@ -1512,6 +1512,9 @@ func (s *Server) trackRefreshTokenFamily(ctx context.Context, refreshToken, user
 			familyID = generateRandomToken()
 		}
 		if err := familyStore.SaveRefreshTokenWithFamily(ctx, refreshToken, userID, clientID, familyID, 0, refreshTokenExpiry); err != nil {
+			if errors.Is(err, storage.ErrRefreshTokenFamilyRevoked) {
+				return errInvalidGrant
+			}
 			return s.storageUnavailable(ctx, "save refresh token family", clientID, userID, err)
 		} else {
 			s.Logger.Debug("Created new refresh token family", "user_id", userID, logKeyFamilyID, helpers.SafeTruncate(familyID, 8))

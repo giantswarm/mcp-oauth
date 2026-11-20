@@ -67,7 +67,7 @@ func TestFamilyRevocationPropagatesMemberFailuresAndRetries(t *testing.T) {
 			require.Positive(t, wrapped.failures.Load())
 			presented, err := store.GetRefreshTokenFamily(t.Context(), "presented")
 			require.NoError(t, err)
-			require.True(t, presented.Revoked)
+			require.Equal(t, failure != "index retention", presented.Revoked)
 			wrapped.enabled.Store(false)
 			require.NoError(t, oauthServer.RevokeToken(t.Context(), "presented", "client", "192.0.2.1"))
 			if failure == "legacy metadata read" {

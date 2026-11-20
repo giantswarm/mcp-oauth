@@ -74,8 +74,11 @@ func (s *Server) RegisterClientV2(ctx context.Context, clientName, clientType, t
 
 // RegisterClientWithKeys registers a client with validated inline signing credentials.
 func (s *Server) RegisterClientWithKeys(ctx context.Context, clientName, clientType, tokenEndpointAuthMethod string, redirectURIs []string, scopes []string, clientIP string, maxClientsPerIP int, jwks json.RawMessage, algorithm string) (*RegisterClientResult, error) {
-	if tokenEndpointAuthMethod == TokenEndpointAuthMethodPrivateKeyJWT && clientType == ClientTypePublic {
-		return nil, errors.New("private_key_jwt requires a confidential client")
+	if clientType != "" && clientType != ClientTypePublic && clientType != ClientTypeConfidential {
+		return nil, fmt.Errorf("unsupported client type")
+	}
+	if clientType == ClientTypePublic && tokenEndpointAuthMethod != "" && tokenEndpointAuthMethod != TokenEndpointAuthMethodNone {
+		return nil, fmt.Errorf("public clients must use token_endpoint_auth_method none")
 	}
 	if err := ValidateClientKeyMetadata(tokenEndpointAuthMethod, jwks, algorithm, ""); err != nil {
 		return nil, err
@@ -119,6 +122,9 @@ func (s *Server) RegisterClientWithKeys(ctx context.Context, clientName, clientT
 		Scopes:                      scopes,
 		CreatedAt:                   now,
 		RegistrationAccessTokenHash: registrationTokenHash,
+	}
+	if err := s.EncryptClientSecret(client, clientSecret, registrationToken); err != nil {
+		return nil, fmt.Errorf("protect client credential: %w", err)
 	}
 
 	if err := s.clientStore.SaveClient(ctx, client); err != nil {

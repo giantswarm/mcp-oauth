@@ -260,6 +260,14 @@ func (h *Handler) parseAndValidateRegistrationRequest(w http.ResponseWriter, r *
 }
 
 func (h *Handler) validateClientMetadata(w http.ResponseWriter, req *clientRegistrationRequest, clientIP string) error {
+	if req.ClientType != "" && req.ClientType != server.ClientTypePublic && req.ClientType != server.ClientTypeConfidential {
+		h.writeError(w, "invalid_client_metadata", "unsupported client_type", http.StatusBadRequest)
+		return fmt.Errorf("unsupported client type")
+	}
+	if req.ClientType == server.ClientTypePublic && req.TokenEndpointAuthMethod != "" && req.TokenEndpointAuthMethod != server.TokenEndpointAuthMethodNone {
+		h.writeError(w, "invalid_client_metadata", "public clients must use token_endpoint_auth_method none", http.StatusBadRequest)
+		return fmt.Errorf("public client authentication method conflict")
+	}
 	if err := helpers.ValidateClientName(req.ClientName); err != nil {
 		h.logger.Warn("Invalid client_name in registration request",
 			"client_name_length", len(req.ClientName), paramError, err, "ip", clientIP)
@@ -267,11 +275,6 @@ func (h *Handler) validateClientMetadata(w http.ResponseWriter, req *clientRegis
 		return err
 	}
 
-	if req.TokenEndpointAuthMethod == server.TokenEndpointAuthMethodPrivateKeyJWT && req.ClientType == server.ClientTypePublic {
-		err := fmt.Errorf("private_key_jwt requires a confidential client")
-		h.writeError(w, "invalid_client_metadata", err.Error(), http.StatusBadRequest)
-		return err
-	}
 	if err := server.ValidateClientKeyMetadata(req.TokenEndpointAuthMethod, req.JWKS, req.TokenEndpointAuthSigningAlg, req.JWKSURI); err != nil {
 		h.writeError(w, "invalid_client_metadata", err.Error(), http.StatusBadRequest)
 		return err
