@@ -120,10 +120,8 @@ func TestAtomicGates_BackendParity(t *testing.T) {
 				_, _, err = active.GetActiveRefreshTokenByFamily(t.Context(), familyID)
 				require.ErrorIs(t, err, storage.ErrRefreshTokenFamilyRevoked)
 
-				// A rotation that raced the revocation walk adds a member the
-				// walk never marked. The family must still read as revoked.
-				require.NoError(t, families.SaveRefreshTokenWithFamily(
-					t.Context(), familyID+"-rt1", "user-parity", "client-parity", familyID, 1, expiry))
+				require.ErrorIs(t, families.SaveRefreshTokenWithFamily(
+					t.Context(), familyID+"-rt1", "user-parity", "client-parity", familyID, 1, expiry), storage.ErrRefreshTokenFamilyRevoked)
 
 				meta, err = byID.GetRefreshTokenFamilyByID(t.Context(), familyID)
 				require.NoError(t, err)

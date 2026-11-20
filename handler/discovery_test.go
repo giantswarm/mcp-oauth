@@ -1144,12 +1144,13 @@ func TestHandler_ServeAuthorizationServerMetadata_EnhancedFields(t *testing.T) {
 	}
 
 	// Verify token_endpoint_auth_methods_supported
-	if len(meta.TokenEndpointAuthMethodsSupported) != 3 {
-		t.Errorf("len(TokenEndpointAuthMethodsSupported) = %d, want 3", len(meta.TokenEndpointAuthMethodsSupported))
+	if len(meta.TokenEndpointAuthMethodsSupported) != 4 {
+		t.Errorf("len(TokenEndpointAuthMethodsSupported) = %d, want 4", len(meta.TokenEndpointAuthMethodsSupported))
 	}
 	expectedAuthMethods := map[string]bool{
 		"client_secret_basic": true,
 		"client_secret_post":  true,
+		"private_key_jwt":     true,
 		"none":                true,
 	}
 	for _, method := range meta.TokenEndpointAuthMethodsSupported {

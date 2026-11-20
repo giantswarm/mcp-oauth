@@ -18,6 +18,7 @@ const (
 const (
 	severityHigh     = "high"
 	severityCritical = "critical"
+	severityWarning  = "warning"
 )
 
 // actionFamilyRevoked is the audited action of a refresh-token or
@@ -44,7 +45,15 @@ const (
 	fieldActive     = "active"
 	fieldTokenType  = "token_type"
 	tokenTypeBearer = "Bearer"
+	tokenTypeDPoP   = "DPoP"
 )
+
+func tokenTypeForKeyBinding(thumbprint string) string {
+	if thumbprint != "" {
+		return tokenTypeDPoP
+	}
+	return tokenTypeBearer
+}
 
 // oauthSpecSection412 cites the OAuth 2.1 section that mandates revoking all
 // tokens derived from a reused authorization code; attached to audit events.

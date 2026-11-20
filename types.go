@@ -1,5 +1,7 @@
 package oauth
 
+import "encoding/json"
+
 // ProtectedResourceMetadata represents OAuth 2.0 Protected Resource Metadata (RFC 9728)
 type ProtectedResourceMetadata struct {
 	// Resource is the identifier for the protected resource
@@ -34,6 +36,7 @@ type ErrorResponse struct {
 
 // AuthorizationServerMetadata represents OAuth 2.0 Authorization Server Metadata (RFC 8414)
 type AuthorizationServerMetadata struct {
+	TokenEndpointAuthSigningAlgValuesSupported []string `json:"token_endpoint_auth_signing_alg_values_supported,omitempty"`
 	// Issuer is the authorization server's issuer identifier URL
 	Issuer string `json:"issuer"`
 
@@ -62,10 +65,14 @@ type AuthorizationServerMetadata struct {
 	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
 
 	// RevocationEndpoint is the URL of the OAuth 2.0 token revocation endpoint (RFC 7009)
-	RevocationEndpoint string `json:"revocation_endpoint,omitempty"`
+	RevocationEndpoint                              string   `json:"revocation_endpoint,omitempty"`
+	RevocationEndpointAuthMethodsSupported          []string `json:"revocation_endpoint_auth_methods_supported,omitempty"`
+	RevocationEndpointAuthSigningAlgValuesSupported []string `json:"revocation_endpoint_auth_signing_alg_values_supported,omitempty"`
 
 	// IntrospectionEndpoint is the URL of the OAuth 2.0 token introspection endpoint (RFC 7662)
-	IntrospectionEndpoint string `json:"introspection_endpoint,omitempty"`
+	IntrospectionEndpoint                              string   `json:"introspection_endpoint,omitempty"`
+	IntrospectionEndpointAuthMethodsSupported          []string `json:"introspection_endpoint_auth_methods_supported,omitempty"`
+	IntrospectionEndpointAuthSigningAlgValuesSupported []string `json:"introspection_endpoint_auth_signing_alg_values_supported,omitempty"`
 
 	// ClientIDMetadataDocumentSupported indicates support for Client ID Metadata Documents (MCP 2025-11-25)
 	ClientIDMetadataDocumentSupported bool `json:"client_id_metadata_document_supported,omitempty"`
@@ -94,6 +101,8 @@ type AuthorizationServerMetadata struct {
 
 // ClientRegistrationRequest represents a dynamic client registration request
 type ClientRegistrationRequest struct {
+	JWKS                        json.RawMessage `json:"jwks,omitempty"`
+	TokenEndpointAuthSigningAlg string          `json:"token_endpoint_auth_signing_alg,omitempty"`
 	// RedirectURIs is the array of redirection URIs for use in redirect-based flows
 	RedirectURIs []string `json:"redirect_uris,omitempty"`
 
@@ -117,12 +126,14 @@ type ClientRegistrationRequest struct {
 
 	// ClientType indicates if this is a "public" or "confidential" client
 	// Public clients (mobile, SPA) can use "none" auth method
-	// Confidential clients (server-side) must use client_secret_basic or client_secret_post
+	// Confidential clients authenticate with a client secret or private_key_jwt
 	ClientType string `json:"client_type,omitempty"`
 }
 
 // ClientRegistrationResponse represents a dynamic client registration response
 type ClientRegistrationResponse struct {
+	JWKS                        json.RawMessage `json:"jwks,omitempty"`
+	TokenEndpointAuthSigningAlg string          `json:"token_endpoint_auth_signing_alg,omitempty"`
 	// ClientID is the unique client identifier
 	ClientID string `json:"client_id"`
 

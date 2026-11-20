@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -73,6 +74,7 @@ func TestServeClientManagement_GET(t *testing.T) {
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
 	require.Equal(t, clientID, resp["client_id"])
 	require.Contains(t, resp, "registration_client_uri")
+	require.Equal(t, token, resp["registration_access_token"])
 }
 
 func TestServeClientManagement_GET_WrongToken(t *testing.T) {
@@ -97,7 +99,7 @@ func TestServeClientManagement_GET_UnknownClient(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.ServeClientManagement(w, req)
 
-	require.Equal(t, http.StatusNotFound, w.Code)
+	require.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
 func TestServeClientManagement_GET_MissingBearer(t *testing.T) {
@@ -117,7 +119,7 @@ func TestServeClientManagement_PUT(t *testing.T) {
 	h := setupManagementHandler(t)
 	clientID, token := registerAndExtractToken(t, h)
 
-	body := `{"client_name":"updated-name"}`
+	body := fmt.Sprintf(`{"client_id":%q,"client_name":"updated-name","redirect_uris":["testapp://oauth/callback"]}`, clientID)
 	req := httptest.NewRequest(http.MethodPut, server.EndpointPathClientManagement+clientID, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -142,7 +144,7 @@ func TestServeClientManagement_PUT_OldTokenInvalidAfterRotation(t *testing.T) {
 	clientID, token := registerAndExtractToken(t, h)
 
 	// Rotate via PUT.
-	body := `{"client_name":"rotated"}`
+	body := fmt.Sprintf(`{"client_id":%q,"client_name":"rotated","redirect_uris":["testapp://oauth/callback"]}`, clientID)
 	putReq := httptest.NewRequest(http.MethodPut, server.EndpointPathClientManagement+clientID, strings.NewReader(body))
 	putReq.Header.Set("Authorization", "Bearer "+token)
 	putReq.RemoteAddr = testClientRemoteAddr
@@ -170,13 +172,12 @@ func TestServeClientManagement_DELETE(t *testing.T) {
 
 	require.Equal(t, http.StatusNoContent, w.Code)
 
-	// Subsequent GET must 404.
 	getReq := httptest.NewRequest(http.MethodGet, server.EndpointPathClientManagement+clientID, nil)
 	getReq.Header.Set("Authorization", "Bearer "+token)
 	getReq.RemoteAddr = testClientRemoteAddr
 	w2 := httptest.NewRecorder()
 	h.ServeClientManagement(w2, getReq)
-	require.Equal(t, http.StatusNotFound, w2.Code)
+	require.Equal(t, http.StatusUnauthorized, w2.Code)
 }
 
 func TestServeClientManagement_MethodNotAllowed(t *testing.T) {

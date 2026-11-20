@@ -72,6 +72,7 @@ type TokenRefreshHandler func(ctx context.Context, userID, familyID string, newT
 // Server implements the OAuth 2.1 server logic (provider-agnostic).
 // It coordinates the OAuth flow using a Provider and storage backends.
 type Server struct {
+	clientAssertionReplayStore    ClientAssertionReplayStore
 	provider                      providers.Provider
 	tokenStore                    storage.TokenStore
 	clientStore                   storage.ClientStore
@@ -216,6 +217,9 @@ func New(
 
 	srv.registerSelfIssuedSubjectValidator()
 
+	if srv.clientAssertionReplayStore == nil {
+		srv.clientAssertionReplayStore = NewMemoryClientAssertionReplayStore()
+	}
 	if srv.dpopReplayCache == nil {
 		srv.dpopReplayCache = NewMemoryDPoPReplayCache()
 	}
@@ -439,7 +443,16 @@ func (s *Server) saveTokenMetadata(ctx context.Context, tokenID string, metadata
 	if !ok {
 		return errors.New("token store does not support token metadata writes")
 	}
+	if !metadata.ExpiresAt.IsZero() {
+		horizon := metadata.ExpiresAt.Add(time.Duration(s.Config.ClockSkewGracePeriod) * time.Second)
+		if horizon.After(metadata.RetainUntil) {
+			metadata.RetainUntil = horizon
+		}
+	}
 	if err := store.SaveTokenMetadata(ctx, tokenID, metadata); err != nil {
+		if errors.Is(err, storage.ErrRefreshTokenFamilyRevoked) {
+			return errInvalidGrant
+		}
 		return s.storageUnavailable(ctx, "save token metadata", metadata.ClientID, metadata.UserID, err)
 	}
 	return nil

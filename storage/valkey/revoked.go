@@ -6,32 +6,17 @@ import (
 	"time"
 )
 
-// revokedJTIKey returns the key under which a revoked jti is recorded:
-// {prefix}revoked:{jti}. Auto-expires at the JWT's original exp time so
-// the denylist stays bounded.
+// revokedJTIKey identifies a denylist entry by its jti.
 func (s *Store) revokedJTIKey(jti string) string {
 	return fmt.Sprintf("%srevoked:%s", s.prefix, jti)
 }
 
-// RevokeJTI implements storage.RevokedTokenStore by writing a sentinel
-// value at revokedJTIKey(jti) with a relative TTL derived from the JWT's
-// expiresAt via calculateTTL (clamped to a >=1s floor), so the entry
-// auto-expires at/just after the JWT's own exp. The value is intentionally
-// minimal — presence is the signal; the JWT itself already carries every
-// other claim. RFC 7009 treats revocation of an already-expired token as a
-// no-op, so we drop those without a round-trip.
+// RevokeJTI retains a denylist entry through expiresAt, including the caller's clock-skew allowance.
 func (s *Store) RevokeJTI(ctx context.Context, jti string, expiresAt time.Time) (err error) {
 	if jti == "" {
 		return fmt.Errorf("jti cannot be empty")
 	}
 
-	// calculateTTL is the single source of truth for the already-expired check:
-	// RFC 7009 treats revoking an already-expired token as a no-op, so we drop
-	// those here without starting a traced op or a round-trip. It also clamps a
-	// positive sub-second TTL up to a 1s floor; without that a JWT revoked in its
-	// final second before exp would build "EX 0" (valkey-go's Ex() truncates to
-	// whole seconds) and Valkey would reject the write, silently failing to
-	// denylist the JTI.
 	ttl := calculateTTL(expiresAt)
 	if ttl <= 0 {
 		return nil
@@ -41,7 +26,7 @@ func (s *Store) RevokeJTI(ctx context.Context, jti string, expiresAt time.Time) 
 	defer op.end(&err)
 
 	key := s.revokedJTIKey(jti)
-	cmd := s.client.B().Set().Key(key).Value("1").Ex(ttl).Build()
+	cmd := s.client.B().Set().Key(key).Value("1").ExSeconds(ceilSeconds(ttl)).Build()
 	if err = s.client.Do(op.ctx, cmd).Error(); err != nil {
 		return fmt.Errorf("revoke jti: %w", err)
 	}

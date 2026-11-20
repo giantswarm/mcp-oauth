@@ -2,6 +2,7 @@ package instrumentation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -132,6 +133,10 @@ type Instrumentation struct {
 	// Shutdown functions (must be registered during New() only, not thread-safe after initialization)
 	shutdownFuncs []func(context.Context) error
 	shutdownOnce  sync.Once
+
+	storageCallbackMu sync.Mutex
+	storageCallbacks  []metric.Registration
+	shutdownStarted   bool
 }
 
 // New creates a new instrumentation instance
@@ -372,6 +377,7 @@ func (i *Instrumentation) Shutdown(ctx context.Context) error {
 	var shutdownErr error
 
 	i.shutdownOnce.Do(func() {
+		shutdownErr = i.unregisterStorageSizeCallbacks()
 		// Call all registered shutdown functions
 		for _, fn := range i.shutdownFuncs {
 			if err := fn(ctx); err != nil {
@@ -384,6 +390,20 @@ func (i *Instrumentation) Shutdown(ctx context.Context) error {
 	})
 
 	return shutdownErr
+}
+
+func (i *Instrumentation) unregisterStorageSizeCallbacks() error {
+	i.storageCallbackMu.Lock()
+	i.shutdownStarted = true
+	registrations := i.storageCallbacks
+	i.storageCallbacks = nil
+	i.storageCallbackMu.Unlock()
+
+	var unregisterErrors []error
+	for _, registration := range registrations {
+		unregisterErrors = append(unregisterErrors, registration.Unregister())
+	}
+	return errors.Join(unregisterErrors...)
 }
 
 // Meter returns a named meter for the given scope
@@ -469,6 +489,11 @@ type StorageSizeCallback func() int64
 func (i *Instrumentation) RegisterStorageSizeCallbacks(
 	tokensCount, clientsCount, flowsCount, familiesCount, refreshTokensCount StorageSizeCallback,
 ) error {
+	i.storageCallbackMu.Lock()
+	defer i.storageCallbackMu.Unlock()
+	if i.shutdownStarted {
+		return fmt.Errorf("instrumentation is shut down")
+	}
 	if i.meterProvider == nil {
 		return fmt.Errorf("meter provider not initialized")
 	}
@@ -476,7 +501,7 @@ func (i *Instrumentation) RegisterStorageSizeCallbacks(
 	meter := i.Meter("storage")
 
 	// Register callbacks for each gauge
-	_, err := meter.RegisterCallback(
+	registration, err := meter.RegisterCallback(
 		func(_ context.Context, observer metric.Observer) error {
 			if tokensCount != nil {
 				observer.ObserveInt64(i.metrics.StorageTokensCount, tokensCount())
@@ -502,5 +527,8 @@ func (i *Instrumentation) RegisterStorageSizeCallbacks(
 		i.metrics.StorageRefreshTokensCount,
 	)
 
+	if registration != nil {
+		i.storageCallbacks = append(i.storageCallbacks, registration)
+	}
 	return err
 }

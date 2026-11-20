@@ -377,13 +377,14 @@ func (h *Handler) serveAuthServerMetadata(w http.ResponseWriter, r *http.Request
 // /.well-known/openid-configuration (OIDC Discovery 1.0 §3).
 func (h *Handler) buildAuthServerMetadata() map[string]any {
 	metadata := map[string]any{
-		"issuer":                                h.server.Config.Issuer,
-		"authorization_endpoint":                h.server.Config.AuthorizationEndpoint(),
-		"token_endpoint":                        h.server.Config.TokenEndpoint(),
-		"response_types_supported":              oauth.DefaultResponseTypes,
-		"grant_types_supported":                 []string{grantTypeAuthorizationCode, grantTypeRefreshToken, server.GrantTypeTokenExchange},
-		"code_challenge_methods_supported":      []string{constants.PKCEMethodS256},
-		"token_endpoint_auth_methods_supported": oauth.SupportedTokenAuthMethods,
+		"issuer":                                           h.server.Config.Issuer,
+		"authorization_endpoint":                           h.server.Config.AuthorizationEndpoint(),
+		"token_endpoint":                                   h.server.Config.TokenEndpoint(),
+		"response_types_supported":                         oauth.DefaultResponseTypes,
+		"grant_types_supported":                            []string{grantTypeAuthorizationCode, grantTypeRefreshToken, server.GrantTypeTokenExchange},
+		"code_challenge_methods_supported":                 []string{constants.PKCEMethodS256},
+		"token_endpoint_auth_methods_supported":            oauth.SupportedTokenAuthMethods,
+		"token_endpoint_auth_signing_alg_values_supported": []string{server.SigningAlgorithmES256, server.SigningAlgorithmRS256, "PS256"},
 		// RFC 9207: advertise that authorization responses include the `iss` parameter
 		// so clients can verify the response came from the expected authorization server.
 		"authorization_response_iss_parameter_supported": true,
@@ -422,10 +423,14 @@ func (h *Handler) addOptionalMetadata(metadata map[string]any) {
 
 	if h.server.Config.EnableRevocationEndpoint {
 		metadata["revocation_endpoint"] = h.server.Config.RevocationEndpoint()
+		metadata["revocation_endpoint_auth_methods_supported"] = oauth.SupportedTokenAuthMethods
+		metadata["revocation_endpoint_auth_signing_alg_values_supported"] = metadata["token_endpoint_auth_signing_alg_values_supported"]
 	}
 
 	if h.server.Config.EnableIntrospectionEndpoint {
 		metadata["introspection_endpoint"] = h.server.Config.IntrospectionEndpoint()
+		metadata["introspection_endpoint_auth_methods_supported"] = []string{server.TokenEndpointAuthMethodBasic, server.TokenEndpointAuthMethodPost, server.TokenEndpointAuthMethodPrivateKeyJWT}
+		metadata["introspection_endpoint_auth_signing_alg_values_supported"] = metadata["token_endpoint_auth_signing_alg_values_supported"]
 	}
 
 	if h.server.Config.EnableUserInfoEndpoint {

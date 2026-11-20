@@ -6,41 +6,72 @@ DPoP (Demonstrating Proof of Possession) binds access tokens to a client's priva
 
 At issuance, when the client includes a `DPoP` proof header in the token request, the server:
 
-1. Validates the proof (signature, `htm`, `htu`, `iat`, `jti`, `ath` claims).
+1. Validates the proof (signature, `htm`, `htu`, `iat`, and `jti` claims).
 2. Computes the JWK thumbprint (`jkt`) of the proof key.
 3. Embeds `cnf: { jkt: "<thumbprint>" }` in the issued JWT access token, or stores the JKT in `storage.TokenMetadata` for opaque tokens.
+4. Returns `token_type: DPoP`. Introspection includes the same type and `cnf.jkt`.
 
-At every subsequent API call, the `DPoPMiddleware` enforces that:
+A public client's bound refresh token requires a fresh proof from the original
+key on every refresh. Missing, malformed, duplicate and wrong-key proofs do not
+consume the grant. Confidential clients authenticate separately; each refresh
+can select a new DPoP access-token key, or obtain a Bearer access token by
+omitting the proof. Memory and Valkey preserve token key bindings.
+
+The token handlers validate proofs before calling `RefreshAccessTokenWithDPoP`
+with authenticated client metadata. Direct calls to `RefreshAccessToken` and
+`RefreshAccessTokenForResource` require the caller to authenticate the client
+and enforce request proof requirements.
+
+At every subsequent API call, `DPoPMiddleware` and `Handler.ValidateToken` enforce that:
 
 - The request carries `Authorization: DPoP <token>` (not `Bearer`).
 - The `DPoP` proof header is present, valid, and its key thumbprint matches the `cnf.jkt` in the token.
 - The proof JTI has not been seen before (replay protection).
+- The `ath` claim matches the presented access token.
 
-If a DPoP-bound token is presented as plain `Authorization: Bearer`, `ValidateToken` rejects it with `401 invalid_token`.
+If a DPoP-bound token is presented as plain `Authorization: Bearer`, `Handler.ValidateToken` rejects it with `401 invalid_token`.
 
 ## Server setup
 
 ```go
 import (
+    "time"
+
+    oauth "github.com/giantswarm/mcp-oauth"
     "github.com/giantswarm/mcp-oauth/server"
-    "github.com/giantswarm/mcp-oauth/storage/valkey"
+    valkeystore "github.com/giantswarm/mcp-oauth/storage/valkey"
+    valkeygo "github.com/valkey-io/valkey-go"
 )
 
-// Single-process: use the built-in memory cache.
-// Multi-pod: back it with the shared Valkey store (same instance used for tokens).
-valkeyStore := valkey.New(...)
-srv, _ := oauth.NewServer(
-    provider, valkeyStore, valkeyStore, valkeyStore,
+replayClient, err := valkeygo.NewClient(valkeygo.ClientOption{
+    InitAddress: []string{"valkey:6379"},
+})
+if err != nil {
+    return err
+}
+replayCache := valkeystore.NewDPoPReplayCache(replayClient, "oauth:dpop:")
+srv, err := oauth.NewServer(
+    provider, tokenStore, clientStore, flowStore,
     &oauth.ServerConfig{Issuer: "https://example.com"},
     logger,
-    server.WithDPoPReplayCache(valkeyStore),           // shared replay cache
-    server.WithDPoPNonceProvider(                       // optional: enforce nonces
+    server.WithDPoPReplayCache(replayCache),
+    server.WithDPoPNonceProvider(
         server.NewHMACNonceProvider(nonceSecret, 5*time.Minute, time.Now),
     ),
 )
+if err != nil {
+    replayClient.Close()
+    return err
+}
 ```
 
-`WithDPoPReplayCache` is optional for single-process deployments — `NewMemoryDPoPReplayCache()` is the default. It is **required** for multi-pod deployments to prevent per-pod replay-cache split-brain.
+The owner closes `replayClient` after the OAuth server shuts down. Configure
+its authentication and TLS for the shared backend. `tokenStore`, `clientStore`
+and `flowStore` are the application's configured stores.
+
+`WithDPoPReplayCache` is optional for single-process deployments;
+`NewMemoryDPoPReplayCache()` is the default. A shared cache is required for
+multi-pod deployments to prevent per-pod replay protection.
 
 ## Wiring the middleware
 
@@ -80,7 +111,14 @@ WWW-Authenticate: DPoP error="use_dpop_nonce", ...
 DPoP-Nonce: <new-nonce>
 ```
 
-The client retries with the supplied nonce. `NewHMACNonceProvider` rotates nonces on a configurable window (e.g., 5 minutes) and accepts proofs from either the current or the previous window to tolerate clock skew and in-flight requests.
+The token endpoint returns HTTP 400 `use_dpop_nonce` with `DPoP-Nonce` for the
+same condition. The client retries with the supplied nonce and a fresh proof.
+`NewHMACNonceProvider` rotates nonces on a configurable window (e.g., 5 minutes)
+and accepts proofs from either the current or the previous window.
+
+A replay-store outage returns HTTP 503 with `Retry-After`, without consuming
+the grant or treating the outage as a malformed proof. The token and resource
+endpoints reject requests containing multiple DPoP proof headers.
 
 ## Supported algorithms
 
@@ -92,11 +130,11 @@ EC keys are recommended for performance. RSA is supported for compatibility.
 
 ## Multi-pod deployments
 
-The replay cache and nonce provider must be **shared** across all pods. Use `valkey.New(...)` (the same store instance used for tokens) as the `DPoPReplayCache`:
+The replay cache and nonce provider must be shared across all pods. Use the
+Valkey replay adapter with the same backend and prefix on every replica:
 
 ```go
-// valkeyStore implements DPoPReplayCache, TokenStore, ClientStore, FlowStore.
-server.WithDPoPReplayCache(valkeyStore)
+server.WithDPoPReplayCache(valkeystore.NewDPoPReplayCache(replayClient, "oauth:dpop:"))
 ```
 
 For the nonce provider, share a common HMAC secret across pods (e.g., from a Kubernetes Secret mounted as an env var). Each pod computes and validates nonces independently from the same key.

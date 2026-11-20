@@ -67,10 +67,8 @@ func TestDexFromEnv_MissingClientID(t *testing.T) {
 // fallback for DEX_REDIRECT_URL: when the explicit redirect URL is unset
 // but OAUTH_ISSUER is set, the loader proceeds (no missing-redirect error)
 // and constructs ${OAUTH_ISSUER}/oauth/callback. We can't read RedirectURL
-// off the constructed *dex.Provider (unexported), so instead we drive the
-// loader to the dex.NewProvider discovery step (set DEX_ISSUER_URL to an
-// unreachable host) and assert the failure surfaces from the network step,
-// not from the missing-redirect check we just bypassed.
+// off the constructed *dex.Provider (unexported). An HTTP issuer exercises
+// provider validation without external DNS or retryable network failures.
 func TestDexFromEnv_DefaultRedirectURLFromIssuer(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -83,17 +81,20 @@ func TestDexFromEnv_DefaultRedirectURLFromIssuer(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			clearProviderEnv(t)
 			t.Setenv("OAUTH_ISSUER", tc.issuer)
-			t.Setenv("OAUTH_DEX_ISSUER_URL", "https://unreachable.invalid.example")
+			t.Setenv("OAUTH_DEX_ISSUER_URL", "http://127.0.0.1")
 			t.Setenv("OAUTH_DEX_CLIENT_ID", "cid")
 			t.Setenv("OAUTH_DEX_CLIENT_SECRET", "secret")
 			// DEX_REDIRECT_URL deliberately unset.
 
 			_, err := oauthconfig.DexFromEnv()
 			if err == nil {
-				t.Fatal("expected dex.NewProvider discovery failure against unreachable host")
+				t.Fatal("expected dex.NewProvider refusal for HTTP issuer")
 			}
 			if strings.Contains(err.Error(), "DEX_REDIRECT_URL") {
 				t.Errorf("expected fallback to OAUTH_ISSUER, got missing-redirect error: %v", err)
+			}
+			if !strings.Contains(err.Error(), "issuer URL must use HTTPS") {
+				t.Errorf("expected non-retryable provider validation, got: %v", err)
 			}
 		})
 	}
@@ -129,21 +130,23 @@ func TestDexFromEnv_MissingClientSecret(t *testing.T) {
 // TestDexFromEnv_SecretFilePrecedence verifies the _FILE variant is honored
 // by the loader. We can't easily assert the specific secret ended up on the
 // provider struct (fields are unexported), but we can verify the loader
-// passes secret-reading and advances to the Dex discovery network call,
-// which will fail with a discovery error — not a secret error.
+// passes secret-reading and reaches non-retryable Dex issuer validation.
 func TestDexFromEnv_SecretFilePrecedence(t *testing.T) {
 	clearProviderEnv(t)
-	t.Setenv("OAUTH_DEX_ISSUER_URL", "https://unreachable.invalid.example")
+	t.Setenv("OAUTH_DEX_ISSUER_URL", "http://127.0.0.1")
 	t.Setenv("OAUTH_DEX_CLIENT_ID", "cid")
 	t.Setenv("OAUTH_DEX_REDIRECT_URL", "https://app.example/callback")
 	t.Setenv("OAUTH_DEX_CLIENT_SECRET_FILE", writeSecretFile(t, "from-file\n"))
 
 	_, err := oauthconfig.DexFromEnv()
 	if err == nil {
-		t.Fatal("expected Dex discovery failure against unreachable host")
+		t.Fatal("expected Dex refusal for HTTP issuer")
 	}
 	if strings.Contains(err.Error(), "CLIENT_SECRET") {
 		t.Errorf("secret stage should not have errored; got %v", err)
+	}
+	if !strings.Contains(err.Error(), "issuer URL must use HTTPS") {
+		t.Errorf("expected non-retryable provider validation, got: %v", err)
 	}
 }
 

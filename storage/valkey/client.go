@@ -37,8 +37,17 @@ func (s *Store) SaveClient(ctx context.Context, client *storage.Client) (err err
 
 	key := s.clientKey(client.ClientID)
 
-	if err = s.client.Do(op.ctx, s.client.B().Set().Key(key).Value(string(data)).Build()).Error(); err != nil {
+	result, err := s.client.Do(op.ctx, s.client.B().Eval().Script(`
+local current = redis.call('GET', KEYS[1])
+if current and cjson.decode(current).revoked then return 0 end
+redis.call('SET', KEYS[1], ARGV[1])
+return 1
+`).Numkeys(1).Key(key).Arg(string(data)).Build()).AsInt64()
+	if err != nil {
 		return fmt.Errorf("failed to save client: %w", err)
+	}
+	if result == 0 {
+		return storage.ErrClientNotFound
 	}
 
 	s.logger.Debug("Saved client", "client_id", client.ClientID)
@@ -53,6 +62,9 @@ func (s *Store) GetClient(ctx context.Context, clientID string) (result *storage
 	result, err = getAndUnmarshal(op.ctx, s, s.clientKey(clientID), storage.ErrClientNotFound, fromClientJSON)
 	if err != nil {
 		return nil, err
+	}
+	if result == nil || result.ClientID == "" {
+		return nil, storage.ErrClientNotFound
 	}
 
 	return result, nil
@@ -193,6 +205,9 @@ func (s *Store) fetchClientByKey(ctx context.Context, key string) (*storage.Clie
 			"error", err)
 		return nil, nil
 	}
+	if j.Revoked {
+		return nil, nil
+	}
 
 	return fromClientJSON(&j), nil
 }
@@ -212,7 +227,12 @@ func (s *Store) DeleteClient(ctx context.Context, clientID string) (err error) {
 	defer op.end(&err)
 
 	key := s.clientKey(clientID)
-	n, err := s.client.Do(op.ctx, s.client.B().Del().Key(key).Build()).AsInt64()
+	n, err := s.client.Do(op.ctx, s.client.B().Eval().Script(`
+local current = redis.call('GET', KEYS[1])
+if not current or cjson.decode(current).revoked then return 0 end
+redis.call('SET', KEYS[1], '{"revoked":true}')
+return 1
+`).Numkeys(1).Key(key).Build()).AsInt64()
 	if err != nil {
 		return fmt.Errorf("failed to delete client: %w", err)
 	}
