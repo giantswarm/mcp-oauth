@@ -453,6 +453,14 @@ func (h *Handler) rejectBasicFormClientIDMismatch(
 // store that did not answer yields server.ErrStorageUnavailable, which callers
 // answer with 503 rather than a client-authentication failure.
 func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string) (*storage.Client, error) {
+	return h.authenticateClientWithLookup(r, clientID, clientIP, h.server.GetClient)
+}
+
+func (h *Handler) authenticateRegisteredClient(r *http.Request, clientID, clientIP string) (*storage.Client, error) {
+	return h.authenticateClientWithLookup(r, clientID, clientIP, h.server.GetRegisteredClient)
+}
+
+func (h *Handler) authenticateClientWithLookup(r *http.Request, clientID, clientIP string, lookup func(context.Context, string) (*storage.Client, error)) (*storage.Client, error) {
 	if err := validateClientCredentialShape(r); err != nil {
 		return nil, err
 	}
@@ -478,7 +486,7 @@ func (h *Handler) authenticateClient(r *http.Request, clientID, clientIP string)
 		return nil, oauth.ErrInvalidRequest("client_id is required")
 	}
 
-	client, err := h.server.GetClient(r.Context(), clientID)
+	client, err := lookup(r.Context(), clientID)
 	if err != nil {
 		if errors.Is(err, server.ErrStorageUnavailable) {
 			return nil, err

@@ -392,3 +392,15 @@ func (s *Server) CanRegisterWithTrustedRedirectURI(redirectURIs []string) (allow
 
 	return true, firstMatch, nil
 }
+
+// GetRegisteredClient loads registered or configured metadata without fetching a URL.
+func (s *Server) GetRegisteredClient(ctx context.Context, clientID string) (*storage.Client, error) {
+	if client, ok := s.preRegisteredClients[clientID]; ok {
+		return clonePreRegisteredClient(client), nil
+	}
+	client, err := s.clientStore.GetClient(ctx, clientID)
+	if storage.IsTransientError(err) {
+		return nil, s.storageUnavailable(ctx, "load registered client", clientID, "", err)
+	}
+	return client, err
+}

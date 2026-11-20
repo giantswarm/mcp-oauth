@@ -34,7 +34,7 @@ func (h *Handler) authenticateRevocationClient(w http.ResponseWriter, r *http.Re
 		h.writeError(w, constants.ErrorCodeInvalidClient, "Client identification required", http.StatusUnauthorized)
 		return "", false, false
 	}
-	client, err := h.authenticateClient(r, formClientID, clientIP)
+	client, err := h.authenticateRegisteredClient(r, formClientID, clientIP)
 	if err != nil {
 		h.writeEndpointClientAuthenticationError(w, r, endpointRevoke, "", span, startTime, err)
 		return "", false, false
@@ -231,7 +231,7 @@ func (h *Handler) authenticateIntrospectionClient(r *http.Request, clientIP stri
 	if r.Form.Get("client_id") == "" && basicClientID == "" {
 		return "", oauth.ErrInvalidClient("Client authentication required for token introspection")
 	}
-	client, err := h.authenticateClient(r, r.Form.Get("client_id"), clientIP)
+	client, err := h.authenticateRegisteredClient(r, r.Form.Get("client_id"), clientIP)
 	if err != nil {
 		return "", err
 	}

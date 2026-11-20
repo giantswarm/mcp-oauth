@@ -68,7 +68,7 @@ func (h *Handler) authenticateManagementRequest(w http.ResponseWriter, r *http.R
 	}
 	bearerToken := parts[1]
 
-	client, err := h.server.GetClient(r.Context(), clientID)
+	client, err := h.server.GetRegisteredClient(r.Context(), clientID)
 	if err != nil {
 		if storage.IsNotFoundError(err) {
 			// Perform a dummy bcrypt comparison to prevent timing-based enumeration.

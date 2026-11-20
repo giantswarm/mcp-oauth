@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"crypto/x509"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/server"
+	"github.com/giantswarm/mcp-oauth/storage"
 )
 
 func TestRevocationAuthenticationAndOwnership(t *testing.T) {
@@ -149,4 +152,37 @@ func TestPublicClientRevocation(t *testing.T) {
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 	_, err := store.GetRefreshTokenInfo(t.Context(), "public-refresh")
 	require.Error(t, err)
+}
+
+func TestLifecycleAuthenticationDoesNotFetchMetadata(t *testing.T) {
+	var fetches atomic.Int32
+	var clientID string
+	metadataServer := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		fetches.Add(1)
+		response.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(response).Encode(map[string]any{"client_id": clientID, "client_name": "public metadata", "redirect_uris": []string{"http://127.0.0.1:7777/callback"}, "token_endpoint_auth_method": "none"}); err != nil {
+			http.Error(response, "metadata encoding failed", http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(metadataServer.Close)
+	clientID = metadataServer.URL + "/client.json"
+	handler := setupManagementHandler(t)
+	handler.server.Config.EnableClientIDMetadataDocuments = true
+	handler.server.Config.AllowPrivateIPClientMetadata = true //nolint:staticcheck // The loopback TLS fixture must be fetchable to detect unexpected requests.
+	handler.server.Config.ClientMetadataRootCAs = x509.NewCertPool()
+	handler.server.Config.ClientMetadataRootCAs.AddCert(metadataServer.Certificate())
+	for _, endpoint := range []string{server.EndpointPathRevoke, server.EndpointPathIntrospect} {
+		response := matrixClientRequest(t, handler, endpoint, matrixClient{client: &storage.Client{ClientID: clientID}}, "none", url.Values{"token": {"unissued"}})
+		require.Equal(t, http.StatusUnauthorized, response.Code, response.Body.String())
+	}
+	request := httptest.NewRequest(http.MethodGet, server.EndpointPathClientManagement+clientID, nil)
+	request.Header.Set("Authorization", "Bearer unissued-registration-token")
+	response := httptest.NewRecorder()
+	handler.ServeClientManagement(response, request)
+	require.Equal(t, http.StatusUnauthorized, response.Code)
+	require.Zero(t, fetches.Load())
+	client, err := handler.server.GetClient(t.Context(), clientID)
+	require.NoError(t, err)
+	require.Equal(t, clientID, client.ClientID)
+	require.EqualValues(t, 1, fetches.Load())
 }
