@@ -10,43 +10,63 @@
 // Base variables, all optional except OAUTH_ISSUER:
 //
 //   - OAUTH_ISSUER                            (required) — server issuer URL
+//
 //   - OAUTH_ALLOW_INSECURE_HTTP               (default false) — permit http:// issuer
 //     (loopback issuers — http://localhost, http://127.0.0.1, http://[::1] —
 //     are exempt from this gate per RFC 8252 §7.3, so dev loops don't have to
 //     enable the global insecure flag)
+//
 //   - OAUTH_ALLOW_PUBLIC_CLIENT_REGISTRATION  (default false)
+//
+//   - OAUTH_ENABLE_CLIENT_ID_METADATA_DOCUMENTS (default false) - enable URL-based client IDs
+//
 //   - OAUTH_REGISTRATION_ACCESS_TOKEN         — registration bearer; see _FILE note below
+//
 //   - OAUTH_ENCRYPTION_KEY                    — 32-byte AES-GCM key, base64 (preferred) or hex
+//
 //   - OAUTH_SESSION_ID_HMAC_KEY               — base64 32-byte HMAC key
 //     (see server.Config.SessionIDHMACKey for the operator caveat)
+//
 //   - OAUTH_FORWARDED_SESSION_IDENTITY        — "bearer" (default) or "principal"
 //     (see server.Config.ForwardedSessionIdentity; validated by server.New)
+//
 //   - OAUTH_ACCESS_TOKEN_TTL                  — Go duration (e.g. "1h")
+//
 //   - OAUTH_REFRESH_TOKEN_TTL                 — Go duration
+//
 //   - OAUTH_MAX_CLIENTS_PER_IP                — positive integer
+//
 //   - OAUTH_TRUST_PROXY                       (default false)
+//
 //   - OAUTH_TRUSTED_AUDIENCES                 — comma-separated audience list
+//
 //   - OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS     deprecated, no effect: loopback redirect URIs are always allowed (RFC 8252 §7.3); false logs a warning
+//
 //   - OAUTH_TRUSTED_REDIRECT_SCHEMES          — comma-separated URI schemes (e.g. "cursor,vscode")
 //     populates server.Config.TrustedPublicRegistrationSchemes
+//
 //   - OAUTH_ALLOW_PRIVATE_IP_CLIENT_METADATA_HOSTS — deprecated: comma-separated hostnames whose CIMD
 //     metadata URLs may resolve to private addresses (server.Config.AllowPrivateIPClientMetadataHosts);
 //     the server logs a warning, pre-register the clients in OAUTH_PRE_REGISTERED_CLIENT_METADATA instead
+//
 //   - OAUTH_PRE_REGISTERED_CLIENT_METADATA    — JSON array of Client ID Metadata Documents, used
 //     without any fetch (server.Config.PreRegisteredClientMetadata)
+//
 //   - OAUTH_RESTRICT_CLIENT_METADATA          (default false) — accept only pre-registered client IDs
 //     and those on OAUTH_CLIENT_METADATA_HOSTS (server.Config.RestrictClientMetadata)
+//
 //   - OAUTH_CLIENT_METADATA_HOSTS             — comma-separated exact hostnames whose documents
 //     OAUTH_RESTRICT_CLIENT_METADATA lets the server fetch (server.Config.ClientMetadataHosts)
 //
-// The CIMD variables need server.Config.EnableClientIDMetadataDocuments, which
-// the consumer sets in code.
 //   - OAUTH_ALLOW_PRIVATE_IP_REDIRECT_URI_HOSTS — comma-separated hostnames whose redirect URIs
 //     may resolve to private addresses (server.Config.AllowPrivateIPRedirectURIHosts)
+//
 //   - OAUTH_ALLOW_PRIVATE_IP_JWKS_HOSTS     — comma-separated hostnames whose forwarded-ID-token
 //     JWKS endpoint may resolve to private addresses (server.Config.AllowPrivateIPJWKSHosts)
+//
 //   - OAUTH_TRUSTED_CLIENTS                   — JSON array of {"client_id", "redirect_uris"}
 //     objects; populates server.Config.TrustedClients (clients that skip the consent page)
+//
 //   - OAUTH_CONSENT_COOKIE_KEY                — 32-byte AES-GCM key for the consent cookies,
 //     base64 or hex; optional override of the store's automatic issuer-specific key
 //

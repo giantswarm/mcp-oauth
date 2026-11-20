@@ -163,6 +163,12 @@ func loadConsentFromEnv(prefix string, cfg *server.Config) error {
 // CLIENT_METADATA_HOSTS. Unknown document fields are ignored, as in a fetched
 // document: a pinned copy of a live document may carry any RFC 7591 field.
 func loadClientMetadataFromEnv(prefix string, cfg *server.Config) error {
+	enabled, err := optionalBool(prefix+"ENABLE_CLIENT_ID_METADATA_DOCUMENTS", false)
+	if err != nil {
+		return err
+	}
+	cfg.EnableClientIDMetadataDocuments = enabled
+
 	if raw := os.Getenv(prefix + "PRE_REGISTERED_CLIENT_METADATA"); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &cfg.PreRegisteredClientMetadata); err != nil {
 			return fmt.Errorf("%sPRE_REGISTERED_CLIENT_METADATA: %w", prefix, err)
