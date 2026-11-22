@@ -40,6 +40,18 @@ Helps clients discover which authorization server protects a resource and what s
 
 **Standard Path**: `/.well-known/oauth-protected-resource`
 
+For a configured resource at `/mcp`, challenges advertise
+`/.well-known/oauth-protected-resource/mcp`. A resource at `/tenant/mcp` uses
+`/.well-known/oauth-protected-resource/tenant/mcp`. The returned metadata names
+the configured resource identifier. Root and existing route aliases remain
+available. A request without credentials receives a Bearer challenge without
+an OAuth error code; a rejected credential receives `invalid_token`.
+
+`ValidateToken` also adds the resource-specific Bearer challenge when a protected
+handler returns 401 without one. It preserves the handler's response body, media
+type and existing challenge. A validated inbound token does not acquire an
+`invalid_token` error merely because the downstream resource rejects it.
+
 ### Configuration
 
 The library automatically exposes this endpoint when you register routes:

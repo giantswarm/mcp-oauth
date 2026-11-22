@@ -233,14 +233,8 @@ type UserInfo struct {
 	// ValidateToken() method to obtain a trusted UserInfo with correct TokenSource.
 	TokenSource TokenSource
 
-	// Issuer is the token issuer URL, populated only for external-issuer tokens
-	// (TokenSourceTrustedIssuer). It identifies the external IdP that
-	// signed the Bearer token (e.g. the cluster's SA OIDC issuer URL). Empty for
-	// Dex-forwarded (TokenSourceSSO) and OAuth-issued (TokenSourceOAuth)
-	// tokens; those are issued by this server's own IdP.
-	//
-	// Downstream servers can use this alongside IsExternalIssuer() to route
-	// to an impersonation path rather than bearer passthrough.
+	// Issuer is the validated bearer issuer. Locally issued opaque tokens
+	// use the authorization server's configured issuer.
 	Issuer string
 
 	// ActorIssuer is the iss field from the RFC 8693 §4.1 act claim. Non-empty
@@ -327,12 +321,8 @@ func (u *UserInfo) IsExternalIssuer() bool {
 	return u != nil && u.TokenSource == TokenSourceTrustedIssuer
 }
 
-// IsOBO returns true if this user is a delegated human identity: an
-// external-issuer Bearer JWT carrying an RFC 8693 §4.1 act claim. UserInfo.ID
-// is the human subject; ActorSubject/ActorIssuer/ActorChain identify the
-// acting party.
-//
-// Returns false for nil receivers and every other token source.
+// IsOBO reports whether the validated identity carries an RFC 8693 actor.
+// UserInfo.ID is the subject; ActorSubject identifies the acting party.
 func (u *UserInfo) IsOBO() bool {
-	return u.IsExternalIssuer() && u.ActorSubject != ""
+	return u != nil && u.ActorSubject != ""
 }

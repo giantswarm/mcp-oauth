@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/giantswarm/mcp-oauth/internal/constants"
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
@@ -63,8 +64,9 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		}
 
 		ctx := contextWithValidatedToken(r.Context(), userInfo, metadata)
+		ctx = context.WithValue(ctx, providerTokenKey{}, validatedProviderToken{bearer: accessToken, source: userInfo.TokenSource, store: h.server.TokenStore()})
 		ctx = ContextWithSessionID(ctx, h.sessionIDForToken(accessToken, metadata))
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(h.protectedResponseWriter(w, r), r.WithContext(ctx))
 	})
 }
 
@@ -94,6 +96,10 @@ func (h *Handler) authenticateBearer(w http.ResponseWriter, r *http.Request, acc
 		return nil, nil, false
 	}
 
+	if userInfo == nil || userInfo.ID == "" || userInfo.Issuer == "" {
+		h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidToken, "Validated identity is incomplete")
+		return nil, nil, false
+	}
 	metadata, err := h.getTokenMetadata(r.Context(), accessToken, userInfo)
 	if err != nil {
 		h.writeStorageUnavailable(w, r, endpointValidateToken, r.Method, nil, startTime, err)
@@ -192,17 +198,17 @@ func (h *Handler) extractBearerToken(w http.ResponseWriter, r *http.Request) (st
 	}
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
-		h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidToken, "Missing Authorization header")
+		h.writeUnauthorizedError(w, r, "", "")
 		return "", false
 	}
 
 	parts := strings.SplitN(authHeader, " ", 2)
-	if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") || strings.TrimSpace(parts[1]) == "" {
 		h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidToken, "Invalid Authorization header format")
 		return "", false
 	}
 
-	return parts[1], true
+	return strings.TrimSpace(parts[1]), true
 }
 
 // writeUnauthorizedError writes a 401 Unauthorized response with endpoint-specific scope guidance.
@@ -232,24 +238,31 @@ func (h *Handler) extractBearerToken(w http.ResponseWriter, r *http.Request) (st
 //   - code: OAuth error code (e.g., "invalid_token")
 //   - description: Human-readable error description
 func (h *Handler) writeUnauthorizedError(w http.ResponseWriter, r *http.Request, code, description string) {
+	h.setUnauthorizedChallenge(w, r, code, description)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	payload := map[string]string{}
+	if code != "" {
+		payload[paramError] = code
+	}
+	if description != "" {
+		payload[paramErrorDescription] = description
+	}
+	h.writeJSON(w, payload)
+}
+
+func (h *Handler) setUnauthorizedChallenge(w http.ResponseWriter, r *http.Request, code, description string) {
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 
 	// MCP 2025-11-25: Include WWW-Authenticate header with endpoint-specific scope guidance
 	if !h.server.Config.DisableWWWAuthenticateMetadata {
 		// Get endpoint-specific scopes (or fallback to defaults)
 		scope := h.getChallengeScopes(r)
-		w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, code, description))
+		w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, code, description, r.URL.Path))
 	} else {
 		// Minimal header for backward compatibility with legacy clients (opt-in)
 		w.Header().Set("WWW-Authenticate", tokenTypeBearer)
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusUnauthorized)
-	h.writeJSON(w, map[string]string{
-		paramError:            code,
-		paramErrorDescription: description,
-	})
 }
 
 // writeInsufficientScopeError writes a 403 Forbidden response with insufficient_scope error.
@@ -270,14 +283,14 @@ func (h *Handler) writeUnauthorizedError(w http.ResponseWriter, r *http.Request,
 //   - w: HTTP response writer
 //   - requiredScopes: List of scopes needed to access the resource
 //   - description: Optional human-readable error description
-func (h *Handler) writeInsufficientScopeError(w http.ResponseWriter, requiredScopes []string, description string) {
+func (h *Handler) writeInsufficientScopeError(w http.ResponseWriter, requiredScopes []string, description string, resourcePaths ...string) {
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 
 	// Build scope string for WWW-Authenticate header
 	scope := strings.Join(requiredScopes, " ")
 
 	// Use formatWWWAuthenticate to build the header with error details
-	w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, constants.ErrorCodeInsufficientScope, description))
+	w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, constants.ErrorCodeInsufficientScope, description, resourcePaths...))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
@@ -302,7 +315,7 @@ func (h *Handler) writeInsufficientScopeError(w http.ResponseWriter, requiredSco
 //	       scope="files:read user:profile",
 //	       error="invalid_token",
 //	       error_description="Token has expired"
-func (h *Handler) formatWWWAuthenticate(scope, errCode, errorDesc string) string {
+func (h *Handler) formatWWWAuthenticate(scope, errCode, errorDesc string, resourcePaths ...string) string {
 	scope = strings.Join(scopesWithoutOfflineAccess(strings.Split(scope, " ")), " ")
 
 	// Build the challenge parameters (excluding the Bearer scheme)
@@ -312,6 +325,11 @@ func (h *Handler) formatWWWAuthenticate(scope, errCode, errorDesc string) string
 	// Note: MCP servers must implement EITHER WWW-Authenticate OR well-known URI discovery.
 	// When using WWW-Authenticate (this implementation), resource_metadata parameter is required.
 	resourceMetadataURL := h.server.Config.ProtectedResourceMetadataEndpoint()
+	if len(resourcePaths) != 0 {
+		if configuration := h.findPathConfig(resourcePaths[0]); configuration != nil {
+			resourceMetadataURL = helpers.ProtectedResourceMetadataURL(configuration.ResourceIdentifier)
+		}
+	}
 	params = append(params, fmt.Sprintf(`resource_metadata="%s"`, resourceMetadataURL))
 
 	// Optional: Include scope if configured
@@ -545,7 +563,7 @@ func (h *Handler) validateTokenScopesFromMetadata(w http.ResponseWriter, r *http
 		}
 		description = fmt.Sprintf("Token lacks required scopes for endpoint %s", safePath)
 	}
-	h.writeInsufficientScopeError(w, requiredScopes, description)
+	h.writeInsufficientScopeError(w, requiredScopes, description, r.URL.Path)
 	return false
 }
 

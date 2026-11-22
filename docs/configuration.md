@@ -2,6 +2,57 @@
 
 This guide covers all configuration options for the mcp-oauth library.
 
+## Resolved setup
+
+`oauthconfig.Setup` accepts resolved settings and constructs the provider, storage,
+authorization server and handler. Exactly one of `Dex`, `Google` or `GitHub` must
+be set. Configuration loaders and CLI flags remain the caller's responsibility;
+the programmatic entry point reads no environment variables.
+
+```go
+runtime, cleanup, err := oauthconfig.Setup(oauthconfig.Settings{
+    Server: &server.Config{Issuer: "https://manager.example.com"},
+    Dex: &dex.Config{
+        IssuerURL:    issuerURL,
+        ClientID:     clientID,
+        ClientSecret: clientSecret,
+        RedirectURL:  "https://manager.example.com/oauth/callback",
+    },
+    RootCAFile: caFile,
+    Logger:     logger,
+})
+if err != nil {
+    return err
+}
+runtime.Handler.RegisterOAuthRoutes(mux, handler.OAuthRoutesOptions{
+    MCPPath: "/mcp", IncludeMetadata: true,
+})
+```
+
+Call `cleanup` with the process shutdown context after HTTP requests drain.
+Cleanup is idempotent. `RootCAFile` extends system trust for Dex and JWKS requests;
+`oauthconfig.LoadRootCAs` provides the same trust pool for other caller-owned HTTP
+clients. Storage defaults to memory. Setting `Valkey` requires an `Encryptor`
+before any persistent connection is opened.
+
+The individual environment loaders retain their environment names and secret-file
+precedence and use the same provider and storage constructors. Valkey storage
+requires encryption through these entry points too.
+
+## Validated request identity
+
+`handler.UserInfoFromContext` exposes `providers.UserInfo` after `ValidateToken`.
+`Issuer` identifies the validated bearer issuer, including forwarded ID tokens
+and locally issued tokens. `IsOBO` recognizes a validated actor for every token
+source, including self-issued access tokens. Applications must use these fields
+for delegation decisions instead of parsing the bearer again.
+
+Wrap a handler with `RequireProviderIDToken` inside `ValidateToken` when it needs
+the provider's ID token. `handler.ProviderIDTokenFromContext` returns that token;
+it never substitutes an access token or application credential. Missing provider
+credentials return 401; storage outages return 503. Applications retain their own
+authorization and token-audience policies.
+
 ## Contents
 
 1. [Server Configuration](#server-configuration)
