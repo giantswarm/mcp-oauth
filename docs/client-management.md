@@ -49,7 +49,7 @@ Build the migration tool from the same library release
 that the OAuth servers will use:
 
 ```bash
-go build -o "$HOME/.cache/tmp/mcp-oauth-migrate-family-revocations" ./examples/migrate-family-revocations
+go build -o "$HOME/.cache/tmp/mcp-oauth-migrate-family-revocations" ./cmd/migrate-family-revocations
 "$HOME/.cache/tmp/mcp-oauth-migrate-family-revocations" \
   -address "$VALKEY_ADDRESS" -key-prefix "$OAUTH_KEY_PREFIX" \
   -password-file /run/secrets/valkey-password -tls -writers-stopped
