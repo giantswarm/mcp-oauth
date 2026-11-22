@@ -10,7 +10,6 @@ import (
 	"github.com/giantswarm/mcp-oauth/oauthconfig/internal/valkeytls"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/storage"
-	"github.com/giantswarm/mcp-oauth/storage/memory"
 	"github.com/giantswarm/mcp-oauth/storage/valkey"
 )
 
@@ -23,8 +22,8 @@ import (
 // for valkey. It is always safe to call and always returns nil (close errors
 // are swallowed and logged by the backend).
 //
-// enc and inst are wired into the store at construction. Both may be nil:
-// omitting enc leaves tokens unencrypted, omitting inst disables OTel.
+// enc and inst are wired into the store at construction. Encryption is
+// optional for memory and required for Valkey. Nil inst disables OTel.
 //
 // Valkey-specific variables (read only when OAUTH_STORAGE_BACKEND=valkey):
 //
@@ -52,82 +51,74 @@ func StorageFromEnv(enc *security.Encryptor, inst *instrumentation.Instrumentati
 // StorageFromEnvWithPrefix("MUSTER_OAUTH_", enc, inst, logger) reads
 // MUSTER_OAUTH_STORAGE_BACKEND and MUSTER_OAUTH_VALKEY_*.
 func StorageFromEnvWithPrefix(prefix string, enc *security.Encryptor, inst *instrumentation.Instrumentation, logger *slog.Logger) (storage.Combined, func() error, error) {
-	backend := os.Getenv(prefix + "STORAGE_BACKEND")
-	if backend == "" {
-		backend = storage.BackendMemory
+	configuration, err := storageConfigFromEnv(prefix)
+	if err != nil {
+		return nil, nil, err
 	}
-
-	switch backend {
-	case storage.BackendMemory:
-		store := memory.New(memory.WithEncryptor(enc), memory.WithInstrumentation(inst))
-		return store, func() error { store.Stop(); return nil }, nil
-	case storage.BackendValkey:
-		return newValkeyFromEnv(prefix, enc, inst, logger)
-	default:
-		return nil, nil, fmt.Errorf("%sSTORAGE_BACKEND: unknown backend %q (want %q or %q)", prefix, backend, storage.BackendMemory, storage.BackendValkey)
+	store, closeStore, err := configuredStorage(configuration, enc, inst, logger)
+	if err != nil {
+		return nil, nil, err
 	}
+	return store, func() error { closeStore(); return nil }, nil
 }
 
-// newValkeyFromEnv constructs a valkey.Store from the VALKEY_* environment
-// variables. Returns a close func that invokes Store.Close and always returns
-// nil (Valkey close errors are logged by the backend; surfacing them would
-// complicate caller shutdown flows).
-func newValkeyFromEnv(prefix string, enc *security.Encryptor, inst *instrumentation.Instrumentation, logger *slog.Logger) (storage.Combined, func() error, error) {
+func storageConfigFromEnv(prefix string) (*valkey.Config, error) {
+	backend := os.Getenv(prefix + "STORAGE_BACKEND")
+	if backend == "" || backend == storage.BackendMemory {
+		return nil, nil
+	}
+	if backend != storage.BackendValkey {
+		return nil, fmt.Errorf("%sSTORAGE_BACKEND: unknown backend %q (want %q or %q)", prefix, backend, storage.BackendMemory, storage.BackendValkey)
+	}
 	addr := os.Getenv(prefix + "VALKEY_ADDR")
 	if addr == "" {
-		return nil, nil, fmt.Errorf("%sVALKEY_ADDR is required when %sSTORAGE_BACKEND=valkey", prefix, prefix)
+		return nil, fmt.Errorf("%sVALKEY_ADDR is required when %sSTORAGE_BACKEND=valkey", prefix, prefix)
 	}
 
 	password, err := optionalSecret(prefix + "VALKEY_PASSWORD")
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	db, err := optionalPositiveInt(prefix + "VALKEY_DB")
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	tlsEnabled, err := optionalBool(prefix+"VALKEY_TLS", false)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	tlsInsecure, err := optionalBool(prefix+"VALKEY_TLS_INSECURE_SKIP_VERIFY", false)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	refreshTTL, err := optionalDuration(prefix + "VALKEY_REFRESH_TOKEN_TTL")
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	maxTokenDataSize, err := optionalPositiveInt(prefix + "VALKEY_MAX_TOKEN_DATA_SIZE")
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	startupTimeout, err := optionalDuration(prefix + "VALKEY_STARTUP_TIMEOUT")
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	cfg := valkey.Config{
+	return &valkey.Config{
 		Address:          addr,
 		Password:         password,
 		DB:               db,
 		KeyPrefix:        os.Getenv(prefix + "VALKEY_KEY_PREFIX"),
 		TLS:              valkeytls.New(valkeytls.Options{Enabled: tlsEnabled, InsecureSkipVerify: tlsInsecure}),
-		Logger:           logger,
 		RefreshTokenTTL:  refreshTTL,
 		MaxTokenDataSize: maxTokenDataSize,
 		StartupTimeout:   startupTimeout,
-	}
-	store, err := valkey.New(cfg, valkey.WithEncryptor(enc), valkey.WithInstrumentation(inst))
-	if err != nil {
-		return nil, nil, fmt.Errorf("valkey.New: %w", err)
-	}
-	return store, func() error { store.Close(); return nil }, nil
+	}, nil
 }
 
 // optionalDuration parses a Go duration (e.g. "24h") directly — used for
@@ -153,6 +144,5 @@ func optionalDuration(name string) (time.Duration, error) {
 // really satisfy storage.Combined. Keeps the contract local to this file so
 // a breakage is surfaced here rather than at the New* call sites.
 var (
-	_ storage.Combined = (*memory.Store)(nil)
 	_ storage.Combined = (*valkey.Store)(nil)
 )

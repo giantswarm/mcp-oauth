@@ -87,19 +87,31 @@ func (h *Handler) findPathConfig(resourcePath string) *server.ProtectedResourceC
 		return nil
 	}
 
-	var bestMatch string
+	var bestMatchLength int
 	var bestConfig *server.ProtectedResourceConfig
 
 	for configPath, config := range h.server.Config.ResourceMetadataByPath {
 		// Normalize the config path
 		normalizedConfigPath := path.Clean("/" + strings.TrimPrefix(configPath, "/"))
+		identifier := h.server.Config.PathResourceIdentifier(configPath, config)
+		resourceURL, err := url.Parse(identifier)
+		if err != nil {
+			continue
+		}
+		matchLength := 0
+		for _, candidate := range []string{normalizedConfigPath, resourceURL.Path} {
+			if helpers.PathMatchesPrefix(resourcePath, candidate) {
+				matchLength = max(matchLength, len(candidate))
+			}
+		}
 
 		// Check if this path is a prefix of the resource path
-		if helpers.PathMatchesPrefix(resourcePath, normalizedConfigPath) {
+		if matchLength > 0 {
 			// Use longest match
-			if len(normalizedConfigPath) > len(bestMatch) {
-				bestMatch = normalizedConfigPath
+			if matchLength > bestMatchLength {
+				bestMatchLength = matchLength
 				configCopy := config // Create a copy to get a stable pointer
+				configCopy.ResourceIdentifier = identifier
 				bestConfig = &configCopy
 			}
 		}
@@ -183,6 +195,9 @@ func (h *Handler) RegisterProtectedResourceMetadataRoutes(mux *http.ServeMux, mc
 	// Track registered paths to avoid duplicate registrations
 	registeredPaths := make(map[string]bool)
 	registeredPaths[oauth.MetadataPathProtectedResource] = true
+	if resource, err := url.Parse(h.server.Config.GetResourceIdentifier()); err == nil && resource.Path != "" && resource.Path != "/" {
+		h.registerMetadataSubPath(mux, resource.Path, registeredPaths)
+	}
 
 	// Register explicit mcpPath if provided (backward compatibility)
 	if mcpPath != "" && mcpPath != "/" {
@@ -190,8 +205,11 @@ func (h *Handler) RegisterProtectedResourceMetadataRoutes(mux *http.ServeMux, mc
 	}
 
 	// Register paths from ResourceMetadataByPath configuration (MCP 2025-11-25)
-	for configPath := range h.server.Config.ResourceMetadataByPath {
+	for configPath, configuration := range h.server.Config.ResourceMetadataByPath {
 		h.registerMetadataSubPath(mux, configPath, registeredPaths)
+		if resource, err := url.Parse(h.server.Config.PathResourceIdentifier(configPath, configuration)); err == nil && resource.Path != "" {
+			h.registerMetadataSubPath(mux, resource.Path, registeredPaths)
+		}
 	}
 }
 

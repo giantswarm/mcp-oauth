@@ -687,7 +687,8 @@ func TestUserInfo_IsOBO(t *testing.T) {
 		{name: "nil receiver", info: nil, expected: false},
 		{name: "trusted-issuer with actor", info: &UserInfo{TokenSource: TokenSourceTrustedIssuer, ActorSubject: "agent@k8s"}, expected: true},
 		{name: "trusted-issuer without actor", info: &UserInfo{TokenSource: TokenSourceTrustedIssuer}, expected: false},
-		{name: "sso with act claim", info: &UserInfo{TokenSource: TokenSourceSSO, ActorSubject: "agent@k8s"}, expected: false},
+		{name: "sso with act claim", info: &UserInfo{TokenSource: TokenSourceSSO, ActorSubject: "agent@k8s"}, expected: true},
+		{name: "self-issued JWT with actor", info: &UserInfo{TokenSource: TokenSourceJWT, ActorSubject: "agent@k8s"}, expected: true},
 		{name: "oauth", info: &UserInfo{TokenSource: TokenSourceOAuth}, expected: false},
 	}
 

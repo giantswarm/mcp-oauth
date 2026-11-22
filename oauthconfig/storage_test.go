@@ -123,9 +123,24 @@ func TestStorageFromEnv_ValkeyMaxTokenDataSizeOutOfRange(t *testing.T) {
 	t.Setenv("OAUTH_VALKEY_ADDR", "unreachable:0")
 	t.Setenv("OAUTH_VALKEY_MAX_TOKEN_DATA_SIZE", "1024") // below MinMaxTokenDataSize
 
-	_, _, err := oauthconfig.StorageFromEnv(nil, nil, slog.Default())
+	t.Setenv("OAUTH_ENCRYPTION_KEY", validKeyB64)
+	encryptor, err := oauthconfig.NewEncryptorFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = oauthconfig.StorageFromEnv(encryptor, nil, slog.Default())
 	if err == nil || !strings.Contains(err.Error(), "MaxTokenDataSize") {
 		t.Fatalf("expected MaxTokenDataSize range error, got %v", err)
+	}
+}
+
+func TestStorageFromEnvValkeyRequiresEncryption(t *testing.T) {
+	clearStorageEnv(t)
+	t.Setenv("OAUTH_STORAGE_BACKEND", "valkey")
+	t.Setenv("OAUTH_VALKEY_ADDR", "127.0.0.1:1")
+	_, _, err := oauthconfig.StorageFromEnv(nil, nil, slog.Default())
+	if err == nil || !strings.Contains(err.Error(), "requires encryption") {
+		t.Fatalf("expected encryption requirement before connecting, got %v", err)
 	}
 }
 

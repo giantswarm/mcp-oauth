@@ -1209,7 +1209,7 @@ func (c *Config) RegistrationEndpoint() string {
 // ProtectedResourceMetadataEndpoint returns the full URL to the RFC 9728 Protected Resource Metadata endpoint
 // This endpoint is used in WWW-Authenticate headers to help MCP clients discover authorization server information
 func (c *Config) ProtectedResourceMetadataEndpoint() string {
-	return c.Issuer + EndpointPathProtectedResourceMetadata
+	return helpers.ProtectedResourceMetadataURL(c.GetResourceIdentifier())
 }
 
 // RevocationEndpoint returns the full URL to the RFC 7009 token revocation endpoint
