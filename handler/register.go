@@ -271,7 +271,7 @@ func (h *Handler) validateClientMetadata(w http.ResponseWriter, req *clientRegis
 	if err := helpers.ValidateClientName(req.ClientName); err != nil {
 		h.logger.Warn("Invalid client_name in registration request",
 			"client_name_length", len(req.ClientName), paramError, err, "ip", clientIP)
-		h.writeError(w, constants.ErrorCodeInvalidRequest, err.Error(), http.StatusBadRequest)
+		h.writeError(w, "invalid_client_metadata", err.Error(), http.StatusBadRequest)
 		return err
 	}
 
@@ -282,7 +282,7 @@ func (h *Handler) validateClientMetadata(w http.ResponseWriter, req *clientRegis
 	if req.TokenEndpointAuthMethod != "" && !isValidAuthMethod(req.TokenEndpointAuthMethod) {
 		h.logger.Warn("Unsupported token_endpoint_auth_method requested",
 			"method", req.TokenEndpointAuthMethod, "supported_methods", oauth.SupportedTokenAuthMethods, "ip", clientIP)
-		h.writeError(w, constants.ErrorCodeInvalidRequest,
+		h.writeError(w, "invalid_client_metadata",
 			fmt.Sprintf("Unsupported token_endpoint_auth_method: %s", req.TokenEndpointAuthMethod),
 			http.StatusBadRequest)
 		return fmt.Errorf("unsupported auth method")

@@ -211,42 +211,21 @@ func (s *Server) checkJWTRevocation(ctx context.Context, jti, tokenString string
 	return nil
 }
 
-// checkJWTFamily enforces refresh-token-family revocation when the JWT
-// carries a family_id claim. Lets a /oauth/revoke on the refresh token
-// invalidate all in-flight access tokens in the family — the defense in
-// depth that motivated carrying family_id in the first place.
-//
-// JWTs do not carry the refresh token, only family_id, so the lookup uses
-// the optional RefreshTokenFamilyByIDStore interface. Backends without
-// that interface skip the check (memory and valkey both implement it; the
-// startup warning already discourages running JWT mode without them). A
-// missing family_id claim is also silently skipped — issuance only sets
-// the claim when the token store supports families.
-//
-// Storage errors are ErrStorageUnavailable (parity with checkJWTRevocation):
-// a transient backend failure must neither silently re-enable a revoked
-// family nor reject the token as invalid. ErrRefreshTokenFamilyNotFound is
-// the only "not present" signal and is treated as legit absence.
+// checkJWTFamily rejects JWTs belonging to revoked refresh-token families.
+// Storage failures remain retryable; absent family state is not a revocation.
 func (s *Server) checkJWTFamily(ctx context.Context, claims map[string]any, tokenString string) error {
 	familyID, _ := claims[logKeyFamilyID].(string)
 	if familyID == "" {
 		return nil
 	}
-	indexed, ok := s.tokenStore.(storage.RefreshTokenFamilyByIDStore)
-	if !ok {
-		return nil
-	}
-	meta, err := indexed.GetRefreshTokenFamilyByID(ctx, familyID)
+	revoked, err := s.familyRevoked(ctx, familyID)
 	if errors.Is(err, storage.ErrRefreshTokenFamilyNotFound) {
 		return nil
 	}
 	if err != nil {
 		return s.storageUnavailable(ctx, "check token family revocation", "", "", err)
 	}
-	if meta == nil {
-		return nil
-	}
-	if meta.Revoked {
+	if revoked {
 		s.logSelfIssuedJWTAuthFailure(ctx, "family_revoked", tokenString)
 		return fmt.Errorf("access token family has been revoked")
 	}

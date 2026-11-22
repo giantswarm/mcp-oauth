@@ -40,7 +40,7 @@ func (s *Server) unregisterTokenPairIfPresent(token string) {
 // RevokeToken revokes a token (access or refresh).
 //
 // Three input shapes are accepted:
-//   - Self-issued JWT access token: jti is added to RevokedTokenStore so
+//   - Client-bound self-issued JWT access token: jti is added to RevokedTokenStore so
 //     the next ValidateToken call rejects it. The denylist entry
 //     expires after the JWT's expiration and configured clock-skew allowance.
 //   - Opaque access token: TokenStore deletion.
@@ -50,7 +50,8 @@ func (s *Server) unregisterTokenPairIfPresent(token string) {
 // not found or already invalid — clients have no way to distinguish "this
 // token was never issued" from "this token has been forgotten" from
 // "revocation succeeded", and surfacing those distinctions enables token
-// scanning attacks.
+// scanning attacks. JWTs without a client binding, including unidentified
+// self-issued exchanges, cannot be revoked through this client-owned endpoint.
 func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP string) error {
 	if recognized, err := s.revokeSelfIssuedJWT(ctx, token, clientID, clientIP); recognized {
 		return err

@@ -26,6 +26,7 @@ import (
 // clients, so a missing Basic header is not itself an error.
 func (h *Handler) authenticateRevocationClient(w http.ResponseWriter, r *http.Request, formClientID, clientIP string, startTime time.Time, span trace.Span) (string, bool, bool) {
 	if err := validateClientCredentialShape(r); err != nil {
+		h.logAuthFailure(r.Context(), formClientID, clientIP, "revocation_invalid_credentials", "Revocation client credentials rejected")
 		h.writeEndpointClientAuthenticationError(w, r, endpointRevoke, "", span, startTime, err)
 		return "", false, false
 	}
@@ -36,6 +37,7 @@ func (h *Handler) authenticateRevocationClient(w http.ResponseWriter, r *http.Re
 	}
 
 	if formClientID == "" && basicClientID == "" && !hasClientAssertion(r) {
+		h.logAuthFailure(r.Context(), "", clientIP, "revocation_missing_auth", "Revocation client identification missing")
 		h.writeEndpointClientAuthenticationError(w, r, endpointRevoke, "", span, startTime, oauth.ErrInvalidClient("Client identification required"))
 		return "", false, false
 	}
@@ -236,6 +238,7 @@ func (h *Handler) writeIntrospectionError(w http.ResponseWriter, r *http.Request
 func (h *Handler) authenticateIntrospectionClient(r *http.Request, clientIP string) (string, error) {
 	basicClientID, _ := h.parseBasicAuth(r)
 	if r.Form.Get("client_id") == "" && basicClientID == "" && !hasClientAssertion(r) {
+		h.logAuthFailure(r.Context(), "", clientIP, "introspection_missing_auth", "Introspection client authentication missing")
 		return "", oauth.ErrInvalidClient("Client authentication required for token introspection")
 	}
 	client, err := h.authenticateRegisteredClient(r, r.Form.Get("client_id"), clientIP)
@@ -243,6 +246,7 @@ func (h *Handler) authenticateIntrospectionClient(r *http.Request, clientIP stri
 		return "", err
 	}
 	if !client.IsConfidential() {
+		h.logAuthFailure(r.Context(), client.ClientID, clientIP, "introspection_missing_credentials", "Introspection requires confidential client authentication")
 		return "", oauth.ErrInvalidClient("Client authentication required for token introspection")
 	}
 	return client.ClientID, nil

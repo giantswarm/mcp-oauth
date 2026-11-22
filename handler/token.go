@@ -462,6 +462,7 @@ func (h *Handler) validateConfidentialClient(r *http.Request, client *storage.Cl
 		reason := "confidential_client_auth_required"
 		if r.Form.Get("grant_type") == grantTypeRefreshToken && r.Header.Get("Authorization") == "" && !r.Form.Has("client_secret") {
 			reason = "confidential_client_refresh_missing_auth"
+			h.auditMissingRefreshAuthentication(ctx, client.ClientID, clientIP)
 		}
 		h.logAuthFailure(ctx, client.ClientID, clientIP, reason, "Confidential client missing credentials")
 		return oauth.ErrInvalidClient("Client authentication required")
