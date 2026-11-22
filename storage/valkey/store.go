@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -171,6 +172,8 @@ type Config struct {
 // Store is a Valkey-backed implementation of all storage interfaces.
 // It implements TokenStore, ClientStore, FlowStore, RefreshTokenFamilyStore, and TokenRevocationStore.
 type Store struct {
+	familyRevocationsIndexed   atomic.Bool
+	legacyFamilyMarkers        atomic.Bool
 	client                     valkeygo.Client
 	prefix                     string
 	logger                     *slog.Logger
@@ -276,6 +279,12 @@ func New(cfg Config, opts ...Option) (*Store, error) {
 
 	for _, opt := range opts {
 		opt(s)
+	}
+	indexContext, cancelIndex := context.WithTimeout(context.Background(), startupTimeout)
+	defer cancelIndex()
+	if err := s.initializeFamilyRevocationIndex(indexContext); err != nil {
+		client.Close()
+		return nil, fmt.Errorf("initialize family revocation index: %w", err)
 	}
 
 	s.wireInstrumentation(logger)

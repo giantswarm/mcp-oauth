@@ -35,6 +35,44 @@ Client deletion and rejected use of a deleted client's tokens emit audit reasons
 
 ## Enabling
 
+### Valkey revocation index migration
+
+Fresh storage namespaces used exclusively by the new release use a direct family
+revocation lookup. Existing namespaces
+keep the compatibility lookup until their older revocation records are migrated.
+No revoked result is discarded, and storage errors continue to refuse requests.
+
+Drain old writers before upgrading, including when no token families currently
+exist. Stop all OAuth traffic and all old writers before migration. Keep them stopped
+until the command succeeds. Keep Valkey's topology stable during migration.
+Build the migration tool from the same library release
+that the OAuth servers will use:
+
+```bash
+go build -o "$HOME/.cache/tmp/mcp-oauth-migrate-family-revocations" ./examples/migrate-family-revocations
+"$HOME/.cache/tmp/mcp-oauth-migrate-family-revocations" \
+  -address "$VALKEY_ADDRESS" -key-prefix "$OAUTH_KEY_PREFIX" \
+  -password-file /run/secrets/valkey-password -tls -writers-stopped
+```
+
+Use the installation's exact address, key prefix, database (`-db`) and TLS settings.
+Omit `-password-file` or `-tls` only when the backend does not use them. The command
+reads the password from the file and never prints it. It preserves both key layouts,
+extends revocation retention when necessary, and can be retried after a failure.
+Do not restore traffic after a failed or interrupted migration.
+
+Restart every OAuth server on the new release after migration, then restore traffic.
+Old binaries must not write to a migrated namespace. A rollback or snapshot restore
+requires another stopped-traffic migration before the new release resumes serving.
+Keep the same precautions for lost client retirement state and JWT signing keys.
+
+Self-issued exchange JWTs without a client binding remain valid until expiry and
+cannot be revoked through the client-owned revocation endpoint. Client-bound JWTs
+require the matching authenticated client; anonymous or unrelated clients cannot
+revoke them.
+
+### Server configuration
+
 ```go
 &oauth.ServerConfig{
     Issuer:                        "https://example.com",

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -11,11 +12,22 @@ import (
 	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/giantswarm/mcp-oauth/instrumentation"
 	"github.com/giantswarm/mcp-oauth/internal/constants"
+	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
 )
 
 func (h *Handler) writeClientAuthenticationError(w http.ResponseWriter, r *http.Request, grant string, span trace.Span, started time.Time, err error) {
 	h.writeEndpointClientAuthenticationError(w, r, endpointToken, grant, span, started, err)
+}
+
+func (h *Handler) auditMissingRefreshAuthentication(ctx context.Context, clientID, clientIP string) {
+	h.server.Auditor.LogEvent(ctx, security.Event{
+		Type: security.EventAuthFailure, ClientID: clientID,
+		Details: map[string]any{
+			"severity": "high", fieldClientType: "confidential", "auth_missing": true,
+			"endpoint": grantTypeRefreshToken, "ip": clientIP, "oauth_spec": "OAuth 2.1 Section 6",
+		},
+	})
 }
 
 func (h *Handler) writeEndpointClientAuthenticationError(w http.ResponseWriter, r *http.Request, endpoint, grant string, span trace.Span, started time.Time, err error) {

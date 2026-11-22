@@ -291,6 +291,11 @@ type RefreshTokenFamilyByIDStore interface {
 	GetRefreshTokenFamilyByID(ctx context.Context, familyID string) (*RefreshTokenFamilyMetadata, error)
 }
 
+// RefreshTokenFamilyRevocationChecker checks family revocation without enumerating tokens.
+type RefreshTokenFamilyRevocationChecker interface {
+	IsRefreshTokenFamilyRevoked(ctx context.Context, familyID string) (bool, error)
+}
+
 // ActiveRefreshTokenByFamilyStore is an optional extension that exposes
 // the most recent (highest-generation) non-revoked refresh token for a
 // family, looked up by family ID. Required by Server.RefreshSession,
