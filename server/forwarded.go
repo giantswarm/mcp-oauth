@@ -257,6 +257,10 @@ func (s *Server) AcceptTrustedIssuerToken(ctx context.Context, bearerToken strin
 	}
 
 	userInfo := s.idTokenClaimsToUserInfo(identity.Claims)
+	userInfo.ClientID = identity.Claims.ClientID
+	if userInfo.ClientID == "" {
+		userInfo.ClientID = identity.Claims.AuthorizedParty
+	}
 	userInfo.Issuer = identity.Issuer
 	userInfo.TokenSource = providers.TokenSourceTrustedIssuer
 

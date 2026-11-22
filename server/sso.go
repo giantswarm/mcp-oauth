@@ -190,7 +190,12 @@ func providerJWKSPrivateIPHosts(provider providers.Provider, listed []string) []
 // ActorIssuer, ActorSubject and ActorChain are populated from claims.Act when
 // the token carries an RFC 8693 §4.1 act claim.
 func (s *Server) idTokenClaimsToUserInfo(claims *oidc.IDTokenClaims) *providers.UserInfo {
+	clientID := claims.AuthorizedParty
+	if clientID == "" && len(claims.Audience) == 1 {
+		clientID = claims.Audience[0]
+	}
 	info := &providers.UserInfo{
+		ClientID:      clientID,
 		ID:            claims.Subject,
 		Issuer:        claims.Issuer,
 		Email:         claims.Email,

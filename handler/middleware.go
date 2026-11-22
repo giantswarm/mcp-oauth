@@ -129,6 +129,13 @@ func (h *Handler) sessionIDForToken(accessToken string, metadata *storage.TokenM
 // assigned separately by the caller via sessionIDForToken so that every
 // validated token gets one, not only those with stored metadata.
 func contextWithValidatedToken(ctx context.Context, userInfo *providers.UserInfo, metadata *storage.TokenMetadata) context.Context {
+	if userInfo != nil {
+		validated := *userInfo
+		if metadata != nil && metadata.ClientID != "" {
+			validated.ClientID = metadata.ClientID
+		}
+		userInfo = &validated
+	}
 	ctx = ContextWithUserInfo(ctx, userInfo)
 	if metadata != nil && len(metadata.Scopes) > 0 {
 		ctx = ContextWithScopes(ctx, metadata.Scopes)

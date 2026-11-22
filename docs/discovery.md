@@ -1,5 +1,12 @@
 # OAuth Discovery Mechanisms
 
+After `ValidateToken`, `handler.UserInfoFromContext` exposes `ClientID` from
+the issued token's stored client binding or validated access-token `client_id`.
+Forwarded OIDC ID tokens use the signed `azp`, or their sole audience when `azp`
+is absent. Ambiguous client identity remains empty. Applications requiring
+client-bound task access must refuse an empty value rather than infer it from
+email, request arguments or transport session identifiers.
+
 This document explains how OAuth discovery works in the `mcp-oauth` library, covering all standardized discovery mechanisms defined by OAuth 2.0, RFC 8414, RFC 9728, and MCP 2025-11-25.
 
 ## Contents
