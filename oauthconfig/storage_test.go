@@ -184,7 +184,12 @@ func TestStorageFromEnv_ValkeyPasswordFilePrecedence(t *testing.T) {
 
 	// Connection will fail — we only care that the loader accepted the _FILE
 	// variant without erroring on password parsing.
-	_, _, err := oauthconfig.StorageFromEnv(nil, nil, slog.Default())
+	t.Setenv("OAUTH_ENCRYPTION_KEY", validKeyB64)
+	encryptor, err := oauthconfig.NewEncryptorFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = oauthconfig.StorageFromEnv(encryptor, nil, slog.Default())
 	if err == nil {
 		t.Fatal("expected connection error against unreachable address")
 	}
@@ -225,7 +230,12 @@ func TestStorageFromEnv_ValkeyLive(t *testing.T) {
 	t.Setenv("OAUTH_VALKEY_KEY_PREFIX", "oauthconfigtest:")
 	t.Setenv("OAUTH_VALKEY_REFRESH_TOKEN_TTL", "1h")
 
-	store, closeFn, err := oauthconfig.StorageFromEnv(nil, nil, slog.Default())
+	t.Setenv("OAUTH_ENCRYPTION_KEY", validKeyB64)
+	encryptor, err := oauthconfig.NewEncryptorFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, closeFn, err := oauthconfig.StorageFromEnv(encryptor, nil, slog.Default())
 	if err != nil {
 		t.Fatalf("StorageFromEnv against live valkey: %v", err)
 	}

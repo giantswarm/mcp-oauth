@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/handler"
 	"github.com/giantswarm/mcp-oauth/oauthconfig"
@@ -104,4 +105,30 @@ func TestSetupRefusesInvalidConfiguration(t *testing.T) {
 			require.Nil(t, cleanup)
 		})
 	}
+}
+
+func TestSetupValkeyLive(t *testing.T) {
+	address := os.Getenv("VALKEY_TEST_ADDR")
+	if address == "" {
+		t.Skip("set VALKEY_TEST_ADDR to run")
+	}
+	t.Setenv("OAUTH_ENCRYPTION_KEY", validKeyB64)
+	encryptor, err := oauthconfig.NewEncryptorFromEnv()
+	require.NoError(t, err)
+	settings := resolvedGoogleSettings()
+	settings.Valkey = &valkey.Config{Address: address, KeyPrefix: fmt.Sprintf("setup-test:%d:", time.Now().UnixNano())}
+	settings.Encryptor = encryptor
+	runtime, cleanup, err := oauthconfig.Setup(settings)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, cleanup(context.WithoutCancel(t.Context()))) })
+	token := (&oauth2.Token{AccessToken: "test-provider-access", Expiry: time.Now().Add(time.Hour)}).WithExtra(map[string]any{"id_token": "test-provider-id"})
+	store := runtime.Server.TokenStore()
+	require.NoError(t, store.SaveToken(t.Context(), "test-user", token))
+	stored, err := store.GetToken(t.Context(), "test-user")
+	require.NoError(t, err)
+	require.Equal(t, token.AccessToken, stored.AccessToken)
+	require.Equal(t, "test-provider-id", stored.Extra("id_token"))
+	require.NoError(t, store.DeleteToken(t.Context(), "test-user"))
+	require.NoError(t, cleanup(t.Context()))
+	require.NoError(t, cleanup(t.Context()))
 }
