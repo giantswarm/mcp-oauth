@@ -87,6 +87,14 @@ func DexFromEnv() (providers.Provider, error) {
 
 // DexFromEnvWithPrefix is [DexFromEnv] with a caller-supplied prefix.
 func DexFromEnvWithPrefix(prefix string) (providers.Provider, error) {
+	configuration, err := dexConfigFromEnv(prefix)
+	if err != nil {
+		return nil, err
+	}
+	return configuredProvider(Settings{Dex: configuration})
+}
+
+func dexConfigFromEnv(prefix string) (*dex.Config, error) {
 	issuer, err := requireString(prefix + "DEX_ISSUER_URL")
 	if err != nil {
 		return nil, err
@@ -104,13 +112,13 @@ func DexFromEnvWithPrefix(prefix string) (providers.Provider, error) {
 		return nil, err
 	}
 
-	return dex.NewProvider(&dex.Config{
+	return &dex.Config{
 		IssuerURL:    issuer,
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		RedirectURL:  redirectURL,
 		ConnectorID:  os.Getenv(prefix + "DEX_CONNECTOR_ID"),
-	})
+	}, nil
 }
 
 // GoogleFromEnv reads OAUTH_GOOGLE_* variables and returns a configured Google
@@ -137,6 +145,14 @@ func GoogleFromEnv() (providers.Provider, error) {
 
 // GoogleFromEnvWithPrefix is [GoogleFromEnv] with a caller-supplied prefix.
 func GoogleFromEnvWithPrefix(prefix string) (providers.Provider, error) {
+	configuration, err := googleConfigFromEnv(prefix)
+	if err != nil {
+		return nil, err
+	}
+	return configuredProvider(Settings{Google: configuration})
+}
+
+func googleConfigFromEnv(prefix string) (*google.Config, error) {
 	clientID, err := requireString(prefix + "GOOGLE_CLIENT_ID")
 	if err != nil {
 		return nil, err
@@ -164,7 +180,7 @@ func GoogleFromEnvWithPrefix(prefix string) (providers.Provider, error) {
 		cfg.ForceConsent = &fc
 	}
 
-	return google.NewProvider(cfg)
+	return cfg, nil
 }
 
 // GitHubFromEnv reads OAUTH_GITHUB_* variables and returns a configured GitHub
@@ -191,6 +207,14 @@ func GitHubFromEnv() (providers.Provider, error) {
 
 // GitHubFromEnvWithPrefix is [GitHubFromEnv] with a caller-supplied prefix.
 func GitHubFromEnvWithPrefix(prefix string) (providers.Provider, error) {
+	configuration, err := githubConfigFromEnv(prefix)
+	if err != nil {
+		return nil, err
+	}
+	return configuredProvider(Settings{GitHub: configuration})
+}
+
+func githubConfigFromEnv(prefix string) (*github.Config, error) {
 	clientID, err := requireString(prefix + "GITHUB_CLIENT_ID")
 	if err != nil {
 		return nil, err
@@ -219,7 +243,7 @@ func GitHubFromEnvWithPrefix(prefix string) (providers.Provider, error) {
 		cfg.RequireVerifiedEmail = &rv
 	}
 
-	return github.NewProvider(cfg)
+	return cfg, nil
 }
 
 // dexRedirectURL resolves the OAuth provider-callback URL for the Dex

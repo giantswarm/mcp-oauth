@@ -192,6 +192,7 @@ func providerJWKSPrivateIPHosts(provider providers.Provider, listed []string) []
 func (s *Server) idTokenClaimsToUserInfo(claims *oidc.IDTokenClaims) *providers.UserInfo {
 	info := &providers.UserInfo{
 		ID:            claims.Subject,
+		Issuer:        claims.Issuer,
 		Email:         claims.Email,
 		EmailVerified: claims.EmailVerified,
 		Name:          claims.Name,

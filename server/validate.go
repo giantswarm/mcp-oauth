@@ -394,7 +394,10 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 	if storedToken == nil {
 		return nil, s.rejectUnknownBearer(ctx, accessToken)
 	}
+	return s.validateProviderAccessToken(ctx, storedToken)
+}
 
+func (s *Server) validateProviderAccessToken(ctx context.Context, storedToken *oauth2.Token) (*providers.UserInfo, error) {
 	userInfo, err := s.provider.ValidateToken(ctx, storedToken.AccessToken)
 	if err != nil {
 		if isTransientProviderError(err) {
@@ -406,11 +409,14 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 		return nil, err
 	}
 
-	// Set token source to OAuth since this is the normal OAuth flow
-	// (the server issued the token and the provider's ID token is stored)
+	if userInfo == nil || userInfo.ID == "" {
+		return nil, errors.New("provider returned no subject")
+	}
+	validatedUserInfo := *userInfo
+	userInfo = &validatedUserInfo
+	userInfo.Issuer = s.Config.Issuer
 	userInfo.TokenSource = providers.TokenSourceOAuth
 
-	// Store user info
 	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, providerUserInfoToStorage(userInfo)); err != nil {
 		s.Logger.Warn("Failed to save user info", logKeyError, err)
 	}

@@ -279,18 +279,21 @@ func userInfoFromJWTClaims(claims map[string]any) (*providers.UserInfo, error) {
 	info := &providers.UserInfo{
 		TokenSource: providers.TokenSourceJWT,
 	}
-	if v, ok := claims[claimSub].(string); ok {
-		info.ID = v
+	info.Issuer, _ = claims[claimIss].(string)
+	info.ID, _ = claims[claimSub].(string)
+	if info.ID == "" {
+		return nil, fmt.Errorf("access token has no subject")
 	}
-	if v, ok := claims[claimEmail].(string); ok {
-		info.Email = v
+	if raw, present := claims["act"]; present {
+		actor, err := actorFromJWTClaim(raw)
+		if err != nil {
+			return nil, err
+		}
+		info.ActorIssuer, info.ActorSubject, info.ActorChain = actor.Issuer, actor.Subject, actor.Chain()
 	}
-	if v, ok := claims["email_verified"].(bool); ok {
-		info.EmailVerified = v
-	}
-	if v, ok := claims["name"].(string); ok {
-		info.Name = v
-	}
+	info.Email, _ = claims[claimEmail].(string)
+	info.EmailVerified, _ = claims["email_verified"].(bool)
+	info.Name, _ = claims["name"].(string)
 	if raw, ok := claims["scope"]; ok {
 		encoded, err := json.Marshal(raw)
 		if err != nil {
@@ -313,6 +316,23 @@ func userInfoFromJWTClaims(claims map[string]any) (*providers.UserInfo, error) {
 		}
 	}
 	return info, nil
+}
+
+func actorFromJWTClaim(raw any) (*oidc.ActorClaim, error) {
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("actor claim: %w", err)
+	}
+	var actor oidc.ActorClaim
+	if err := json.Unmarshal(encoded, &actor); err != nil {
+		return nil, fmt.Errorf("actor claim: %w", err)
+	}
+	for current, depth := &actor, 0; current != nil; current, depth = current.Act, depth+1 {
+		if depth >= maxActorChainDepth || current.Issuer == "" || current.Subject == "" {
+			return nil, fmt.Errorf("invalid actor claim")
+		}
+	}
+	return &actor, nil
 }
 
 // logSelfIssuedJWTAccepted records a success event for audit trails. The
