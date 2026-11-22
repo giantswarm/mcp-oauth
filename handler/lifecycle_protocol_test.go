@@ -16,10 +16,11 @@ import (
 	"github.com/giantswarm/mcp-oauth/internal/testutil"
 	"github.com/giantswarm/mcp-oauth/server"
 	"github.com/giantswarm/mcp-oauth/storage"
+	storagemock "github.com/giantswarm/mcp-oauth/storage/mock"
 )
 
 func TestRevocationAuthenticationAndOwnership(t *testing.T) {
-	for _, method := range []string{"client_secret_basic", "client_secret_post"} {
+	for _, method := range []string{"client_secret_basic", "client_secret_post", "private_key_jwt"} {
 		for _, presented := range []string{"missing identifiers", "missing credentials", "other public client", "owner"} {
 			t.Run(method+"/"+presented, func(t *testing.T) {
 				handler, store := setupTestHandler(t)
@@ -66,7 +67,7 @@ func TestRevocationAuthenticationAndOwnership(t *testing.T) {
 }
 
 func TestClientAuthenticationEndpointMatrix(t *testing.T) {
-	methods := []string{"client_secret_basic", "client_secret_post"}
+	methods := []string{"client_secret_basic", "client_secret_post", "private_key_jwt"}
 	for _, endpoint := range []string{server.EndpointPathRevoke, server.EndpointPathIntrospect} {
 		for _, registered := range methods {
 			for _, presented := range methods {
@@ -83,6 +84,20 @@ func TestClientAuthenticationEndpointMatrix(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func TestAssertionClientLookupOutageAcrossEndpoints(t *testing.T) {
+	for _, endpoint := range []string{server.EndpointPathToken, server.EndpointPathRevoke, server.EndpointPathIntrospect} {
+		t.Run(endpoint, func(t *testing.T) {
+			environment := newOutageEnv(t)
+			client := newMatrixClient(t, environment.handler, "private_key_jwt")
+			environment.faulty.Fail(storagemock.OnOperation("get_client", storagemock.ConnectionRefused))
+			response := matrixClientRequest(t, environment.handler, endpoint, client, "private_key_jwt", url.Values{"token": {"unknown"}, "grant_type": {"refresh_token"}, "refresh_token": {"unknown"}})
+			require.Equal(t, http.StatusServiceUnavailable, response.Code, response.Body.String())
+			require.NotEmpty(t, response.Header().Get("Retry-After"))
+			require.Empty(t, response.Header().Get("WWW-Authenticate"))
+		})
 	}
 }
 
@@ -143,6 +158,8 @@ func TestEndpointAuthenticationDiscovery(t *testing.T) {
 		methods := metadata[endpoint+"_endpoint_auth_methods_supported"].([]string)
 		require.Contains(t, methods, "client_secret_basic")
 		require.Contains(t, methods, "client_secret_post")
+		require.Contains(t, methods, "private_key_jwt")
+		require.Equal(t, []string{"ES256", "RS256", "PS256"}, metadata[endpoint+"_endpoint_auth_signing_alg_values_supported"])
 	}
 	require.NotContains(t, metadata["introspection_endpoint_auth_methods_supported"], "none")
 }

@@ -402,6 +402,9 @@ func (h *Handler) authenticateClientWithLookup(r *http.Request, clientID, client
 		h.logAuthFailure(r.Context(), clientID, clientIP, "client_credentials_malformed", "Client authentication failed")
 		return nil, err
 	}
+	if hasClientAssertion(r) {
+		return h.authenticateAssertion(r, clientID, clientIP)
+	}
 	basicClientID, basicClientSecret := h.parseBasicAuth(r)
 	formClientID := clientID
 
@@ -447,6 +450,10 @@ func (h *Handler) authenticateClientWithLookup(r *http.Request, clientID, client
 // validateConfidentialClient validates credentials for confidential clients.
 func (h *Handler) validateConfidentialClient(r *http.Request, client *storage.Client, secret, clientIP string) error {
 	ctx := r.Context()
+	if client.TokenEndpointAuthMethod == server.TokenEndpointAuthMethodPrivateKeyJWT {
+		h.logAuthFailure(ctx, client.ClientID, clientIP, "assertion_required", "Client authentication failed")
+		return oauth.ErrInvalidClient("Client authentication failed")
+	}
 	if !client.IsConfidential() {
 		return h.validatePublicClientMetadata(ctx, client, clientIP)
 	}

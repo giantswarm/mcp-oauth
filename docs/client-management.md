@@ -9,6 +9,8 @@ without changing metadata or rotating the registration access token. Standard
 Unknown `client_type` values and public clients requesting secret authentication
 are rejected as invalid client metadata.
 
+For inline JWKS validation and key rotation, see [Private key client authentication](private-key-jwt.md). Management uses its separate registration access bearer token for all client authentication methods.
+
 Deleting a registration permanently retires its client ID. Memory and Valkey keep a revocation marker, and issued opaque and self-issued JWT access tokens are checked against that marker on every validation. Existing access tokens, refresh requests and further client authentication are refused after deletion; another client's grants remain usable. A storage read failure returns an unavailable response instead of accepting a token or presenting an outage as invalid credentials.
 
 Retired IDs cannot be registered again. Provision a new client for replacement; use metadata updates for signing-key rotation without deleting the client. Valkey stores the compact marker in the client record without an expiry, so replica reconnects do not lose retirement state. Persistence and backup policies must preserve these records: restoring an older snapshot can restore older authorization state. Upgrade all authorization-server replicas before relying on this behavior; old binaries do not check retirement markers.
@@ -162,7 +164,7 @@ Authorization: Bearer rat-<token>
 
 Replaces the client metadata and **rotates the registration access token**. The response includes a new `registration_access_token`; the old one is invalidated immediately.
 
-Send the authenticated `client_id` and complete metadata, including `redirect_uris`. Missing optional metadata resets to its registration default. The same name, scope and redirect validation applies as at registration. A client changing to a secret authentication method without an existing secret must register a replacement client.
+Send the authenticated `client_id` and complete metadata, including `redirect_uris`. Missing optional metadata resets to its registration default. The same name, scope, key and redirect validation applies as at registration. A client changing to a secret authentication method without an existing secret must register a replacement client.
 
 ```
 PUT /oauth/register/abc123

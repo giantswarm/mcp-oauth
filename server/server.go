@@ -72,6 +72,7 @@ type TokenRefreshHandler func(ctx context.Context, userID, familyID string, newT
 // Server implements the OAuth 2.1 server logic (provider-agnostic).
 // It coordinates the OAuth flow using a Provider and storage backends.
 type Server struct {
+	clientAssertionReplayStore    ClientAssertionReplayStore
 	provider                      providers.Provider
 	tokenStore                    storage.TokenStore
 	clientStore                   storage.ClientStore
@@ -216,6 +217,9 @@ func New(
 
 	srv.registerSelfIssuedSubjectValidator()
 
+	if srv.clientAssertionReplayStore == nil {
+		srv.clientAssertionReplayStore = NewMemoryClientAssertionReplayStore()
+	}
 	if srv.dpopReplayCache == nil {
 		srv.dpopReplayCache = NewMemoryDPoPReplayCache()
 	}

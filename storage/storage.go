@@ -4,6 +4,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -637,6 +638,8 @@ type Combined interface {
 
 // Client represents a registered OAuth client
 type Client struct {
+	JWKS                        json.RawMessage
+	TokenEndpointAuthSigningAlg string
 	ClientID                    string
 	ClientSecretHash            string // bcrypt hash
 	ClientSecretEncrypted       string // AES-GCM envelope keyed by the registration access token

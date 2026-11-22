@@ -154,7 +154,7 @@ func newJWTIssuer(cfg *Config) (*jwtIssuer, error) {
 			Key:       cfg.AccessTokenSigningKey,
 			KeyID:     cfg.AccessTokenSigningKeyID,
 			Algorithm: cfg.AccessTokenSigningAlgorithm,
-			Use:       "sig",
+			Use:       signingKeyUse,
 		},
 	}
 	opts := &jose.SignerOptions{}
@@ -274,7 +274,7 @@ func publicJWKFromConfig(cfg *Config) (*jose.JSONWebKey, error) {
 		Key:       cfg.AccessTokenSigningKey.Public(),
 		KeyID:     cfg.AccessTokenSigningKeyID,
 		Algorithm: cfg.AccessTokenSigningAlgorithm,
-		Use:       "sig",
+		Use:       signingKeyUse,
 	}
 	if !jwk.IsPublic() {
 		return nil, fmt.Errorf("derived JWK contains non-public material; refusing to publish")

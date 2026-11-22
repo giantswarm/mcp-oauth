@@ -32,14 +32,17 @@ const (
 
 // clientRegistrationRequest represents the JSON request for client registration
 type clientRegistrationRequest struct {
-	ClientID                string          `json:"client_id"`
-	ClientSecret            json.RawMessage `json:"client_secret"`
-	Scope                   string          `json:"scope"`
-	ClientName              string          `json:"client_name"`
-	ClientType              string          `json:"client_type"`
-	TokenEndpointAuthMethod string          `json:"token_endpoint_auth_method"`
-	RedirectURIs            []string        `json:"redirect_uris"`
-	Scopes                  []string        `json:"scopes"`
+	ClientID                    string          `json:"client_id"`
+	ClientSecret                json.RawMessage `json:"client_secret"`
+	Scope                       string          `json:"scope"`
+	JWKS                        json.RawMessage `json:"jwks"`
+	JWKSURI                     string          `json:"jwks_uri"`
+	TokenEndpointAuthSigningAlg string          `json:"token_endpoint_auth_signing_alg"`
+	ClientName                  string          `json:"client_name"`
+	ClientType                  string          `json:"client_type"`
+	TokenEndpointAuthMethod     string          `json:"token_endpoint_auth_method"`
+	RedirectURIs                []string        `json:"redirect_uris"`
+	Scopes                      []string        `json:"scopes"`
 }
 
 // checkClientRegistrationRateLimit checks if client registration is rate limited
@@ -225,7 +228,7 @@ func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request
 	h.recordTrustedAllowlistSpan(span, auth)
 
 	maxClients := h.getMaxClientsPerIP()
-	result, err := h.server.RegisterClientV2(r.Context(), req.ClientName, req.ClientType, req.TokenEndpointAuthMethod, req.RedirectURIs, req.Scopes, clientIP, maxClients)
+	result, err := h.server.RegisterClientWithKeys(r.Context(), req.ClientName, req.ClientType, req.TokenEndpointAuthMethod, req.RedirectURIs, req.Scopes, clientIP, maxClients, req.JWKS, req.TokenEndpointAuthSigningAlg)
 	if err != nil {
 		h.handleRegistrationError(r.Context(), w, err, clientIP, startTime, span)
 		return
@@ -272,6 +275,10 @@ func (h *Handler) validateClientMetadata(w http.ResponseWriter, req *clientRegis
 		return err
 	}
 
+	if err := server.ValidateClientKeyMetadata(req.TokenEndpointAuthMethod, req.JWKS, req.TokenEndpointAuthSigningAlg, req.JWKSURI); err != nil {
+		h.writeError(w, "invalid_client_metadata", err.Error(), http.StatusBadRequest)
+		return err
+	}
 	if req.TokenEndpointAuthMethod != "" && !isValidAuthMethod(req.TokenEndpointAuthMethod) {
 		h.logger.Warn("Unsupported token_endpoint_auth_method requested",
 			"method", req.TokenEndpointAuthMethod, "supported_methods", oauth.SupportedTokenAuthMethods, "ip", clientIP)
@@ -422,6 +429,10 @@ func (h *Handler) writeRegistrationResponse(w http.ResponseWriter, client *stora
 		"response_types":             client.ResponseTypes,
 	}
 
+	if len(client.JWKS) > 0 {
+		response["jwks"] = client.JWKS
+		response["token_endpoint_auth_signing_alg"] = client.TokenEndpointAuthSigningAlg
+	}
 	if clientSecret != "" {
 		response["client_secret"] = clientSecret
 		response["client_secret_expires_at"] = 0

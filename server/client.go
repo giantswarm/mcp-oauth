@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -68,11 +69,19 @@ type RegisterClientResult struct {
 // access token back to the handler. It replaces RegisterClient once all call
 // sites are migrated.
 func (s *Server) RegisterClientV2(ctx context.Context, clientName, clientType, tokenEndpointAuthMethod string, redirectURIs []string, scopes []string, clientIP string, maxClientsPerIP int) (*RegisterClientResult, error) {
+	return s.RegisterClientWithKeys(ctx, clientName, clientType, tokenEndpointAuthMethod, redirectURIs, scopes, clientIP, maxClientsPerIP, nil, "")
+}
+
+// RegisterClientWithKeys registers a client with validated inline signing credentials.
+func (s *Server) RegisterClientWithKeys(ctx context.Context, clientName, clientType, tokenEndpointAuthMethod string, redirectURIs []string, scopes []string, clientIP string, maxClientsPerIP int, jwks json.RawMessage, algorithm string) (*RegisterClientResult, error) {
 	if clientType != "" && clientType != ClientTypePublic && clientType != ClientTypeConfidential {
 		return nil, fmt.Errorf("unsupported client type")
 	}
 	if clientType == ClientTypePublic && tokenEndpointAuthMethod != "" && tokenEndpointAuthMethod != TokenEndpointAuthMethodNone {
 		return nil, fmt.Errorf("public clients must use token_endpoint_auth_method none")
+	}
+	if err := ValidateClientKeyMetadata(tokenEndpointAuthMethod, jwks, algorithm, ""); err != nil {
+		return nil, err
 	}
 	if err := s.clientStore.CheckIPLimit(ctx, clientIP, maxClientsPerIP); err != nil {
 		return nil, err
@@ -84,7 +93,11 @@ func (s *Server) RegisterClientV2(ctx context.Context, clientName, clientType, t
 
 	clientID := generateRandomToken()
 	clientType, tokenEndpointAuthMethod = resolveClientTypeAndAuthMethod(clientType, tokenEndpointAuthMethod)
-	clientSecret, clientSecretHash, err := generateClientSecret(clientType)
+	secretType := clientType
+	if tokenEndpointAuthMethod == TokenEndpointAuthMethodPrivateKeyJWT {
+		secretType = ClientTypePublic
+	}
+	clientSecret, clientSecretHash, err := generateClientSecret(secretType)
 	if err != nil {
 		return nil, err
 	}
@@ -96,6 +109,8 @@ func (s *Server) RegisterClientV2(ctx context.Context, clientName, clientType, t
 
 	now := time.Now()
 	client := &storage.Client{
+		JWKS:                        append(json.RawMessage(nil), jwks...),
+		TokenEndpointAuthSigningAlg: algorithm,
 		ClientID:                    clientID,
 		ClientSecretHash:            clientSecretHash,
 		ClientType:                  clientType,
@@ -206,7 +221,9 @@ func (s *Server) validateRedirectURIsWithAudit(ctx context.Context, redirectURIs
 // resolveClientTypeAndAuthMethod determines the client type and auth method.
 // Per RFC 7591 Section 2: token_endpoint_auth_method determines client type.
 func resolveClientTypeAndAuthMethod(clientType, tokenEndpointAuthMethod string) (string, string) {
-	if tokenEndpointAuthMethod == TokenEndpointAuthMethodNone {
+	if tokenEndpointAuthMethod == TokenEndpointAuthMethodPrivateKeyJWT {
+		clientType = ClientTypeConfidential
+	} else if tokenEndpointAuthMethod == TokenEndpointAuthMethodNone {
 		clientType = ClientTypePublic
 	} else if clientType == "" {
 		clientType = ClientTypeConfidential

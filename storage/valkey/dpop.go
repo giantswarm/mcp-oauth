@@ -26,7 +26,7 @@ func NewDPoPReplayCache(client vk.Client, keyPrefix string) server.DPoPReplayCac
 // A Valkey error is returned as-is; callers (ValidateDPoPProof) treat cache
 // errors as proof rejection.
 func (c *dpopReplayCache) Seen(ctx context.Context, jti string, ttl time.Duration) (bool, error) {
-	seconds := max(int64(ttl.Seconds()), 1)
+	seconds := ceilSeconds(ttl)
 	err := c.client.Do(
 		ctx,
 		c.client.B().Set().Key(c.keyPrefix+jti).Value("1").Nx().ExSeconds(seconds).Build(),

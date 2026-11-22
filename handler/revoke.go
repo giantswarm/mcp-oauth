@@ -32,11 +32,11 @@ func (h *Handler) authenticateRevocationClient(w http.ResponseWriter, r *http.Re
 	}
 	basicClientID, _ := h.parseBasicAuth(r)
 
-	if h.rejectBasicFormClientIDMismatch(w, r, basicClientID, formClientID, clientIP, endpointRevoke, "", span, startTime) {
+	if !hasClientAssertion(r) && h.rejectBasicFormClientIDMismatch(w, r, basicClientID, formClientID, clientIP, endpointRevoke, "", span, startTime) {
 		return "", false, false
 	}
 
-	if formClientID == "" && basicClientID == "" {
+	if formClientID == "" && basicClientID == "" && !hasClientAssertion(r) {
 		h.logAuthFailure(r.Context(), "", clientIP, "revocation_missing_auth", "Revocation client identification missing")
 		h.writeEndpointClientAuthenticationError(w, r, endpointRevoke, "", span, startTime, oauth.ErrInvalidClient("Client identification required"))
 		return "", false, false
@@ -185,7 +185,7 @@ func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request
 	// silent-override bypass for the same rule the token / refresh / revoke
 	// paths enforce.
 	basicClientID, _ := h.parseBasicAuth(r)
-	if h.rejectBasicFormClientIDMismatch(w, r, basicClientID, r.Form.Get("client_id"), clientIP, endpointIntrospect, "", span, startTime) {
+	if !hasClientAssertion(r) && h.rejectBasicFormClientIDMismatch(w, r, basicClientID, r.Form.Get("client_id"), clientIP, endpointIntrospect, "", span, startTime) {
 		return
 	}
 
@@ -237,7 +237,7 @@ func (h *Handler) writeIntrospectionError(w http.ResponseWriter, r *http.Request
 // Returns the client ID on success, or an error if authentication fails.
 func (h *Handler) authenticateIntrospectionClient(r *http.Request, clientIP string) (string, error) {
 	basicClientID, _ := h.parseBasicAuth(r)
-	if r.Form.Get("client_id") == "" && basicClientID == "" {
+	if r.Form.Get("client_id") == "" && basicClientID == "" && !hasClientAssertion(r) {
 		h.logAuthFailure(r.Context(), "", clientIP, "introspection_missing_auth", "Introspection client authentication missing")
 		return "", oauth.ErrInvalidClient("Client authentication required for token introspection")
 	}
