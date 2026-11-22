@@ -66,7 +66,7 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		ctx := contextWithValidatedToken(r.Context(), userInfo, metadata)
 		ctx = context.WithValue(ctx, providerTokenKey{}, validatedProviderToken{bearer: accessToken, source: userInfo.TokenSource, store: h.server.TokenStore()})
 		ctx = ContextWithSessionID(ctx, h.sessionIDForToken(accessToken, metadata))
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(h.protectedResponseWriter(w, r), r.WithContext(ctx))
 	})
 }
 
@@ -234,6 +234,20 @@ func (h *Handler) extractBearerToken(w http.ResponseWriter, r *http.Request) (st
 //   - code: OAuth error code (e.g., "invalid_token")
 //   - description: Human-readable error description
 func (h *Handler) writeUnauthorizedError(w http.ResponseWriter, r *http.Request, code, description string) {
+	h.setUnauthorizedChallenge(w, r, code, description)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	payload := map[string]string{}
+	if code != "" {
+		payload[paramError] = code
+	}
+	if description != "" {
+		payload[paramErrorDescription] = description
+	}
+	h.writeJSON(w, payload)
+}
+
+func (h *Handler) setUnauthorizedChallenge(w http.ResponseWriter, r *http.Request, code, description string) {
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 
 	// MCP 2025-11-25: Include WWW-Authenticate header with endpoint-specific scope guidance
@@ -245,17 +259,6 @@ func (h *Handler) writeUnauthorizedError(w http.ResponseWriter, r *http.Request,
 		// Minimal header for backward compatibility with legacy clients (opt-in)
 		w.Header().Set("WWW-Authenticate", tokenTypeBearer)
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusUnauthorized)
-	payload := map[string]string{}
-	if code != "" {
-		payload[paramError] = code
-	}
-	if description != "" {
-		payload[paramErrorDescription] = description
-	}
-	h.writeJSON(w, payload)
 }
 
 // writeInsufficientScopeError writes a 403 Forbidden response with insufficient_scope error.

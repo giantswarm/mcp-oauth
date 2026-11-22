@@ -47,6 +47,11 @@ the configured resource identifier. Root and existing route aliases remain
 available. A request without credentials receives a Bearer challenge without
 an OAuth error code; a rejected credential receives `invalid_token`.
 
+`ValidateToken` also adds the resource-specific Bearer challenge when a protected
+handler returns 401 without one. It preserves the handler's response body, media
+type and existing challenge. A validated inbound token does not acquire an
+`invalid_token` error merely because the downstream resource rejects it.
+
 ### Configuration
 
 The library automatically exposes this endpoint when you register routes:
