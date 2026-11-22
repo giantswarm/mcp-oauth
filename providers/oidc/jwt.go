@@ -472,6 +472,10 @@ func (c *ActorClaim) Chain() []ActorClaim {
 type IDTokenClaims struct {
 	josejwt.Claims
 
+	// AuthorizedParty is the OIDC azp claim; ClientID is the access-token client_id.
+	AuthorizedParty string `json:"azp,omitempty"`
+	ClientID        string `json:"client_id,omitempty"`
+
 	Email         string   `json:"email,omitempty"`
 	EmailVerified bool     `json:"email_verified,omitempty"`
 	Name          string   `json:"name,omitempty"`

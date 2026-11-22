@@ -259,8 +259,13 @@ func audiencesFromClaim(v any) []string {
 // TokenSource is set to TokenSourceJWT so downstream consumers can dispatch
 // correctly (no TokenStore lookup will succeed for a JWT bearer).
 func userInfoFromJWTClaims(claims map[string]any) (*providers.UserInfo, error) {
+	clientID, err := clientIDFromJWTClaims(claims)
+	if err != nil {
+		return nil, err
+	}
 	info := &providers.UserInfo{
 		TokenSource: providers.TokenSourceJWT,
+		ClientID:    clientID,
 	}
 	info.Issuer, _ = claims[claimIss].(string)
 	info.ID, _ = claims[claimSub].(string)
@@ -299,6 +304,18 @@ func userInfoFromJWTClaims(claims map[string]any) (*providers.UserInfo, error) {
 		}
 	}
 	return info, nil
+}
+
+func clientIDFromJWTClaims(claims map[string]any) (string, error) {
+	value, present := claims[paramClientID]
+	if !present {
+		return "", nil
+	}
+	clientID, ok := value.(string)
+	if !ok || clientID == "" {
+		return "", fmt.Errorf("access token has invalid client_id")
+	}
+	return clientID, nil
 }
 
 func actorFromJWTClaim(raw any) (*oidc.ActorClaim, error) {

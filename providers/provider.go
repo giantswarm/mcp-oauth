@@ -237,6 +237,10 @@ type UserInfo struct {
 	// use the authorization server's configured issuer.
 	Issuer string
 
+	// ClientID identifies the validated OAuth client. Forwarded ID tokens use
+	// azp or their single audience; ambiguous client identity remains empty.
+	ClientID string
+
 	// ActorIssuer is the iss field from the RFC 8693 §4.1 act claim. Non-empty
 	// only when the token was minted via a delegated token exchange with a
 	// validated actor_token. Use IsOBO() as a presence check.

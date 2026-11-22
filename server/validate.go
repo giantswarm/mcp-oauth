@@ -415,6 +415,7 @@ func (s *Server) validateProviderAccessToken(ctx context.Context, storedToken *o
 	validatedUserInfo := *userInfo
 	userInfo = &validatedUserInfo
 	userInfo.Issuer = s.Config.Issuer
+	userInfo.ClientID = ""
 	userInfo.TokenSource = providers.TokenSourceOAuth
 
 	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, providerUserInfoToStorage(userInfo)); err != nil {
@@ -699,6 +700,10 @@ func (s *Server) validateTrustedIssuerJWT(ctx context.Context, accessToken strin
 		return nil, errors.New("trusted issuer JWT is not intended for this resource server")
 	}
 	userInfo := s.idTokenClaimsToUserInfo(identity.Claims)
+	userInfo.ClientID = identity.Claims.ClientID
+	if userInfo.ClientID == "" {
+		userInfo.ClientID = identity.Claims.AuthorizedParty
+	}
 	userInfo.Issuer = identity.Issuer
 	userInfo.TokenSource = providers.TokenSourceTrustedIssuer
 	s.logTrustedIssuerJWTAccepted(ctx, accessToken, s.deriveForwardedSessionID(accessToken), identity.Issuer, userInfo)
