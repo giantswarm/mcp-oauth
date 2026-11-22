@@ -123,11 +123,7 @@ func TestRevokedFamilySet_RetainsLegacyTwin(t *testing.T) {
 		"the legacy twin backs the same by-ID index and must be retained as well")
 }
 
-// TestRevokedFamilySet_NotRetainedWithoutMetadata covers the other side of the
-// retention condition: with no member metadata to mark revoked, the set indexes
-// nothing, so it keeps its own member horizon instead of being held for the
-// retention window.
-func TestRevokedFamilySet_NotRetainedWithoutMetadata(t *testing.T) {
+func TestRevokedFamilySet_RetainsFenceWithoutMetadata(t *testing.T) {
 	store := testStore(t)
 	ctx := t.Context()
 
@@ -143,8 +139,16 @@ func TestRevokedFamilySet_NotRetainedWithoutMetadata(t *testing.T) {
 
 	require.NoError(t, store.RevokeRefreshTokenFamily(ctx, familyID))
 
-	require.LessOrEqual(t, ttlSeconds(t, store, familySetKey), shortMemberTTLCeil,
-		"an index that points at nothing must not be held for the retention window")
+	retentionSeconds := int64(store.revokedFamilyRetention().Seconds())
+	require.Greater(t, ttlSeconds(t, store, familySetKey), retentionSeconds-60)
+	metadata, err := store.GetRefreshTokenFamilyByID(ctx, familyID)
+	require.NoError(t, err)
+	require.True(t, metadata.Revoked)
+	_, _, err = store.GetActiveRefreshTokenByFamily(ctx, familyID)
+	require.ErrorIs(t, err, storage.ErrRefreshTokenFamilyRevoked)
+	require.ErrorIs(t, store.SaveRefreshTokenWithFamily(ctx, "late-refresh", "person", "client", familyID, 1, time.Now().Add(time.Hour)), storage.ErrRefreshTokenFamilyRevoked)
+	_, err = store.GetRefreshTokenInfo(ctx, "late-refresh")
+	require.ErrorIs(t, err, storage.ErrTokenNotFound)
 }
 
 // TestRevokedFamilySet_RetainedWhenMemberStateUnknown covers the fail-closed
@@ -167,7 +171,7 @@ func TestRevokedFamilySet_RetainedWhenMemberStateUnknown(t *testing.T) {
 		Key(store.refreshTokenMetaKey(token)).Value("not-json").
 		ExSeconds(3600).Build()).Error())
 
-	require.NoError(t, store.RevokeRefreshTokenFamily(ctx, familyID))
+	require.Error(t, store.RevokeRefreshTokenFamily(ctx, familyID))
 
 	retentionSeconds := int64((time.Duration(store.revokedFamilyRetentionDays) * 24 * time.Hour).Seconds())
 	require.Greater(t, ttlSeconds(t, store, familySetKey), retentionSeconds-60,
@@ -196,9 +200,11 @@ func TestRevokedFamily_StragglerMemberDoesNotUnrevoke(t *testing.T) {
 		ctx, revokedRT, userID, clientID, familyID, 0, time.Now().Add(time.Hour)))
 	require.NoError(t, store.RevokeRefreshTokenFamily(ctx, familyID))
 
-	// The racing rotation: a member written after the revocation walk passed.
-	require.NoError(t, store.SaveRefreshTokenWithFamily(
-		ctx, liveRT, userID, clientID, familyID, 1, time.Now().Add(time.Hour)))
+	require.ErrorIs(t, store.SaveRefreshTokenWithFamily(
+		ctx, liveRT, userID, clientID, familyID, 1, time.Now().Add(time.Hour)), storage.ErrRefreshTokenFamilyRevoked)
+	// A member from an older writer cannot override the family marker.
+	require.NoError(t, store.saveFamilyMetadata(ctx, liveRT, userID, clientID, familyID, 1, time.Hour))
+	require.NoError(t, store.saddExtendOnlyTTL(ctx, store.familyKey(familyID), liveRT, time.Hour))
 
 	meta, err := store.GetRefreshTokenFamilyByID(ctx, familyID)
 	require.NoError(t, err)

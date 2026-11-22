@@ -192,6 +192,10 @@ func (h *Handler) recordUserRateLimitExceeded(ctx context.Context, clientIP, use
 // extractBearerToken extracts the Bearer token from the Authorization header.
 // Returns the token and true if successful, or writes an error and returns false.
 func (h *Handler) extractBearerToken(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if len(r.Header.Values("Authorization")) > 1 {
+		h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidRequest, "Multiple Authorization credentials")
+		return "", false
+	}
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
 		h.writeUnauthorizedError(w, r, "", "")

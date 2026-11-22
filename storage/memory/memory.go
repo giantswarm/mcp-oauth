@@ -4,6 +4,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -37,6 +38,7 @@ const (
 	// This prevents memory exhaustion attacks via repeated token rotation
 	// Set to 5x the warning threshold for safety margin
 	hardMaxFamilyMetadataEntries = 50000
+	refreshTokenType             = "refresh"
 )
 
 // RefreshTokenFamily tracks a family of refresh tokens for reuse detection (OAuth 2.1)
@@ -74,13 +76,16 @@ type Store struct {
 	refreshTokens        map[string]string              // refresh token -> user ID
 	refreshTokenExpiries map[string]time.Time           // refresh token -> expiry time
 	refreshTokenFamilies map[string]*RefreshTokenFamily // refresh token -> family metadata
+	familyRetainUntil    map[string]time.Time           // family ID -> latest token acceptance horizon
+	revokedFamilies      map[string]time.Time
 
 	// Token metadata tracking (for revocation by user+client)
 	tokenMetadata map[string]*storage.TokenMetadata // token ID (access or refresh) -> metadata
 
 	// Client storage
-	clients      map[string]*storage.Client
-	clientsPerIP map[string]int // IP address -> client count (for DoS protection)
+	clients        map[string]*storage.Client
+	revokedClients map[string]bool
+	clientsPerIP   map[string]int // IP address -> client count (for DoS protection)
 
 	// Flow storage
 	authStates        map[string]*storage.AuthorizationState
@@ -185,8 +190,11 @@ func New(opts ...Option) *Store {
 		refreshTokens:              make(map[string]string),
 		refreshTokenExpiries:       make(map[string]time.Time),
 		refreshTokenFamilies:       make(map[string]*RefreshTokenFamily),
+		familyRetainUntil:          make(map[string]time.Time),
+		revokedFamilies:            make(map[string]time.Time),
 		tokenMetadata:              make(map[string]*storage.TokenMetadata),
 		clients:                    make(map[string]*storage.Client),
+		revokedClients:             make(map[string]bool),
 		clientsPerIP:               make(map[string]int),
 		authStates:                 make(map[string]*storage.AuthorizationState),
 		authCodes:                  make(map[string]*storage.AuthorizationCode),
@@ -515,6 +523,10 @@ func (s *Store) SaveClient(ctx context.Context, client *storage.Client) error {
 	defer s.mu.Unlock()
 
 	// Track if this is a new client (for atomic counter)
+	if s.revokedClients[client.ClientID] {
+		err = storage.ErrClientNotFound
+		return err
+	}
 	_, existed := s.clients[client.ClientID]
 
 	s.clients[client.ClientID] = client
@@ -537,8 +549,15 @@ func (s *Store) DeleteClient(_ context.Context, clientID string) error {
 		return storage.ErrClientNotFound
 	}
 	delete(s.clients, clientID)
+	s.revokedClients[clientID] = true
 	s.clientsCountAtomic.Add(-1)
 	return nil
+}
+
+func (s *Store) IsClientRevoked(_ context.Context, clientID string) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.revokedClients[clientID], nil
 }
 
 // CheckIPLimit checks if an IP has reached the client registration limit
@@ -614,6 +633,10 @@ func (s *Store) SaveRefreshTokenWithFamily(_ context.Context, refreshToken, user
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.revokedFamilies[familyID].After(time.Now()) {
+		return storage.ErrRefreshTokenFamilyRevoked
+	}
+
 	// SECURITY: Enforce hard limit on family metadata to prevent memory exhaustion attacks
 	// Check if we're adding a NEW family entry (not updating existing)
 	if _, exists := s.refreshTokenFamilies[refreshToken]; !exists {
@@ -626,6 +649,9 @@ func (s *Store) SaveRefreshTokenWithFamily(_ context.Context, refreshToken, user
 				"client_id", clientID)
 			return fmt.Errorf("refresh token family metadata limit exceeded (%d entries) - possible memory exhaustion attack", currentCount)
 		}
+	}
+	if err := s.retainFamilyUntilLocked(familyID, expiresAt); err != nil {
+		return err
 	}
 
 	// Save basic refresh token info
@@ -649,7 +675,7 @@ func (s *Store) SaveRefreshTokenWithFamily(_ context.Context, refreshToken, user
 		existing.UserID = userID
 		existing.ClientID = clientID
 		existing.IssuedAt = time.Now()
-		existing.TokenType = "refresh"
+		existing.TokenType = refreshTokenType
 		if existing.FamilyID == "" {
 			existing.FamilyID = familyID
 		}
@@ -658,7 +684,7 @@ func (s *Store) SaveRefreshTokenWithFamily(_ context.Context, refreshToken, user
 			UserID:    userID,
 			ClientID:  clientID,
 			IssuedAt:  time.Now(),
-			TokenType: "refresh",
+			TokenType: refreshTokenType,
 			FamilyID:  familyID,
 		}
 	}
@@ -792,6 +818,12 @@ func (s *Store) RevokeRefreshTokenFamily(_ context.Context, familyID string) err
 
 	revokedCount := 0
 	now := time.Now()
+	if familyID == "" {
+		return fmt.Errorf("family ID cannot be empty")
+	}
+	if err := s.markFamilyRevokedLocked(familyID, now); err != nil {
+		return err
+	}
 
 	// Find and revoke all tokens in this family
 	for token, family := range s.refreshTokenFamilies {
@@ -1247,17 +1279,36 @@ func (s *Store) cleanupRevokedFamilies() int {
 	if retentionDays == 0 {
 		retentionDays = 90
 	}
-	threshold := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+	now := time.Now()
+	threshold := now.Add(-time.Duration(retentionDays) * 24 * time.Hour)
 	for refreshToken, family := range s.refreshTokenFamilies {
 		if family.Revoked {
 			revokedTime := family.RevokedAt
 			if revokedTime.IsZero() {
 				revokedTime = family.IssuedAt
 			}
-			if revokedTime.Before(threshold) {
+			if revokedTime.Before(threshold) && !s.familyRetainUntil[family.FamilyID].After(now) {
 				delete(s.refreshTokenFamilies, refreshToken)
 				cleaned++
 			}
+		}
+	}
+	return cleaned
+}
+
+func (s *Store) cleanupExpiredFamilyRetention() int {
+	now := time.Now()
+	cleaned := 0
+	for familyID, retainUntil := range s.familyRetainUntil {
+		if !retainUntil.After(now) {
+			delete(s.familyRetainUntil, familyID)
+			cleaned++
+		}
+	}
+	for familyID, retainUntil := range s.revokedFamilies {
+		if !retainUntil.After(now) {
+			delete(s.revokedFamilies, familyID)
+			cleaned++
 		}
 	}
 	return cleaned
@@ -1301,6 +1352,7 @@ func (s *Store) cleanup() {
 	cleaned += s.cleanupExpiredAuthCodes()
 	cleaned += s.cleanupExpiredRefreshTokens()
 	cleaned += s.cleanupRevokedFamilies()
+	cleaned += s.cleanupExpiredFamilyRetention()
 	cleaned += s.cleanupExpiredProviderTokenRefs()
 	cleaned += s.cleanupExpiredUserProviderTokens()
 	cleaned += s.cleanupExpiredProviderRefreshLocks()
@@ -1337,6 +1389,15 @@ func (s *Store) SaveTokenMetadata(_ context.Context, tokenID string, metadata st
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if metadata.FamilyID != "" && (metadata.TokenType == "access" || metadata.TokenType == refreshTokenType) {
+		retainUntil := metadata.ExpiresAt
+		if metadata.RetainUntil.After(retainUntil) {
+			retainUntil = metadata.RetainUntil
+		}
+		if err := s.retainFamilyUntilLocked(metadata.FamilyID, retainUntil); err != nil {
+			return err
+		}
+	}
 	s.tokenMetadata[tokenID] = &metadata
 
 	s.logger.Debug("Saved token metadata",
@@ -1347,6 +1408,25 @@ func (s *Store) SaveTokenMetadata(_ context.Context, tokenID string, metadata st
 		"scopes", metadata.Scopes,
 		"family_id", metadata.FamilyID)
 
+	return nil
+}
+
+// retainFamilyUntilLocked preserves revocation state beyond deleted token metadata.
+func (s *Store) retainFamilyUntilLocked(familyID string, retainUntil time.Time) error {
+	if s.revokedFamilies[familyID].After(time.Now()) {
+		return storage.ErrRefreshTokenFamilyRevoked
+	}
+	if retainUntil.IsZero() {
+		return nil
+	}
+	current, exists := s.familyRetainUntil[familyID]
+	if !retainUntil.After(current) {
+		return nil
+	}
+	if !exists && len(s.familyRetainUntil) >= hardMaxFamilyMetadataEntries {
+		return fmt.Errorf("token family retention limit exceeded (%d entries)", len(s.familyRetainUntil))
+	}
+	s.familyRetainUntil[familyID] = retainUntil
 	return nil
 }
 
@@ -1380,7 +1460,7 @@ func (s *Store) RevokeAllTokensForUserClient(_ context.Context, userID, clientID
 	familiesToRevoke, tokensToRevoke := s.identifyTokensToRevoke(userID, clientID)
 
 	// Step 2: Revoke entire token families
-	revokedCount := s.revokeFamilies(familiesToRevoke, userID, clientID)
+	revokedCount, revocationError := s.revokeFamilies(familiesToRevoke, userID, clientID)
 
 	// Step 3: Revoke remaining tokens (access tokens, tokens without families)
 	revokedCount += s.revokeRemainingTokens(tokensToRevoke, userID, clientID)
@@ -1393,7 +1473,7 @@ func (s *Store) RevokeAllTokensForUserClient(_ context.Context, userID, clientID
 			"reason", "authorization_code_reuse_detected")
 	}
 
-	return revokedCount, nil
+	return revokedCount, revocationError
 }
 
 // RevokeTokensForFamily revokes one refresh-token family and deletes every
@@ -1407,7 +1487,10 @@ func (s *Store) RevokeTokensForFamily(_ context.Context, userID, clientID, famil
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	revokedCount := s.revokeFamily(familyID, time.Now(), userID, clientID)
+	revokedCount, err := s.revokeFamily(familyID, time.Now(), userID, clientID)
+	if err != nil {
+		return revokedCount, err
+	}
 	for tokenID, metadata := range s.tokenMetadata {
 		if metadata.UserID != userID || metadata.ClientID != clientID || metadata.FamilyID != familyID {
 			continue
@@ -1448,12 +1531,14 @@ func (s *Store) identifyTokensToRevoke(userID, clientID string) (map[string]bool
 }
 
 // revokeFamilies revokes all tokens in the given families. Must be called with lock held.
-func (s *Store) revokeFamilies(familiesToRevoke map[string]bool, userID, clientID string) int {
+func (s *Store) revokeFamilies(familiesToRevoke map[string]bool, userID, clientID string) (int, error) {
 	now := time.Now()
 	revokedCount := 0
+	var revocationError error
 
 	for familyID := range familiesToRevoke {
-		familyRevokedCount := s.revokeFamily(familyID, now, userID, clientID)
+		familyRevokedCount, err := s.revokeFamily(familyID, now, userID, clientID)
+		revocationError = errors.Join(revocationError, err)
 		revokedCount += familyRevokedCount
 
 		if familyRevokedCount > 0 {
@@ -1466,11 +1551,14 @@ func (s *Store) revokeFamilies(familiesToRevoke map[string]bool, userID, clientI
 		}
 	}
 
-	return revokedCount
+	return revokedCount, revocationError
 }
 
 // revokeFamily revokes all tokens in a single family. Must be called with lock held.
-func (s *Store) revokeFamily(familyID string, now time.Time, userID, clientID string) int {
+func (s *Store) revokeFamily(familyID string, now time.Time, userID, clientID string) (int, error) {
+	if err := s.markFamilyRevokedLocked(familyID, now); err != nil {
+		return 0, err
+	}
 	familyRevokedCount := 0
 
 	for tokenID, family := range s.refreshTokenFamilies {
@@ -1499,7 +1587,7 @@ func (s *Store) revokeFamily(familyID string, now time.Time, userID, clientID st
 			"generation", family.Generation)
 	}
 
-	return familyRevokedCount
+	return familyRevokedCount, nil
 }
 
 // revokeRemainingTokens revokes tokens not already revoked via family revocation. Must be called with lock held.

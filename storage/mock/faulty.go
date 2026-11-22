@@ -251,6 +251,14 @@ func (f *FaultyStore) GetRefreshTokenFamilyByID(ctx context.Context, familyID st
 	return f.Store.GetRefreshTokenFamilyByID(ctx, familyID)
 }
 
+// IsRefreshTokenFamilyRevoked gates the family revocation lookup.
+func (f *FaultyStore) IsRefreshTokenFamilyRevoked(ctx context.Context, familyID string) (bool, error) {
+	if err := f.gate(ctx, "get_refresh_token_family_by_id"); err != nil {
+		return false, err
+	}
+	return f.Store.IsRefreshTokenFamilyRevoked(ctx, familyID)
+}
+
 // Compile-time checks: the wrapper keeps every interface the server detects
 // on the memory store. If one breaks, the memory store's method set drifted
 // and the wrapper must follow.

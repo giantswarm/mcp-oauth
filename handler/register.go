@@ -32,11 +32,14 @@ const (
 
 // clientRegistrationRequest represents the JSON request for client registration
 type clientRegistrationRequest struct {
-	ClientName              string   `json:"client_name"`
-	ClientType              string   `json:"client_type"`
-	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
-	RedirectURIs            []string `json:"redirect_uris"`
-	Scopes                  []string `json:"scopes"`
+	ClientID                string          `json:"client_id"`
+	ClientSecret            json.RawMessage `json:"client_secret"`
+	Scope                   string          `json:"scope"`
+	ClientName              string          `json:"client_name"`
+	ClientType              string          `json:"client_type"`
+	TokenEndpointAuthMethod string          `json:"token_endpoint_auth_method"`
+	RedirectURIs            []string        `json:"redirect_uris"`
+	Scopes                  []string        `json:"scopes"`
 }
 
 // checkClientRegistrationRateLimit checks if client registration is rate limited
@@ -247,24 +250,49 @@ func (h *Handler) parseAndValidateRegistrationRequest(w http.ResponseWriter, r *
 		return nil, err
 	}
 
-	// Validate client_name to prevent potential stored XSS and log injection (defense-in-depth)
+	if err := h.validateClientMetadata(w, &req, clientIP); err != nil {
+		return nil, err
+	}
+	return &req, nil
+}
+
+func (h *Handler) validateClientMetadata(w http.ResponseWriter, req *clientRegistrationRequest, clientIP string) error {
+	if req.ClientType != "" && req.ClientType != server.ClientTypePublic && req.ClientType != server.ClientTypeConfidential {
+		h.writeError(w, "invalid_client_metadata", "unsupported client_type", http.StatusBadRequest)
+		return fmt.Errorf("unsupported client type")
+	}
+	if req.ClientType == server.ClientTypePublic && req.TokenEndpointAuthMethod != "" && req.TokenEndpointAuthMethod != server.TokenEndpointAuthMethodNone {
+		h.writeError(w, "invalid_client_metadata", "public clients must use token_endpoint_auth_method none", http.StatusBadRequest)
+		return fmt.Errorf("public client authentication method conflict")
+	}
 	if err := helpers.ValidateClientName(req.ClientName); err != nil {
 		h.logger.Warn("Invalid client_name in registration request",
 			"client_name_length", len(req.ClientName), paramError, err, "ip", clientIP)
-		h.writeError(w, constants.ErrorCodeInvalidRequest, err.Error(), http.StatusBadRequest)
-		return nil, err
+		h.writeError(w, "invalid_client_metadata", err.Error(), http.StatusBadRequest)
+		return err
 	}
 
 	if req.TokenEndpointAuthMethod != "" && !isValidAuthMethod(req.TokenEndpointAuthMethod) {
 		h.logger.Warn("Unsupported token_endpoint_auth_method requested",
 			"method", req.TokenEndpointAuthMethod, "supported_methods", oauth.SupportedTokenAuthMethods, "ip", clientIP)
-		h.writeError(w, constants.ErrorCodeInvalidRequest,
+		h.writeError(w, "invalid_client_metadata",
 			fmt.Sprintf("Unsupported token_endpoint_auth_method: %s", req.TokenEndpointAuthMethod),
 			http.StatusBadRequest)
-		return nil, fmt.Errorf("unsupported auth method")
+		return fmt.Errorf("unsupported auth method")
 	}
 
-	return &req, nil
+	if req.Scope != "" {
+		if len(req.Scopes) != 0 || len(req.Scope) > h.server.Config.MaxScopeLength {
+			h.writeError(w, "invalid_client_metadata", "Invalid scope metadata", http.StatusBadRequest)
+			return fmt.Errorf("invalid scope metadata")
+		}
+		req.Scopes = strings.Split(req.Scope, " ")
+	}
+	if err := helpers.ValidateScopes(req.Scopes); err != nil {
+		h.writeError(w, "invalid_client_metadata", "Invalid scope metadata", http.StatusBadRequest)
+		return err
+	}
+	return nil
 }
 
 // getMaxClientsPerIP returns the max clients per IP with default.
@@ -397,6 +425,9 @@ func (h *Handler) writeRegistrationResponse(w http.ResponseWriter, client *stora
 	if clientSecret != "" {
 		response["client_secret"] = clientSecret
 		response["client_secret_expires_at"] = 0
+	}
+	if len(client.Scopes) > 0 {
+		response["scope"] = strings.Join(client.Scopes, " ")
 	}
 
 	if h.server.Config.EnableClientManagementEndpoint && registrationToken != "" {

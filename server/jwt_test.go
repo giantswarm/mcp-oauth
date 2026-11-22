@@ -194,10 +194,22 @@ func TestValidateToken_SelfIssuedJWT_TypHeaderRejected(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestRevokeToken_OwnerlessJWTKeepsItsLifetime(t *testing.T) {
+	server, _, _ := setupJWTFlowTestServer(t)
+	token, err := server.accessTokenIssuer.Issue(t.Context(), AccessTokenClaims{
+		Subject: "person", Audience: server.Config.GetResourceIdentifier(), ExpiresAt: time.Now().Add(time.Minute),
+	})
+	require.NoError(t, err)
+	require.NoError(t, server.RevokeToken(t.Context(), token, "other-client", "192.0.2.1"))
+	_, err = server.ValidateToken(t.Context(), token)
+	require.NoError(t, err)
+}
+
 func TestRevokeToken_SelfIssuedJWT(t *testing.T) {
 	srv, _, _ := setupJWTFlowTestServer(t)
 	now := time.Now().UTC()
 	tok, err := srv.accessTokenIssuer.Issue(context.Background(), AccessTokenClaims{
+		ClientID:  "client-x",
 		Subject:   "user-1",
 		Audience:  srv.Config.GetResourceIdentifier(),
 		ExpiresAt: now.Add(15 * time.Minute),
@@ -302,6 +314,10 @@ type erroringFamilyByIDStore struct {
 
 func (e *erroringFamilyByIDStore) GetRefreshTokenFamilyByID(_ context.Context, _ string) (*storage.RefreshTokenFamilyMetadata, error) {
 	return nil, e.familyByIDErr
+}
+
+func (e *erroringFamilyByIDStore) IsRefreshTokenFamilyRevoked(_ context.Context, _ string) (bool, error) {
+	return false, e.familyByIDErr
 }
 
 // TestValidateToken_SelfIssuedJWT_FamilyCheckFailsClosedOnStorageError covers

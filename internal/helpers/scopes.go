@@ -1,6 +1,24 @@
 package helpers
 
-import "strings"
+import (
+	"errors"
+	"strings"
+)
+
+// ValidateScopes checks scope tokens against RFC 6749 section 3.3.
+func ValidateScopes(scopes []string) error {
+	for _, scope := range scopes {
+		if scope == "" {
+			return errors.New("empty scope token")
+		}
+		for _, character := range scope {
+			if character < 0x21 || character > 0x7e || character == '"' || character == '\\' {
+				return errors.New("invalid scope token")
+			}
+		}
+	}
+	return nil
+}
 
 // SplitScopes splits a space-delimited OAuth scope string (RFC 6749 §3.3)
 // into a slice. Any whitespace run is treated as a separator (per

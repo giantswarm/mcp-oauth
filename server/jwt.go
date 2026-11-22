@@ -96,6 +96,10 @@ func (s *Server) validateSelfIssuedJWT(ctx context.Context, tokenString string) 
 	if err := s.checkJWTFamily(ctx, claims, tokenString); err != nil {
 		return nil, nil, err
 	}
+	clientID, _ := claims[paramClientID].(string)
+	if err := s.checkClientRevocation(ctx, clientID); err != nil {
+		return nil, nil, err
+	}
 
 	userInfo, err := userInfoFromJWTClaims(claims)
 	if err != nil {
@@ -207,42 +211,21 @@ func (s *Server) checkJWTRevocation(ctx context.Context, jti, tokenString string
 	return nil
 }
 
-// checkJWTFamily enforces refresh-token-family revocation when the JWT
-// carries a family_id claim. Lets a /oauth/revoke on the refresh token
-// invalidate all in-flight access tokens in the family — the defense in
-// depth that motivated carrying family_id in the first place.
-//
-// JWTs do not carry the refresh token, only family_id, so the lookup uses
-// the optional RefreshTokenFamilyByIDStore interface. Backends without
-// that interface skip the check (memory and valkey both implement it; the
-// startup warning already discourages running JWT mode without them). A
-// missing family_id claim is also silently skipped — issuance only sets
-// the claim when the token store supports families.
-//
-// Storage errors are ErrStorageUnavailable (parity with checkJWTRevocation):
-// a transient backend failure must neither silently re-enable a revoked
-// family nor reject the token as invalid. ErrRefreshTokenFamilyNotFound is
-// the only "not present" signal and is treated as legit absence.
+// checkJWTFamily rejects JWTs belonging to revoked refresh-token families.
+// Storage failures remain retryable; absent family state is not a revocation.
 func (s *Server) checkJWTFamily(ctx context.Context, claims map[string]any, tokenString string) error {
 	familyID, _ := claims[logKeyFamilyID].(string)
 	if familyID == "" {
 		return nil
 	}
-	indexed, ok := s.tokenStore.(storage.RefreshTokenFamilyByIDStore)
-	if !ok {
-		return nil
-	}
-	meta, err := indexed.GetRefreshTokenFamilyByID(ctx, familyID)
+	revoked, err := s.familyRevoked(ctx, familyID)
 	if errors.Is(err, storage.ErrRefreshTokenFamilyNotFound) {
 		return nil
 	}
 	if err != nil {
 		return s.storageUnavailable(ctx, "check token family revocation", "", "", err)
 	}
-	if meta == nil {
-		return nil
-	}
-	if meta.Revoked {
+	if revoked {
 		s.logSelfIssuedJWTAuthFailure(ctx, "family_revoked", tokenString)
 		return fmt.Errorf("access token family has been revoked")
 	}
@@ -356,22 +339,11 @@ func (s *Server) logSelfIssuedJWTAccepted(ctx context.Context, tokenString strin
 }
 
 // revokeSelfIssuedJWT extracts the jti and exp from a self-issued JWT and
-// writes them to RevokedTokenStore. Returns true when the input was
-// recognized as a self-issued JWT (regardless of whether the denylist
-// write succeeded — RFC 7009 forbids surfacing the difference); returns
-// false when the input is not a JWT or not one we issued, so the caller
-// can fall through to opaque revocation.
-func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID, clientIP string) bool {
+// writes them to RevokedTokenStore. The boolean identifies self-issued JWTs;
+// errors distinguish unavailable revocation storage from invalid tokens.
+func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID, clientIP string) (bool, error) {
 	if !s.Config.IsJWTAccessTokenFormat() || !s.looksLikeSelfIssuedJWT(tokenString) {
-		return false
-	}
-	if s.revokedTokenStore == nil {
-		// Operator was warned at startup; we still consume the bearer so
-		// the caller does not also try opaque revocation, which would log
-		// a misleading "token not found" path.
-		s.Logger.Warn("Cannot revoke self-issued JWT: RevokedTokenStore not configured",
-			"token_suffix", helpers.TokenSuffix(tokenString, 8))
-		return true
+		return false, nil
 	}
 
 	_, claims, err := s.parseAndVerifyJWTSignature(tokenString)
@@ -381,23 +353,28 @@ func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID,
 		s.Logger.Debug("Self-issued JWT revocation: signature/parse failed",
 			logKeyError, err,
 			"token_suffix", helpers.TokenSuffix(tokenString, 8))
-		return true
+		return true, nil
 	}
 	jti, _ := claims[claimJTI].(string)
+	if owner, _ := claims[paramClientID].(string); owner == "" || owner != clientID {
+		return true, nil
+	}
 	expVal, _ := claims["exp"].(float64)
 	if jti == "" || expVal == 0 {
 		s.Logger.Debug("Self-issued JWT missing jti or exp during revocation",
 			"token_suffix", helpers.TokenSuffix(tokenString, 8))
-		return true
+		return true, nil
 	}
-	expiresAt := time.Unix(int64(expVal), 0)
+	expiresAt := time.Unix(int64(expVal), 0).Add(time.Duration(s.Config.ClockSkewGracePeriod) * time.Second)
+	if !expiresAt.After(time.Now()) {
+		return true, nil
+	}
+	if s.revokedTokenStore == nil {
+		return true, s.storageUnavailable(ctx, "revoke JWT", clientID, "", errors.New("JWT revocation store is not configured"))
+	}
 
 	if err := s.revokedTokenStore.RevokeJTI(ctx, jti, expiresAt); err != nil {
-		s.Logger.Warn("Failed to write revoked JWT jti to denylist",
-			logKeyError, err,
-			claimJTI, jti,
-			"token_suffix", helpers.TokenSuffix(tokenString, 8))
-		return true
+		return true, s.storageUnavailable(ctx, "revoke JWT", clientID, "", err)
 	}
 
 	userID, _ := claims[claimSub].(string)
@@ -416,7 +393,7 @@ func (s *Server) revokeSelfIssuedJWT(ctx context.Context, tokenString, clientID,
 		paramClientID, clientID,
 		"ip", clientIP,
 		"expires_at", expiresAt)
-	return true
+	return true, nil
 }
 
 // logSelfIssuedJWTAuthFailure records a hard rejection for audit trails.
