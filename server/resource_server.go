@@ -53,7 +53,7 @@ func (s *Server) validateResourceServer() error {
 		resource := []string{s.Config.GetResourceIdentifier()}
 		for _, issuer := range slices.Sorted(maps.Keys(s.trustedIssuerValidator.issuers)) {
 			audiences := s.trustedIssuerValidator.issuers[issuer].AllowedAudiences
-			if len(audiences) > 0 && helpers.FindMatchingAudience(audiences, resource) == "" {
+			if len(audiences) > 0 && !s.namesResource(audiences) {
 				return fmt.Errorf("trusted issuer %q: RequireResourceAccessTokens needs AllowedAudiences to name the resource %q", issuer, resource[0])
 			}
 		}
@@ -103,4 +103,10 @@ func (s *Server) IsOpenIDProviderIssuer(issuer string) bool {
 	}
 	entry, ok := s.trustedIssuerValidator.entry(issuer)
 	return ok && entry.OpenIDProvider
+}
+
+// namesResource reports whether a token audience names this server's resource
+// identifier.
+func (s *Server) namesResource(audience []string) bool {
+	return helpers.FindMatchingAudience(audience, []string{s.Config.GetResourceIdentifier()}) != ""
 }

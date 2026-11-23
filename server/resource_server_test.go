@@ -360,8 +360,10 @@ func TestTrustedIssuerTokenCountedWithResourceAudience(t *testing.T) {
 		_, err := h.srv.ValidateToken(t.Context(), h.signToken(t, claims))
 		require.NoError(t, err)
 	}
-	_, err = h.srv.AcceptTrustedIssuerToken(t.Context(), h.signToken(t, resourceToken))
-	require.NoError(t, err)
+	for _, claims := range []josejwt.Claims{idToken, resourceToken} {
+		_, err := h.srv.AcceptTrustedIssuerToken(t.Context(), h.signToken(t, claims))
+		require.NoError(t, err)
+	}
 
-	require.ElementsMatch(t, []bool{false, true, true}, accepted())
+	require.ElementsMatch(t, []bool{false, true, false, true}, accepted())
 }

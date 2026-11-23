@@ -701,7 +701,7 @@ func (s *Server) validateTrustedIssuerJWT(ctx context.Context, accessToken strin
 		s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_audience_invalid")
 		return nil, errors.New("trusted issuer JWT is not intended for this resource server")
 	}
-	resourceAudience := helpers.FindMatchingAudience(identity.Claims.Audience, []string{s.Config.GetResourceIdentifier()}) != ""
+	resourceAudience := s.namesResource(identity.Claims.Audience)
 	if s.Config.RequireResourceAccessTokens && !resourceAudience {
 		s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_audience_invalid")
 		return nil, errors.New("trusted issuer JWT is not intended for this resource server")
