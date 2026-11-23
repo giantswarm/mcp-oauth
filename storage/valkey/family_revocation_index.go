@@ -14,7 +14,7 @@ import (
 
 var _ storage.RefreshTokenFamilyRevocationChecker = (*Store)(nil)
 
-const familyRevocationIndexWithLegacyMarkers = "1-legacy"
+const familyRevocationIndexWithLegacyChecks = "1-legacy"
 
 var errFamilyRecordsExist = errors.New("family records require migration")
 
@@ -22,17 +22,12 @@ func (s *Store) familyRevocationIndexKey() string {
 	return s.keyOf("schema", "family-revocations", "1")
 }
 
-func (s *Store) initializeFamilyRevocationIndex(ctx context.Context) error {
-	version, err := s.client.Do(ctx, s.client.B().Get().Key(s.familyRevocationIndexKey()).Build()).ToString()
-	if err == nil {
-		if version != "1" && version != familyRevocationIndexWithLegacyMarkers {
-			return fmt.Errorf("unsupported family revocation index version")
-		}
-		s.legacyFamilyMarkers.Store(version == familyRevocationIndexWithLegacyMarkers)
-		s.familyRevocationsIndexed.Store(true)
-		return nil
+func (s *Store) initializeFamilyRevocationIndex(ctx context.Context, migrate bool) error {
+	if migrate && s.client.Mode() != valkeygo.ClientModeStandalone {
+		return errOnlineFamilyMigrationRequiresStandalone
 	}
-	if !isNilError(err) {
+	indexed, err := s.loadFamilyRevocationIndexState(ctx)
+	if err != nil || indexed {
 		return err
 	}
 	err = s.walkFamilyKeys(ctx, func(string) error { return errFamilyRecordsExist })
@@ -63,7 +58,7 @@ func (s *Store) IsRefreshTokenFamilyRevoked(ctx context.Context, familyID string
 	}
 	revoked, err = s.client.Do(operation.ctx, s.client.B().Sismember().Key(s.familyKey(familyID)).
 		Member(familyRevocationMarker).Build()).AsBool()
-	if err != nil || revoked || !s.legacyFamilyMarkers.Load() {
+	if err != nil || revoked || !s.checkLegacyFamilyMarkers.Load() {
 		return revoked, err
 	}
 	return s.client.Do(operation.ctx, s.client.B().Sismember().Key(s.legacyFamilyKey(familyID)).
@@ -71,9 +66,10 @@ func (s *Store) IsRefreshTokenFamilyRevoked(ctx context.Context, familyID string
 }
 
 // MigrateFamilyRevocations preserves revoked members from both key layouts in the shared marker index.
-// All OAuth traffic and old writers must be stopped until this operation succeeds.
+// All other OAuth server replicas and writers must be stopped until this operation succeeds.
 // Other Store instances must be reopened after migration to enable indexed reads.
 func (s *Store) MigrateFamilyRevocations(ctx context.Context) error {
+	s.stopFamilyRevocationIndexing()
 	s.familyRevocationsIndexed.Store(false)
 	if err := s.client.Do(ctx, s.client.B().Del().Key(s.familyRevocationIndexKey()).Build()).Error(); err != nil {
 		return fmt.Errorf("disable family revocation index: %w", err)
@@ -122,19 +118,12 @@ func (s *Store) walkNodeFamilyKeys(ctx context.Context, node valkeygo.Client, vi
 func (s *Store) migrateFamilyRevocation(ctx context.Context, key string) error {
 	marked, err := s.indexFamilyRevocation(ctx, key)
 	if marked {
-		s.legacyFamilyMarkers.Store(true)
+		s.checkLegacyFamilyMarkers.Store(true)
 	}
 	return err
 }
 
-func (s *Store) migrateRevokedMember(ctx context.Context, member string, remaining int64) error {
-	family, err := s.readMemberFamilyMetadata(ctx, member)
-	if errors.Is(err, storage.ErrRefreshTokenFamilyNotFound) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("read family revocation metadata: %w", err)
-	}
+func (s *Store) indexRevokedFamily(ctx context.Context, family *storage.RefreshTokenFamilyMetadata, remaining int64) error {
 	if family == nil || !family.Revoked {
 		return nil
 	}
@@ -160,13 +149,9 @@ return 1
 }
 
 func (s *Store) completeFamilyRevocationIndex(ctx context.Context) error {
-	version := "1"
-	if s.legacyFamilyMarkers.Load() {
-		version = familyRevocationIndexWithLegacyMarkers
+	if err := s.publishFamilyRevocationIndexState(ctx, s.checkLegacyFamilyMarkers.Load()); err != nil {
+		return err
 	}
-	if err := s.client.Do(ctx, s.client.B().Set().Key(s.familyRevocationIndexKey()).Value(version).Build()).Error(); err != nil {
-		return fmt.Errorf("complete family revocation index: %w", err)
-	}
-	s.familyRevocationsIndexed.Store(true)
-	return nil
+	_, err := s.loadFamilyRevocationIndexState(ctx)
+	return err
 }

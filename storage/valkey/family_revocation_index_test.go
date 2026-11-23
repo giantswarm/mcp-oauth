@@ -154,7 +154,7 @@ func TestFamilyRevocationMigrationPreservesBothLayouts(t *testing.T) {
 				require.NoError(t, store.client.Do(t.Context(), store.client.B().Pexpire().Key(familyKey).Milliseconds((120*24*time.Hour).Milliseconds()).Build()).Error())
 			}
 			store.familyRevocationsIndexed.Store(false)
-			require.NoError(t, store.initializeFamilyRevocationIndex(t.Context()))
+			require.NoError(t, store.initializeFamilyRevocationIndex(t.Context(), false))
 			require.False(t, store.familyRevocationsIndexed.Load())
 			revoked, err := store.IsRefreshTokenFamilyRevoked(t.Context(), "family")
 			require.NoError(t, err)
@@ -173,7 +173,7 @@ func TestFamilyRevocationMigrationPreservesBothLayouts(t *testing.T) {
 				require.Greater(t, remaining, int64((119*24*time.Hour)/time.Second))
 			}
 			store.familyRevocationsIndexed.Store(false)
-			require.NoError(t, store.initializeFamilyRevocationIndex(t.Context()))
+			require.NoError(t, store.initializeFamilyRevocationIndex(t.Context(), false))
 			require.True(t, store.familyRevocationsIndexed.Load())
 		})
 	}
@@ -228,7 +228,7 @@ func TestFamilyRevocationMigrationTreatsPrefixAsLiteral(t *testing.T) {
 	require.NoError(t, store.client.Do(t.Context(), store.client.B().Set().Key(metadataKey).Value(string(metadata)).Build()).Error())
 	require.NoError(t, store.client.Do(t.Context(), store.client.B().Sadd().Key(familyKey).Member("refresh").Build()).Error())
 	store.familyRevocationsIndexed.Store(false)
-	require.NoError(t, store.initializeFamilyRevocationIndex(t.Context()))
+	require.NoError(t, store.initializeFamilyRevocationIndex(t.Context(), false))
 	require.False(t, store.familyRevocationsIndexed.Load())
 	require.NoError(t, store.MigrateFamilyRevocations(t.Context()))
 	revoked, err := store.IsRefreshTokenFamilyRevoked(t.Context(), "family")

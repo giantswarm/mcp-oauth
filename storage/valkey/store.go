@@ -168,21 +168,25 @@ type Config struct {
 	// causes [New] to return an error.
 	StartupTimeout time.Duration
 
-	// MigrateFamilyRevocations backfills the family revocation index in the
-	// background while the store serves traffic. Replicas that share the key
-	// prefix take turns through a lease, and every replica, with or without
-	// this setting, switches to indexed lookups once the index is complete.
+	// MigrateFamilyRevocationIndex backfills an unindexed namespace on standalone
+	// Valkey while the store serves traffic. Cluster clients return an error.
+	// Replicas sharing the key prefix take turns through a lease. Every replica
+	// adopts a completed index, whether this setting is enabled or not.
 	// Enable it only when no binary built from a release older than v1.17.2
 	// writes to the key prefix: those releases revoke families without the
-	// shared marker, and indexed lookups do not see such revocations.
-	MigrateFamilyRevocations bool
+	// shared marker, and indexed lookups do not see such revocations. An existing
+	// completion key is trusted; recovery after incompatible writers requires
+	// the stopped-traffic MigrateFamilyRevocations method instead.
+	// A walk exceeding the ten-minute lease disables automatic migration on
+	// this replica; use the stopped-traffic command with a larger timeout.
+	MigrateFamilyRevocationIndex bool
 }
 
 // Store is a Valkey-backed implementation of all storage interfaces.
 // It implements TokenStore, ClientStore, FlowStore, RefreshTokenFamilyStore, and TokenRevocationStore.
 type Store struct {
 	familyRevocationsIndexed   atomic.Bool
-	legacyFamilyMarkers        atomic.Bool
+	checkLegacyFamilyMarkers   atomic.Bool
 	client                     valkeygo.Client
 	prefix                     string
 	logger                     *slog.Logger
@@ -298,13 +302,13 @@ func New(cfg Config, opts ...Option) (*Store, error) {
 	}
 	indexContext, cancelIndex := context.WithTimeout(context.Background(), startupTimeout)
 	defer cancelIndex()
-	if err := s.initializeFamilyRevocationIndex(indexContext); err != nil {
+	if err := s.initializeFamilyRevocationIndex(indexContext, cfg.MigrateFamilyRevocationIndex); err != nil {
 		client.Close()
 		return nil, fmt.Errorf("initialize family revocation index: %w", err)
 	}
 
 	s.wireInstrumentation(logger)
-	s.startFamilyRevocationIndexing(cfg.MigrateFamilyRevocations)
+	s.startFamilyRevocationIndexing(cfg.MigrateFamilyRevocationIndex)
 
 	logger.Debug("storage connected", "store", s)
 	return s, nil

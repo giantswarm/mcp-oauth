@@ -81,15 +81,17 @@ startup.
 
 #### While serving traffic
 
-Once no binary built from a release older than v1.17.2 writes to the key
-prefix, set `MigrateFamilyRevocations` in the Valkey `Config` of the OAuth
-servers:
+For standalone Valkey with an unindexed namespace, once no binary built from a
+release older than v1.17.2 writes to the key prefix, set
+`MigrateFamilyRevocationIndex` in the Valkey `Config` of the OAuth servers.
+The setting rejects cluster connections; use the stopped-traffic command for
+Valkey Cluster with a stable topology.
 
 ```go
 store, err := valkey.New(valkey.Config{
-    Address:                  address,
-    KeyPrefix:                prefix,
-    MigrateFamilyRevocations: true,
+    Address:                      address,
+    KeyPrefix:                    prefix,
+    MigrateFamilyRevocationIndex: true,
 })
 ```
 
@@ -97,19 +99,26 @@ The store keeps serving with compatibility lookups and backfills the index in
 the background. Replicas that share the prefix take turns through a lease,
 so one walks the namespace at a time. When the walk completes, every replica on
 this release switches to indexed lookups within 30 seconds, whether or not it
-sets `MigrateFamilyRevocations`. A failed walk, or one that overlaps a Valkey
-topology change, keeps compatibility lookups and is retried.
+sets `MigrateFamilyRevocationIndex`. Failed walks keep compatibility lookups
+and are retried. A walk must finish within the ten-minute lease. If it exceeds
+that deadline, the replica logs an error and stops automatic migration while
+continuing to poll for completion by another replica. Disable the setting and
+use the stopped-traffic command with a larger `-timeout` for such namespaces.
 
 Releases from v1.17.2 on record a family revocation in the shared marker before
 they touch its members, so revocations made during the walk are already
 indexed. Older releases do not: a revocation they write to a migrated namespace
-is invisible to indexed lookups. Drain them before enabling the setting, and
-after a rollback or snapshot restore to such a release, migrate again.
+is invisible to indexed lookups. Drain them before enabling the setting.
+The setting trusts an existing index completion key and does not rebuild it.
+After a rollback or snapshot restore involving incompatible writers, stop every
+OAuth server replica and other writer, run the stopped-traffic command below, and
+restart every OAuth server before restoring traffic. Re-enabling the setting
+does not repair an index after incompatible writers have used the namespace.
 
 #### With traffic stopped
 
-When older writers may still be running, stop all OAuth traffic and all old
-writers, and keep them stopped until the command succeeds. Keep Valkey's
+Stop every OAuth server replica and every other writer to the key prefix,
+including background migration workers, until the command succeeds. Keep Valkey's
 topology stable during migration. Build the migration tool from the same
 library release that the OAuth servers will use:
 
@@ -128,7 +137,7 @@ Do not restore traffic after a failed or interrupted migration.
 
 Restart every OAuth server on the new release after migration, then restore traffic.
 Old binaries must not write to a migrated namespace. A rollback or snapshot restore
-requires another migration before the new release resumes serving.
+requires another stopped-traffic migration before the new release resumes serving.
 Keep the same precautions for lost client retirement state and JWT signing keys.
 
 Self-issued exchange JWTs without a client binding remain valid until expiry and
