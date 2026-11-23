@@ -88,7 +88,10 @@ With `OAUTH_ENABLE_AUTHORIZATION_SERVER=false`, `OAUTH_PROVIDER` is refused and
 their metadata is not served. Settings that need the authorization server are
 refused: `TrustedAudiences`, JWT access tokens, and the introspection, UserInfo and
 client configuration endpoints. A resource that advertises no authorization server
-starts with a warning; MCP requires one. With `OAUTH_REQUIRE_RESOURCE_ACCESS_TOKENS`
+starts with a warning; MCP requires one. A client registers with the advertised
+authorization server, not with this server: Dex supports neither Dynamic Client
+Registration nor Client ID Metadata Documents, so each MCP client needs a static
+client in Dex. With `OAUTH_REQUIRE_RESOURCE_ACCESS_TOKENS`
 also set, an issuer whose `audiences` do not name the main resource is refused at
 startup.
 
