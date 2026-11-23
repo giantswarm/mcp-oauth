@@ -245,7 +245,7 @@ func (h *Handler) extractBearerToken(w http.ResponseWriter, r *http.Request) (st
 //   - code: OAuth error code (e.g., "invalid_token")
 //   - description: Human-readable error description
 func (h *Handler) writeUnauthorizedError(w http.ResponseWriter, r *http.Request, code, description string) {
-	h.setUnauthorizedChallenge(w, r, code, description)
+	h.SetUnauthorizedChallenge(w, r, code, description)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	payload := map[string]string{}
@@ -258,7 +258,14 @@ func (h *Handler) writeUnauthorizedError(w http.ResponseWriter, r *http.Request,
 	h.writeJSON(w, payload)
 }
 
-func (h *Handler) setUnauthorizedChallenge(w http.ResponseWriter, r *http.Request, code, description string) {
+// SetUnauthorizedChallenge sets the RFC 6750 §3 WWW-Authenticate challenge, with
+// the RFC 9728 resource_metadata URL for r's protected resource, and the
+// security headers this handler sends on its own 401 responses. A resource
+// server calls it before writing a 401 it produces after token validation, for
+// example when a downstream API rejects the forwarded token; the caller writes
+// the status and body. code is an RFC 6750 §3.1 error code such as
+// "invalid_token"; code and description may be empty.
+func (h *Handler) SetUnauthorizedChallenge(w http.ResponseWriter, r *http.Request, code, description string) {
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 
 	// MCP 2025-11-25: Include WWW-Authenticate header with endpoint-specific scope guidance
