@@ -169,20 +169,8 @@ type Config struct {
 	// causes [New] to return an error.
 	StartupTimeout time.Duration
 
-	// MigrateFamilyRevocationIndex backfills an unindexed namespace on standalone
-	// Valkey while the store serves traffic. With Valkey Cluster or Sentinel, an
-	// unindexed namespace keeps compatibility lookups and logs an error; migrate
-	// it with the stopped-traffic MigrateFamilyRevocations method. The migrating
-	// replica needs the INFO command, which ACLs place in @dangerous.
-	// Replicas sharing the key prefix take turns through a lease. Every replica
-	// adopts a completed index, whether this setting is enabled or not.
-	// Enable it only when no binary built from a release older than v1.17.2
-	// writes to the key prefix: those releases revoke families without the
-	// shared marker, and indexed lookups do not see such revocations. An existing
-	// completion key is trusted; recovery after incompatible writers requires
-	// the stopped-traffic MigrateFamilyRevocations method instead.
-	// A walk exceeding the ten-minute lease disables automatic migration on
-	// this replica; use the stopped-traffic command with a larger timeout.
+	// Deprecated: an unindexed family revocation namespace is migrated while
+	// serving whether or not this is set; see [New]. Remove the setting.
 	MigrateFamilyRevocationIndex bool
 }
 
@@ -304,9 +292,10 @@ func New(cfg Config, opts ...Option) (*Store, error) {
 		operationTimeout:           operationTimeout,
 		familyIndexPollInterval:    defaultFamilyIndexPollInterval,
 		familyMigrationLease:       defaultFamilyMigrationLease,
-		migrateFamilyIndex:         cfg.MigrateFamilyRevocationIndex,
+		migrateFamilyIndex:         true,
 	}
 
+	warnDeprecatedConfig(cfg, logger)
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -322,6 +311,12 @@ func New(cfg Config, opts ...Option) (*Store, error) {
 
 	logger.Debug("storage connected", "store", s)
 	return s, nil
+}
+
+func warnDeprecatedConfig(cfg Config, logger *slog.Logger) {
+	if cfg.MigrateFamilyRevocationIndex {
+		logger.Warn("DEPRECATED: MigrateFamilyRevocationIndex has no effect; unindexed family revocation namespaces are migrated while serving, remove the setting")
+	}
 }
 
 // Close closes the Valkey client connection.

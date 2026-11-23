@@ -30,8 +30,7 @@ func (s *Store) familyMigrationLeaseKey() string {
 
 // startFamilyRevocationIndexing keeps an unindexed store on compatibility
 // lookups until the index is complete, then switches it to indexed lookups.
-// With migrateFamilyIndex set on standalone Valkey, it also backfills the index
-// while traffic is served.
+// On standalone Valkey it also backfills the index while traffic is served.
 func (s *Store) startFamilyRevocationIndexing() {
 	s.familyIndexingMu.Lock()
 	defer s.familyIndexingMu.Unlock()

@@ -1,11 +1,14 @@
 package valkey
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -35,10 +38,10 @@ func testValkeyAddress() string {
 
 func replica(t *testing.T, seed *Store, migrate bool, options ...Option) *Store {
 	t.Helper()
+	options = append([]Option{withFamilyIndexing(testFamilyIndexPoll, time.Minute), func(s *Store) { s.migrateFamilyIndex = migrate }}, options...)
 	store, err := New(Config{
 		Address: testValkeyAddress(), KeyPrefix: seed.prefix, StartupTimeout: testStartupTimeout,
-		MigrateFamilyRevocationIndex: migrate,
-	}, append([]Option{withFamilyIndexing(testFamilyIndexPoll, time.Minute)}, options...)...)
+	}, options...)
 	require.NoError(t, err)
 	t.Cleanup(store.Close)
 	return store
@@ -227,7 +230,6 @@ func TestOnlineFamilyRevocationMigrationBacksOffAfterFailures(t *testing.T) {
 			mu.Unlock()
 		}
 	}}
-	seed.migrateFamilyIndex = true
 	seed.startFamilyRevocationIndexing()
 	t.Cleanup(func() { seed.stopFamilyRevocationIndexing(false) })
 
@@ -386,7 +388,6 @@ func TestOnlineFamilyRevocationMigrationClose(t *testing.T) {
 				}
 			}}
 			seed.familyRevocationsIndexed.Store(false)
-			seed.migrateFamilyIndex = true
 			seed.startFamilyRevocationIndexing()
 			require.Eventually(t, func() bool { return channelClosed(started) }, time.Second, testFamilyIndexPoll)
 			closed := make(chan struct{})
@@ -419,7 +420,6 @@ func TestOnlineFamilyRevocationMigrationDeadlineStopsRetries(t *testing.T) {
 			<-ctx.Done()
 		}
 	}}
-	seed.migrateFamilyIndex = true
 	seed.startFamilyRevocationIndexing()
 	require.Eventually(t, func() bool { return scans.Load() == 1 }, time.Second, testFamilyIndexPoll)
 	require.Eventually(t, func() bool {
@@ -447,7 +447,6 @@ func TestStoppedFamilyMigrationCancelsBackgroundWorker(t *testing.T) {
 			})
 		}
 	}}
-	seed.migrateFamilyIndex = true
 	seed.startFamilyRevocationIndexing()
 	require.Eventually(t, func() bool { return channelClosed(started) }, time.Second, testFamilyIndexPoll)
 	require.NoError(t, seed.MigrateFamilyRevocations(t.Context()))
@@ -508,4 +507,41 @@ func TestOnlineFamilyRevocationMigrationSkipsCompletedIndex(t *testing.T) {
 	held, err := seed.client.Do(t.Context(), seed.client.B().Exists().Key(seed.familyMigrationLeaseKey()).Build()).AsInt64()
 	require.NoError(t, err)
 	require.Zero(t, held)
+}
+
+func TestFamilyRevocationMigrationRunsByDefault(t *testing.T) {
+	for _, deprecatedSetting := range []bool{false, true} {
+		t.Run(fmt.Sprintf("MigrateFamilyRevocationIndex=%t", deprecatedSetting), func(t *testing.T) {
+			seed := unindexedSeed(t)
+			var logs lockedBuffer
+			store, err := New(Config{
+				Address: testValkeyAddress(), KeyPrefix: seed.prefix, StartupTimeout: testStartupTimeout,
+				Logger:                       slog.New(slog.NewTextHandler(&logs, nil)),
+				MigrateFamilyRevocationIndex: deprecatedSetting,
+			}, withFamilyIndexing(testFamilyIndexPoll, time.Minute))
+			require.NoError(t, err)
+			t.Cleanup(store.Close)
+
+			require.Eventually(t, store.familyRevocationsIndexed.Load, 5*time.Second, testFamilyIndexPoll)
+			require.NotEmpty(t, indexVersion(t, seed))
+			require.Equal(t, deprecatedSetting, strings.Contains(logs.String(), "DEPRECATED: MigrateFamilyRevocationIndex"))
+		})
+	}
+}
+
+type lockedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
 }
