@@ -150,3 +150,52 @@ func TestUnauthorizedErrorPreservesJSONDescription(t *testing.T) {
 	require.NoError(t, json.NewDecoder(response.Body).Decode(&payload))
 	require.Equal(t, description, payload["error_description"])
 }
+
+func TestMinimalUnauthorizedChallengesPreserveDiscoveryAndScopeErrors(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	t.Cleanup(store.Stop)
+	handler.server.Config.DisableWWWAuthenticateMetadata = true
+	handler.server.Config.ResourceIdentifier = "https://api.example.com/mcp"
+	handler.server.Config.DefaultChallengeScopes = []string{"jobs:read"}
+	mux := http.NewServeMux()
+	handler.RegisterProtectedResourceMetadataRoutes(mux, "/mcp")
+	mux.HandleFunc("GET /mcp", func(writer http.ResponseWriter, request *http.Request) {
+		handler.writeUnauthorizedError(writer, request, "invalid_token", "Token expired")
+	})
+	mux.HandleFunc("POST /mcp", func(writer http.ResponseWriter, request *http.Request) {
+		handler.writeInsufficientScopeError(writer, []string{"jobs:write"}, "Write permission required", request.URL.Path)
+	})
+	protected := httptest.NewServer(mux)
+	t.Cleanup(protected.Close)
+
+	for _, test := range []struct {
+		name      string
+		method    string
+		path      string
+		status    int
+		challenge string
+	}{
+		{name: "minimal 401", method: http.MethodGet, path: "/mcp", status: http.StatusUnauthorized, challenge: `Bearer realm="oauth"`},
+		{name: "well-known discovery", method: http.MethodGet, path: "/.well-known/oauth-protected-resource/mcp", status: http.StatusOK},
+		{name: "scope challenge", method: http.MethodPost, path: "/mcp", status: http.StatusForbidden, challenge: `Bearer resource_metadata="https://api.example.com/.well-known/oauth-protected-resource/mcp", scope="jobs:write", error="insufficient_scope", error_description="Write permission required"`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request, err := http.NewRequestWithContext(t.Context(), test.method, protected.URL+test.path, nil)
+			require.NoError(t, err)
+			response, err := protected.Client().Do(request)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, response.Body.Close()) })
+			require.Equal(t, test.status, response.StatusCode)
+			require.Equal(t, test.challenge, response.Header.Get("WWW-Authenticate"))
+			var payload map[string]any
+			require.NoError(t, json.NewDecoder(response.Body).Decode(&payload))
+			if test.status == http.StatusOK {
+				require.Equal(t, "https://api.example.com/mcp", payload["resource"])
+				require.Equal(t, []any{testIssuer}, payload["authorization_servers"])
+			} else {
+				require.NotEmpty(t, payload["error"])
+				require.NotEmpty(t, payload["error_description"])
+			}
+		})
+	}
+}

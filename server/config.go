@@ -335,25 +335,13 @@ type Config struct {
 	// If empty, no scope parameter is included in WWW-Authenticate headers.
 	DefaultChallengeScopes []string
 
-	// DisableWWWAuthenticateMetadata disables resource_metadata and discovery parameters
-	// in 401 WWW-Authenticate headers for backward compatibility with legacy OAuth clients.
-	// When false (default): Includes protected-resource discovery parameters
-	//   - Includes resource_metadata URL for authorization server discovery
-	//   - Includes scope parameter (if DefaultChallengeScopes configured)
-	//   - Includes error and error_description parameters
-	// When true: Minimal WWW-Authenticate headers for backward compatibility
-	//   - Includes Bearer realm="oauth" without discovery or error parameters
-	// Default: false (metadata enabled)
-	//
-	// WARNING: Only enable if you have legacy OAuth clients that cannot handle
-	// discovery parameters in WWW-Authenticate headers. Modern clients will ignore
-	// unknown parameters per HTTP specifications.
-	//
-	// Use case for enabling (disabling metadata):
-	//   - Testing with legacy OAuth clients
-	//   - Gradual migration period for clients updating to MCP 2025-11-25
-	//   - Troubleshooting client compatibility issues
-	DisableWWWAuthenticateMetadata bool // default: false (metadata ENABLED)
+	// DisableWWWAuthenticateMetadata selects a minimal Bearer challenge on 401 responses
+	// for legacy clients. When true, the challenge is Bearer realm="oauth" and omits
+	// resource_metadata, scope, error, and error_description. MCP discovery then requires
+	// the RFC 9728 well-known metadata routes. Scope challenges on 403 responses still
+	// include resource_metadata, scope, and error details.
+	// Default: false (discovery, scope guidance, and error details enabled).
+	DisableWWWAuthenticateMetadata bool
 
 	// EndpointScopeRequirements maps HTTP paths to required scopes for MCP 2025-11-25 scope validation.
 	// When a protected endpoint is accessed, the token's scopes are validated against these requirements.

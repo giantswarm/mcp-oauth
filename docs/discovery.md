@@ -388,10 +388,11 @@ Section 3's character restrictions. Invalid values are omitted from the header.
 Scopes are not rewritten into different permission names. The JSON error body
 retains its description independently of the optional header description.
 
-`DisableWWWAuthenticateMetadata` sends `Bearer realm="oauth"` on 401 responses,
-omitting discovery and error parameters. The realm preserves RFC 6750 challenge
-syntax; clients still need the registered well-known metadata routes for MCP
-discovery.
+`DisableWWWAuthenticateMetadata` selects a minimal challenge for legacy clients:
+401 responses send `Bearer realm="oauth"` and omit `resource_metadata`, `scope`,
+`error`, and `error_description`. MCP discovery then uses the registered RFC 9728
+well-known metadata routes. Insufficient-scope 403 responses still include their
+discovery, scope, and error parameters.
 
 | Parameter | Purpose | Required |
 |-----------|---------|----------|

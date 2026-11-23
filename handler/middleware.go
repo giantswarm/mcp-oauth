@@ -345,11 +345,11 @@ func (h *Handler) formatWWWAuthenticate(scope, errorCode, errorDescription strin
 		params = append(params, fmt.Sprintf(`scope="%s"`, scope))
 	}
 
-	if errorCode != "" && validBearerErrorValue(errorCode) {
+	if errorCode != "" && validBearerErrorCharacters(errorCode) {
 		params = append(params, fmt.Sprintf(`error="%s"`, errorCode))
 	}
 
-	if errorDescription != "" && validBearerErrorValue(errorDescription) {
+	if errorDescription != "" && validBearerErrorCharacters(errorDescription) {
 		params = append(params, fmt.Sprintf(`error_description="%s"`, errorDescription))
 	}
 
@@ -358,7 +358,7 @@ func (h *Handler) formatWWWAuthenticate(scope, errorCode, errorDescription strin
 	return "Bearer " + strings.Join(params, ", ")
 }
 
-func validBearerErrorValue(value string) bool {
+func validBearerErrorCharacters(value string) bool {
 	return strings.IndexFunc(value, func(character rune) bool {
 		return character < 0x20 || character > 0x7e || character == '"' || character == '\\'
 	}) == -1
