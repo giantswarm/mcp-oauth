@@ -2,12 +2,15 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestApplyTimeDefaults(t *testing.T) {
@@ -1100,10 +1103,16 @@ func TestValidateWWWAuthenticateConfig_ValidScopes(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
+	var permitted strings.Builder
+	for character := byte(0x21); character <= 0x7e; character++ {
+		if character != '"' && character != '\\' {
+			permitted.WriteByte(character)
+		}
+	}
 	config := &Config{
 		Issuer:                         "https://auth.example.com",
 		DisableWWWAuthenticateMetadata: false,
-		DefaultChallengeScopes:         []string{"mcp:access", "files:read", "user:profile"},
+		DefaultChallengeScopes:         []string{"mcp:access", "files:read,write", "user:profile", permitted.String()},
 	}
 
 	validateWWWAuthenticateConfig(config, logger)
@@ -1155,22 +1164,37 @@ func TestValidateWWWAuthenticateConfig_InvalidCharacters(t *testing.T) {
 		{
 			name:          "double quote in scope",
 			scopes:        []string{`files:"read"`, "user:profile"},
-			expectedError: "Invalid character in DefaultChallengeScopes",
+			expectedError: "Invalid scope in DefaultChallengeScopes",
 		},
 		{
-			name:          "comma in scope",
-			scopes:        []string{"files:read,write", "user:profile"},
-			expectedError: "Invalid character in DefaultChallengeScopes",
+			name:          "space in scope",
+			scopes:        []string{"files:read write", "user:profile"},
+			expectedError: "Invalid scope in DefaultChallengeScopes",
 		},
 		{
 			name:          "backslash in scope",
 			scopes:        []string{`files:\read`, "user:profile"},
-			expectedError: "Invalid character in DefaultChallengeScopes",
+			expectedError: "Invalid scope in DefaultChallengeScopes",
 		},
 		{
 			name:          "multiple invalid characters",
 			scopes:        []string{`files:"read\write,delete"`, "user:profile"},
-			expectedError: "Invalid character in DefaultChallengeScopes",
+			expectedError: "Invalid scope in DefaultChallengeScopes",
+		},
+		{
+			name:          "control characters in scope",
+			scopes:        []string{"files:\x00\t\r\n\x7fread", "user:profile"},
+			expectedError: "Invalid scope in DefaultChallengeScopes",
+		},
+		{
+			name:          "unicode in scope",
+			scopes:        []string{"files:écrire", "user:profile"},
+			expectedError: "Invalid scope in DefaultChallengeScopes",
+		},
+		{
+			name:          "invalid utf8 in scope",
+			scopes:        []string{"files:\xffread", "user:profile"},
+			expectedError: "Invalid scope in DefaultChallengeScopes",
 		},
 	}
 
@@ -1196,9 +1220,8 @@ func TestValidateWWWAuthenticateConfig_InvalidCharacters(t *testing.T) {
 }
 
 func TestValidateWWWAuthenticateConfig_DisabledMetadata(t *testing.T) {
-	// Disabled metadata should not generate logs even with scopes
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	config := &Config{
 		Issuer:                         "https://auth.example.com",
@@ -1208,14 +1231,24 @@ func TestValidateWWWAuthenticateConfig_DisabledMetadata(t *testing.T) {
 
 	validateWWWAuthenticateConfig(config, logger)
 
-	logOutput := buf.String()
-	// Should not log anything when metadata is disabled
-	if strings.Contains(logOutput, "WWW-Authenticate metadata enabled") {
-		t.Errorf("Should not log debug message when metadata is disabled, got: %s", logOutput)
-	}
+	var event map[string]any
+	decoder := json.NewDecoder(&buf)
+	require.NoError(t, decoder.Decode(&event))
+	require.Equal(t, "WARN", event["level"])
+	require.Equal(t, "CONFIGURATION WARNING: WWW-Authenticate metadata is DISABLED", event["msg"])
+	require.Equal(t, "401 responses omit resource_metadata, scope, error, and error_description", event["behavior"])
+	require.Equal(t, "Serve RFC 9728 well-known protected resource metadata routes for MCP discovery", event["requirement"])
+	require.Equal(t, "Set DisableWWWAuthenticateMetadata=false for discovery and scope guidance", event["recommendation"])
+	require.Equal(t, "https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization", event["learn_more"])
+	require.Empty(t, event["risk"])
+	require.ErrorIs(t, decoder.Decode(&event), io.EOF)
 }
 
 func TestValidateWWWAuthenticateConfig_EdgeCases(t *testing.T) {
+	validScopes := make([]string, 51)
+	for index := range validScopes {
+		validScopes[index] = fmt.Sprintf("scope:%d", index)
+	}
 	tests := []struct {
 		name       string
 		scopes     []string
@@ -1224,12 +1257,12 @@ func TestValidateWWWAuthenticateConfig_EdgeCases(t *testing.T) {
 	}{
 		{
 			name:       "exactly 50 scopes - should not warn",
-			scopes:     make([]string, 50),
+			scopes:     validScopes[:50],
 			expectWarn: false,
 		},
 		{
 			name:       "51 scopes - should warn",
-			scopes:     make([]string, 51),
+			scopes:     validScopes,
 			expectWarn: true,
 			warnSubstr: "Very large DefaultChallengeScopes",
 		},
@@ -1241,7 +1274,8 @@ func TestValidateWWWAuthenticateConfig_EdgeCases(t *testing.T) {
 		{
 			name:       "empty scope string",
 			scopes:     []string{"", "files:read"},
-			expectWarn: false, // Empty is technically valid (though not useful)
+			expectWarn: true,
+			warnSubstr: "Invalid scope in DefaultChallengeScopes",
 		},
 	}
 
@@ -1249,17 +1283,6 @@ func TestValidateWWWAuthenticateConfig_EdgeCases(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			logger := slog.New(slog.NewTextHandler(&buf, nil))
-
-			// Initialize test scopes
-			for i := range tt.scopes {
-				if tt.scopes[i] == "" {
-					continue
-				}
-				if tt.scopes[i] != "mcp:access" && tt.scopes[i] != "files-read" &&
-					tt.scopes[i] != "user_profile" && tt.scopes[i] != "api/v1" && tt.scopes[i] != "files:read" {
-					tt.scopes[i] = "scope" + string(rune('a'+i%26))
-				}
-			}
 
 			config := &Config{
 				Issuer:                         "https://auth.example.com",

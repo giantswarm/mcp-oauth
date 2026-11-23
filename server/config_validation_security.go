@@ -3,7 +3,6 @@ package server
 import (
 	"log/slog"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/giantswarm/mcp-oauth/internal/constants"
@@ -117,11 +116,11 @@ func applyDNSTimeoutDefaults(config *Config, logger *slog.Logger) {
 // validateWWWAuthenticateConfig validates WWW-Authenticate header configuration
 // for security best practices.
 func validateWWWAuthenticateConfig(config *Config, logger *slog.Logger) {
-	// SECURITY: Warn if WWW-Authenticate metadata is disabled
 	if config.DisableWWWAuthenticateMetadata {
-		logger.Warn("SECURITY WARNING: WWW-Authenticate metadata is DISABLED",
-			"risk", "MCP 2025-11-25 non-compliance, reduced client discovery",
-			"recommendation", "Set DisableWWWAuthenticateMetadata=false for spec compliance",
+		logger.Warn("CONFIGURATION WARNING: WWW-Authenticate metadata is DISABLED",
+			"behavior", "401 responses omit resource_metadata, scope, error, and error_description",
+			"requirement", "Serve RFC 9728 well-known protected resource metadata routes for MCP discovery",
+			"recommendation", "Set DisableWWWAuthenticateMetadata=false for discovery and scope guidance",
 			"learn_more", "https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization")
 	}
 
@@ -136,8 +135,6 @@ func validateWWWAuthenticateConfig(config *Config, logger *slog.Logger) {
 			"recommendation", "Consider reducing scope count or using broader scopes")
 	}
 
-	// Validate scope entries don't contain invalid characters
-	// This provides defense-in-depth (escaping already prevents injection)
 	validateChallengeScopeCharacters(config.DefaultChallengeScopes, logger)
 
 	// Log info about WWW-Authenticate metadata configuration
@@ -148,33 +145,15 @@ func validateWWWAuthenticateConfig(config *Config, logger *slog.Logger) {
 	}
 }
 
-// validateChallengeScopeCharacters validates that challenge scopes don't contain
-// characters that could cause issues in HTTP headers.
+// validateChallengeScopeCharacters checks challenge scopes against RFC 6749 section 3.3.
 func validateChallengeScopeCharacters(scopes []string, logger *slog.Logger) {
 	for i, scope := range scopes {
-		if strings.Contains(scope, `"`) {
-			logger.Warn("CONFIGURATION WARNING: Invalid character in DefaultChallengeScopes",
+		if err := helpers.ValidateScopes([]string{scope}); err != nil {
+			logger.Warn("CONFIGURATION WARNING: Invalid scope in DefaultChallengeScopes",
 				"index", i,
 				paramScope, scope,
-				"invalid_char", `"`,
-				"risk", "Scope contains double-quote character",
-				"recommendation", "Use alphanumeric characters, hyphens, underscores, colons, and slashes only")
-		}
-		if strings.Contains(scope, ",") {
-			logger.Warn("CONFIGURATION WARNING: Invalid character in DefaultChallengeScopes",
-				"index", i,
-				paramScope, scope,
-				"invalid_char", ",",
-				"risk", "Scope contains comma character",
-				"recommendation", "Use alphanumeric characters, hyphens, underscores, colons, and slashes only")
-		}
-		if strings.Contains(scope, `\`) {
-			logger.Warn("CONFIGURATION WARNING: Invalid character in DefaultChallengeScopes",
-				"index", i,
-				paramScope, scope,
-				"invalid_char", `\`,
-				"risk", "Scope contains backslash character",
-				"recommendation", "Use alphanumeric characters, hyphens, underscores, colons, and slashes only")
+				logKeyError, err,
+				"recommendation", "Use non-empty scope tokens with printable ASCII except space, double-quote, and backslash")
 		}
 	}
 }
