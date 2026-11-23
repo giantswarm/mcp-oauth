@@ -2,6 +2,7 @@ package server
 
 import (
 	"testing"
+	"testing/synctest"
 
 	"github.com/stretchr/testify/require"
 
@@ -22,12 +23,16 @@ func TestNewRejectsInvalidTrustedIssuers(t *testing.T) {
 		}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			store := memory.New()
-			t.Cleanup(store.Stop)
-			configuration := &Config{Issuer: "https://mcp.example.com", EnableClientIDMetadataDocuments: true}
-			instance, err := NewWithCombined(mock.NewProvider(), store, configuration, nil, WithTrustedIssuers([]TrustedIssuer{testCase.issuer}))
-			require.ErrorContains(t, err, "trusted issuers")
-			require.Nil(t, instance)
+			// The bubble fails if New leaves its cache cleanup loop or rate
+			// limiter running.
+			synctest.Test(t, func(t *testing.T) {
+				store := memory.New()
+				t.Cleanup(store.Stop)
+				configuration := &Config{Issuer: "https://mcp.example.com", EnableClientIDMetadataDocuments: true}
+				instance, err := NewWithCombined(mock.NewProvider(), store, configuration, nil, WithTrustedIssuers([]TrustedIssuer{testCase.issuer}))
+				require.ErrorContains(t, err, "trusted issuers")
+				require.Nil(t, instance)
+			})
 		})
 	}
 }

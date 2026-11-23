@@ -171,6 +171,15 @@ func New(
 
 	// Create cleanup context for background goroutines
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
+	// An option may replace the metadata fetch rate limiter; only the one New
+	// creates is stopped when construction fails.
+	var ownRateLimiter *security.RateLimiter
+	constructed := false
+	defer func() {
+		if !constructed {
+			stopBackgroundWork(cleanupCancel, ownRateLimiter)
+		}
+	}()
 
 	srv := &Server{
 		provider:                   provider,
@@ -205,25 +214,17 @@ func New(
 	srv.attachRevokedTokenStore(tokenStore)
 
 	srv.initializeMetadataSupport()
-	metadataRateLimiter := srv.metadataFetchRateLimiter
+	ownRateLimiter = srv.metadataFetchRateLimiter
 	srv.validateProviderDefaultScopes(logger)
 	srv.logForwardedSessionIDKeyFingerprint()
 
-	stopBackgroundWork := func() {
-		cleanupCancel()
-		if metadataRateLimiter != nil {
-			metadataRateLimiter.Stop()
-		}
-	}
 	for _, opt := range opts {
 		opt(srv)
 	}
 	if srv.initializationError != nil {
-		stopBackgroundWork()
 		return nil, srv.initializationError
 	}
 	if err := srv.initializeConsentCookieKey(cleanupCtx); err != nil {
-		stopBackgroundWork()
 		return nil, err
 	}
 
@@ -251,7 +252,17 @@ func New(
 		srv.Auditor = security.NewAuditor(nil, false)
 	}
 
+	constructed = true
 	return srv, nil
+}
+
+// stopBackgroundWork ends the goroutines New started for a server it does not
+// return.
+func stopBackgroundWork(cancel context.CancelFunc, rateLimiter *security.RateLimiter) {
+	cancel()
+	if rateLimiter != nil {
+		rateLimiter.Stop()
+	}
 }
 
 // initializeAccessTokenIssuer wires the AccessTokenIssuer implementation
