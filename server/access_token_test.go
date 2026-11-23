@@ -188,7 +188,7 @@ func TestJWTIssuer_ExtraRejectsRegisteredClaims(t *testing.T) {
 		ExpiresAt: time.Now().Add(time.Minute),
 	}
 
-	for _, claim := range []string{"iss", "sub", "aud", "exp", "nbf", "iat", "jti"} {
+	for _, claim := range []string{"iss", "sub", "aud", "exp", "nbf", "iat", "jti", "client_id"} {
 		t.Run(claim, func(t *testing.T) {
 			c := base
 			c.Extra = map[string]any{claim: "injected"}

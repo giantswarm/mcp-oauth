@@ -71,6 +71,8 @@ func newFaultyFixture(t *testing.T, format AccessTokenFormat) *faultyGrantFixtur
 	client, secret, err := srv.RegisterClient(context.Background(), "gateway", ClientTypeConfidential, "",
 		[]string{"https://example.com/callback"}, []string{"openid", "email"}, "192.168.1.100", 10)
 	require.NoError(t, err)
+	client.GrantTypes = append(client.GrantTypes, GrantTypeTokenExchange)
+	require.NoError(t, store.SaveClient(context.Background(), client))
 
 	return &faultyGrantFixture{srv: srv, provider: provider, store: store, faulty: faulty, clientID: client.ClientID, clientSecret: secret}
 }
@@ -346,7 +348,7 @@ func TestTokenExchange_StorageUnavailable(t *testing.T) {
 						"act-tok": {Subject: "agent-a", Issuer: "https://k8s.example.com"},
 					}},
 				}
-				req := SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+				req := SelfIssuedExchangeRequest{ClientID: f.clientID, SubjectExchange: SubjectExchange{
 					Subject:  TypedToken{Token: subject, Type: SubjectTokenTypeAccessToken},
 					Actor:    TypedToken{Token: "act-tok", Type: SubjectTokenTypeIDToken},
 					Resource: "https://api.example.com",

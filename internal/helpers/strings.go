@@ -79,6 +79,8 @@ func SafeTruncate(s string, maxLen int) string {
 //   - Remove default ports (:443 for https, :80 for http)
 //   - Remove trailing slashes from path
 //   - Preserve path case (paths are case-sensitive)
+//   - Keep opaque URIs (urn:, mailto:), userinfo and percent-encoded
+//     delimiters distinct
 //
 // If the input is not a valid URL, it returns the lowercase trimmed input
 // for backwards compatibility with non-URL audience values.
@@ -92,39 +94,26 @@ func SafeTruncate(s string, maxLen int) string {
 //	NormalizeURL("HTTPS://Example.COM/Path")   // Returns: "https://example.com/Path"
 //	NormalizeURL("client-id")                  // Returns: "client-id" (non-URL)
 func NormalizeURL(rawURL string) string {
-	// Try to parse as URL for full normalization
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Scheme == "" {
-		// Not a valid URL, just trim trailing slashes
 		return strings.TrimRight(rawURL, "/")
 	}
-
-	// Normalize scheme to lowercase
-	scheme := strings.ToLower(parsed.Scheme)
-
-	// Normalize host to lowercase and remove default ports
-	host := strings.ToLower(parsed.Host)
-	host = removeDefaultPort(host, scheme)
-
-	// Normalize path by removing trailing slashes (preserve case)
-	path := strings.TrimRight(parsed.Path, "/")
-
-	// Reconstruct the normalized URL
-	// Only include components that were present
-	result := scheme + "://" + host
-	if path != "" {
-		result += path
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	if parsed.Opaque != "" {
+		// An opaque URI (urn:, mailto:) has no authority or hierarchical path;
+		// its scheme-specific part is compared exactly.
+		return parsed.String()
 	}
-
-	// Preserve query and fragment if present
-	if parsed.RawQuery != "" {
-		result += "?" + parsed.RawQuery
+	parsed.Host = removeDefaultPort(strings.ToLower(parsed.Host), parsed.Scheme)
+	// Trailing slashes are trimmed from the escaped path so an escaped
+	// delimiter such as %2F stays distinct from a literal "/".
+	escapedPath := strings.TrimRight(parsed.EscapedPath(), "/")
+	path, err := url.PathUnescape(escapedPath)
+	if err != nil {
+		return strings.TrimRight(rawURL, "/")
 	}
-	if parsed.Fragment != "" {
-		result += "#" + parsed.Fragment
-	}
-
-	return result
+	parsed.Path, parsed.RawPath = path, escapedPath
+	return parsed.String()
 }
 
 // removeDefaultPort removes the default port from a host:port string.

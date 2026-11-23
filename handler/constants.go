@@ -20,3 +20,5 @@ const (
 	fieldClientType   = "client_type"
 	fieldRedirectURIs = "redirect_uris"
 )
+
+const auditDetailSeverity = "severity"

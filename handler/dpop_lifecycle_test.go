@@ -288,7 +288,9 @@ func TestTokenExchangeDPoPReplayStorageOutageIsRetryable(t *testing.T) {
 		}}),
 		func(configuration *tokenExchangeHarnessConfig) { configuration.replayCache = cache },
 	)
+	client := newMatrixClient(t, handler, "client_secret_basic")
 	request := newTokenExchangeRequest(happyExchangeForm())
+	request.SetBasicAuth(client.client.ClientID, client.secret)
 	request.Header.Set("DPoP", buildDPoPProofWithATH(t, newTestDPoPKey(t), http.MethodPost, "http://example.com/token", "retryable-exchange-proof", ""))
 	response := httptest.NewRecorder()
 	handler.ServeToken(response, request)
@@ -298,6 +300,7 @@ func TestTokenExchangeDPoPReplayStorageOutageIsRetryable(t *testing.T) {
 	response = httptest.NewRecorder()
 	proof := request.Header.Get("DPoP")
 	request = newTokenExchangeRequest(happyExchangeForm())
+	request.SetBasicAuth(client.client.ClientID, client.secret)
 	request.Header.Set("DPoP", proof)
 	handler.ServeToken(response, request)
 	require.Equal(t, http.StatusOK, response.Code)

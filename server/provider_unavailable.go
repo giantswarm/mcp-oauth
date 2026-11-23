@@ -86,7 +86,7 @@ func (s *Server) providerUnavailable(ctx context.Context, op, userID, clientID s
 
 	s.Auditor.LogEvent(ctx, security.Event{
 		Type: security.EventAuthFailure, UserID: userID, ClientID: clientID,
-		Details: map[string]any{logKeyReason: auditReasonProviderUnavailable},
+		Details: exchangeFailureAuditDetails(ctx, map[string]any{logKeyReason: auditReasonProviderUnavailable}),
 	})
 	if errors.Is(err, ErrProviderUnavailable) {
 		return fmt.Errorf("%s: %w", op, err)

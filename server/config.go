@@ -1406,12 +1406,11 @@ func (c *Config) PathResourceIdentifier(resourcePath string, pathConfig Protecte
 // (scheme and host case, default port, trailing slash), as ValidateToken
 // compares a token's audience.
 func (c *Config) servesResource(resource string) bool {
-	normalizedResource := helpers.NormalizeURL(resource)
-	if normalizedResource == helpers.NormalizeURL(c.GetResourceIdentifier()) {
+	if resourcesMatch(resource, c.GetResourceIdentifier()) {
 		return true
 	}
 	for resourcePath, pathConfig := range c.ResourceMetadataByPath {
-		if normalizedResource == helpers.NormalizeURL(c.PathResourceIdentifier(resourcePath, pathConfig)) {
+		if resourcesMatch(resource, c.PathResourceIdentifier(resourcePath, pathConfig)) {
 			return true
 		}
 	}

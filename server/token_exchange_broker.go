@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/giantswarm/mcp-oauth/security"
@@ -14,8 +15,8 @@ import (
 // ErrInvalidTarget is returned by BrokeredExchange when the
 // requested audience cannot be served: no Exchanger is configured, the
 // client's allowlist does not contain the audience, or the Exchanger
-// itself reports the audience as unknown. ExchangeAuthorizationCode
-// returns it for a resource parameter that is malformed or names a
+// itself reports the audience as unknown, or the resource URI is malformed.
+// ExchangeAuthorizationCode returns it for a resource parameter that is malformed or names a
 // resource this server does not serve. Handlers map it to the
 // invalid_target error response (RFC 8693 §2.2.2, RFC 8707 §2).
 var ErrInvalidTarget = errors.New("requested audience is not allowed for this client")
@@ -26,6 +27,13 @@ var ErrInvalidTarget = errors.New("requested audience is not allowed for this cl
 // same limiter is enforced here keyed on the per-session ID. Callers invoking the
 // method directly should surface this as a 429-equivalent.
 var ErrExchangeRateLimited = errors.New("token exchange rate limit exceeded")
+
+// ErrIssuedTokenTypeMismatch is returned when the Exchanger's result does not
+// match the requested_token_type supplied to BrokeredExchange.
+var ErrIssuedTokenTypeMismatch = errors.New("issued token type does not match requested token type")
+
+// ErrInvalidExchangerResult indicates missing or unsupported downstream token metadata.
+var ErrInvalidExchangerResult = errors.New("token exchanger returned an invalid result")
 
 // ExchangerRequest carries the validated inputs of a brokered RFC 8693
 // token exchange to the host's Exchanger implementation. The subject and
@@ -42,6 +50,9 @@ type ExchangerRequest struct {
 	Resource string
 	// Scope is the raw requested scope string. May be empty.
 	Scope string
+	// RequestedTokenType is the RFC 8693 requested_token_type. Empty permits
+	// the Exchanger to choose the output type.
+	RequestedTokenType string
 	// ClientID is the authenticated broker client that issued the request.
 	ClientID string
 	// Subject is the verified identity extracted from the subject token.
@@ -69,11 +80,18 @@ type ExchangerResult struct {
 	// IssuedTokenType is the RFC 8693 issued_token_type URN. Empty defaults
 	// to urn:ietf:params:oauth:token-type:access_token.
 	IssuedTokenType string
+	// TokenType is the RFC 8693 token_type usage method, independent of the
+	// issued_token_type representation. Bearer and N_A are supported. Empty
+	// defaults to Bearer for access_token and N_A for id_token; other
+	// representations, including jwt, require an explicit usage method.
+	TokenType string
 	// ExpiresAt is the downstream token's expiry. It bounds the expires_in
 	// reported to the client — brokered tokens never outlive the downstream
 	// token, and no refresh token is issued; clients re-exchange instead.
 	ExpiresAt time.Time
-	// Scope is the scope granted by the downstream issuer. May be empty.
+	// Scope is the effective scope granted by the downstream issuer. When its
+	// response omits scope, the host must resolve it against its downstream
+	// request, which may differ from ExchangerRequest.Scope.
 	Scope string
 }
 
@@ -88,7 +106,7 @@ type ExchangerResult struct {
 // unknown to the host. An error wrapping ErrProviderUnavailable signals that an
 // issuer the exchange depends on did not answer; the client gets 503
 // with Retry-After and retries the same request. Any
-// other error is reported to the client as a generic invalid_grant without
+// other error is reported to the client as a generic invalid_request without
 // leaking detail.
 type Exchanger interface {
 	Exchange(ctx context.Context, req *ExchangerRequest) (*ExchangerResult, error)
@@ -101,13 +119,16 @@ func (s *Server) Exchanger() Exchanger {
 }
 
 // BrokeredExchangeRequest is the input to BrokeredExchange, where the token is
-// signed by a downstream issuer reached through the host Exchanger. ClientID is
+// issued by a downstream issuer reached through the host Exchanger. ClientID is
 // the authenticated confidential client; Audience is the RFC 8693 logical target
 // the Exchanger resolves to a downstream issuer.
 type BrokeredExchangeRequest struct {
 	SubjectExchange
 	ClientID string
 	Audience string
+	// RequestedTokenType is the RFC 8693 requested_token_type. A nonempty
+	// value must match the result's issued_token_type.
+	RequestedTokenType string
 }
 
 // BrokeredExchange implements the RFC 8693 flow where the resulting token is
@@ -127,6 +148,7 @@ type BrokeredExchangeRequest struct {
 // under the default bearer session identity.
 func (s *Server) BrokeredExchange(ctx context.Context, req BrokeredExchangeRequest) (*TokenExchangeResult, error) {
 	sessionID := s.bearerSessionID(req.Subject.Token)
+	ctx = withExchangeAuditContext(ctx, req.ClientID, sessionID)
 
 	if s.exchangeRateLimited(ctx, req.ClientID, req.Audience, sessionID) {
 		return nil, ErrExchangeRateLimited
@@ -141,6 +163,12 @@ func (s *Server) BrokeredExchange(ctx context.Context, req BrokeredExchangeReque
 		s.auditExchangeFailure(ctx, req.ClientID, req.Audience, sessionID, "token_exchange_audience_not_allowed", nil)
 		return nil, fmt.Errorf("%w: audience %q", ErrInvalidTarget, req.Audience)
 	}
+	if req.Resource != "" {
+		if _, err := parseResourceURI(req.Resource); err != nil {
+			s.auditExchangeFailure(ctx, req.ClientID, req.Audience, sessionID, "token_exchange_resource_invalid", map[string]any{logKeySeverity: severityWarning})
+			return nil, fmt.Errorf("%w: %v", ErrInvalidTarget, err)
+		}
+	}
 
 	auditCtx := map[string]any{
 		logKeyExchange:  exchangeBrokered,
@@ -153,14 +181,19 @@ func (s *Server) BrokeredExchange(ctx context.Context, req BrokeredExchangeReque
 	if err != nil {
 		return nil, err
 	}
+	if identity.ConfirmationJKT != "" {
+		s.auditExchangeFailure(ctx, req.ClientID, req.Audience, sessionID, "token_exchange_subject_key_mismatch", map[string]any{
+			claimSub: identity.Subject, logKeySeverity: severityWarning,
+		})
+		return nil, ErrSubjectKeyMismatch
+	}
 
 	actor, err := s.resolveExchangeActor(ctx, req.Actor, identity, auditCtx)
 	if err != nil {
 		return nil, err
 	}
 
-	return s.dispatchDownstreamExchange(ctx, req.ClientID,
-		req.Subject, req.Actor, req.Audience, req.Resource, req.Scope, sessionID, identity, actor)
+	return s.dispatchDownstreamExchange(ctx, req, sessionID, identity, actor)
 }
 
 // dispatchDownstreamExchange calls the Exchanger and emits the outcome audit
@@ -170,37 +203,36 @@ func (s *Server) BrokeredExchange(ctx context.Context, req BrokeredExchangeReque
 // consistent.
 func (s *Server) dispatchDownstreamExchange(
 	ctx context.Context,
-	clientID string,
-	subject, actor TypedToken,
-	audience, resource, scope, sessionID string,
+	request BrokeredExchangeRequest, sessionID string,
 	identity, actorIdentity *SubjectIdentity,
 ) (*TokenExchangeResult, error) {
 	if actorIdentity == nil {
-		actor = TypedToken{}
+		request.Actor = TypedToken{}
 	}
 	result, err := s.exchanger.Exchange(ctx, &ExchangerRequest{
-		Audience:         audience,
-		Resource:         resource,
-		Scope:            scope,
-		ClientID:         clientID,
-		Subject:          identity,
-		SubjectToken:     subject.Token,
-		SubjectTokenType: subject.Type,
-		ActorToken:       actor.Token,
-		ActorTokenType:   actor.Type,
-		Actor:            actorIdentity,
+		Audience:           request.Audience,
+		Resource:           request.Resource,
+		Scope:              request.Scope,
+		ClientID:           request.ClientID,
+		RequestedTokenType: request.RequestedTokenType,
+		Subject:            identity,
+		SubjectToken:       request.Subject.Token,
+		SubjectTokenType:   request.Subject.Type,
+		ActorToken:         request.Actor.Token,
+		ActorTokenType:     request.Actor.Type,
+		Actor:              actorIdentity,
 	})
 	if err != nil {
 		reason := "token_exchange_downstream_failed"
 		if errors.Is(err, ErrProviderUnavailable) {
 			reason = auditReasonProviderUnavailable
 			s.Logger.Warn("Identity provider temporarily unavailable during brokered token exchange",
-				paramClientID, clientID, paramAudience, audience, logKeyError, err.Error())
+				paramClientID, request.ClientID, paramAudience, request.Audience, logKeyError, err.Error())
 		} else {
 			s.Logger.Debug("brokered token exchange: downstream exchange failed",
-				paramClientID, clientID, paramAudience, audience, logKeyError, err)
+				paramClientID, request.ClientID, paramAudience, request.Audience, logKeyError, err)
 		}
-		s.auditExchangeFailure(ctx, clientID, audience, sessionID, reason, map[string]any{
+		s.auditExchangeFailure(ctx, request.ClientID, request.Audience, sessionID, reason, map[string]any{
 			claimSub:    identity.Subject,
 			logKeyError: err.Error(),
 		})
@@ -210,27 +242,43 @@ func (s *Server) dispatchDownstreamExchange(
 		return nil, fmt.Errorf("downstream exchange: %w", err)
 	}
 	if result == nil || result.AccessToken == "" {
-		s.auditExchangeFailure(ctx, clientID, audience, sessionID, "token_exchange_downstream_empty_token", map[string]any{
+		s.auditExchangeFailure(ctx, request.ClientID, request.Audience, sessionID, "token_exchange_downstream_empty_token", map[string]any{
 			claimSub: identity.Subject,
 		})
-		return nil, fmt.Errorf("downstream exchange returned no token")
+		return nil, fmt.Errorf("%w: no token", ErrInvalidExchangerResult)
 	}
 
 	issuedTokenType := result.IssuedTokenType
 	if issuedTokenType == "" {
 		issuedTokenType = SubjectTokenTypeAccessToken
 	}
+	if request.RequestedTokenType != "" && issuedTokenType != request.RequestedTokenType {
+		s.auditExchangeFailure(ctx, request.ClientID, request.Audience, sessionID, "token_exchange_issued_type_mismatch", map[string]any{
+			claimSub:               identity.Subject,
+			logKeySeverity:         severityWarning,
+			"requested_token_type": request.RequestedTokenType, "issued_token_type": issuedTokenType,
+		})
+		return nil, ErrIssuedTokenTypeMismatch
+	}
+	tokenType, err := brokeredTokenUsage(result.TokenType, issuedTokenType)
+	if err != nil {
+		s.auditExchangeFailure(ctx, request.ClientID, request.Audience, sessionID, "token_exchange_invalid_result", map[string]any{
+			claimSub: identity.Subject, logKeySeverity: severityWarning,
+			"issued_token_type": issuedTokenType, "token_type": result.TokenType,
+		})
+		return nil, err
+	}
 
 	s.Logger.Debug("brokered token exchange: issued downstream token",
-		paramClientID, clientID, claimSub, identity.Subject, "subject_iss", identity.Issuer,
-		paramAudience, audience, paramScope, result.Scope, "exp", result.ExpiresAt,
+		paramClientID, request.ClientID, "subject_iss", identity.Issuer,
+		paramAudience, request.Audience, paramScope, result.Scope, "exp", result.ExpiresAt,
 		logKeySessionID, sessionID)
 
 	successDetails := map[string]any{
 		paramGrantType:       GrantTypeTokenExchange,
 		logKeyExchange:       exchangeBrokered,
-		"subject_token_type": subject.Type,
-		paramAudience:        audience,
+		"subject_token_type": request.Subject.Type,
+		paramAudience:        request.Audience,
 		paramScope:           result.Scope,
 		"subject_iss":        identity.Issuer,
 		logKeySessionID:      sessionID,
@@ -242,16 +290,38 @@ func (s *Server) dispatchDownstreamExchange(
 	s.Auditor.LogEvent(ctx, security.Event{
 		Type:     security.EventTokenIssued,
 		UserID:   identity.Subject,
-		ClientID: clientID,
+		ClientID: request.ClientID,
 		Details:  successDetails,
 	})
 
 	return &TokenExchangeResult{
 		AccessToken:     result.AccessToken,
+		TokenType:       tokenType,
 		ExpiresAt:       result.ExpiresAt,
 		Scope:           result.Scope,
 		IssuedTokenType: issuedTokenType,
 	}, nil
+}
+
+func brokeredTokenUsage(tokenType, issuedTokenType string) (string, error) {
+	if tokenType == "" {
+		switch issuedTokenType {
+		case SubjectTokenTypeAccessToken:
+			return tokenTypeBearer, nil
+		case SubjectTokenTypeIDToken:
+			return tokenTypeNotApplicable, nil
+		default:
+			return "", fmt.Errorf("%w: token_type is required for this representation", ErrInvalidExchangerResult)
+		}
+	}
+	switch {
+	case strings.EqualFold(tokenType, tokenTypeBearer) && issuedTokenType != SubjectTokenTypeIDToken:
+		return tokenTypeBearer, nil
+	case strings.EqualFold(tokenType, tokenTypeNotApplicable) && issuedTokenType != SubjectTokenTypeAccessToken:
+		return tokenTypeNotApplicable, nil
+	default:
+		return "", fmt.Errorf("%w: unsupported token_type for this representation", ErrInvalidExchangerResult)
+	}
 }
 
 // exchangeRateLimited reports whether the brokered exchange is currently
@@ -273,6 +343,7 @@ func (s *Server) exchangeRateLimited(ctx context.Context, clientID, audience, se
 func (s *Server) auditExchangeFailure(ctx context.Context, clientID, audience, sessionID, reason string, extra map[string]any) {
 	details := map[string]any{
 		logKeyReason:    reason,
+		logKeySeverity:  severityWarning,
 		paramGrantType:  GrantTypeTokenExchange,
 		logKeyExchange:  exchangeBrokered,
 		paramAudience:   audience,

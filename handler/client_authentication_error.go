@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/net/http/httpguts"
 
 	oauth "github.com/giantswarm/mcp-oauth"
 	"github.com/giantswarm/mcp-oauth/instrumentation"
@@ -24,7 +25,7 @@ func (h *Handler) auditMissingRefreshAuthentication(ctx context.Context, clientI
 	h.server.Auditor.LogEvent(ctx, security.Event{
 		Type: security.EventAuthFailure, ClientID: clientID,
 		Details: map[string]any{
-			"severity": "high", fieldClientType: "confidential", "auth_missing": true,
+			auditDetailSeverity: "high", fieldClientType: "confidential", "auth_missing": true,
 			"endpoint": grantTypeRefreshToken, "ip": clientIP, "oauth_spec": "OAuth 2.1 Section 6",
 		},
 	})
@@ -46,12 +47,28 @@ func (h *Handler) writeEndpointClientAuthenticationError(w http.ResponseWriter, 
 		code, description, status = oauthError.Code, oauthError.Description, oauthError.Status
 	}
 	authorization := r.Header.Get("Authorization")
-	if status == http.StatusUnauthorized && (strings.EqualFold(authorization, "Basic") || strings.HasPrefix(strings.ToLower(authorization), "basic ")) {
-		w.Header().Set("WWW-Authenticate", `Basic realm="oauth"`)
+	if status == http.StatusUnauthorized && grant == server.GrantTypeTokenExchange && authorization == "" {
+		status = http.StatusBadRequest
+	}
+	if status == http.StatusUnauthorized {
+		if challenge := clientAuthenticationChallenge(authorization); challenge != "" {
+			w.Header().Set("WWW-Authenticate", challenge)
+		}
 	}
 	if grant != "" {
 		h.recordTokenFailure(r.Context(), grant, code)
 	}
 	h.recordHTTPMetrics(r.Context(), endpoint, http.MethodPost, status, started)
 	h.writeError(w, code, description, status)
+}
+
+func clientAuthenticationChallenge(authorization string) string {
+	scheme, _, _ := strings.Cut(authorization, " ")
+	if strings.EqualFold(scheme, "Basic") {
+		return `Basic realm="oauth"`
+	}
+	if !httpguts.ValidHeaderFieldName(scheme) {
+		return ""
+	}
+	return scheme + ` realm="oauth"`
 }

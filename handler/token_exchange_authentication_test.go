@@ -25,7 +25,7 @@ func TestBrokeredExchangeAuthenticationMatrix(t *testing.T) {
 				expectedError := ""
 				switch shape {
 				case "missing":
-					presented, expectedStatus, expectedError = "none", http.StatusUnauthorized, "invalid_client"
+					presented, expectedStatus, expectedError = "none", http.StatusBadRequest, "invalid_client"
 				case "mixed", "duplicate identifier", "duplicate credential":
 					expectedStatus, expectedError = http.StatusBadRequest, "invalid_request"
 				case "other owner":
@@ -33,7 +33,10 @@ func TestBrokeredExchangeAuthenticationMatrix(t *testing.T) {
 					expectedStatus, expectedError = http.StatusBadRequest, "invalid_target"
 				case "deleted":
 					require.NoError(t, environment.srv.DeleteClient(t.Context(), client.client.ClientID))
-					expectedStatus, expectedError = http.StatusUnauthorized, "invalid_client"
+					expectedStatus, expectedError = http.StatusBadRequest, "invalid_client"
+					if method == "client_secret_basic" {
+						expectedStatus = http.StatusUnauthorized
+					}
 				}
 				response := matrixTokenRequest(t, environment.handler, client, presented, brokeredExchangeForm(), func(request *http.Request) {
 					require.NoError(t, request.ParseForm())
@@ -59,6 +62,11 @@ func TestBrokeredExchangeAuthenticationMatrix(t *testing.T) {
 					}
 				})
 				require.Equal(t, expectedStatus, response.Code, response.Body.String())
+				challenge := ""
+				if expectedStatus == http.StatusUnauthorized {
+					challenge = `Basic realm="oauth"`
+				}
+				require.Equal(t, challenge, response.Header().Get("WWW-Authenticate"))
 				if expectedError != "" {
 					require.Equal(t, expectedError, decodeErrorResponse(t, response).Error)
 					require.Nil(t, exchanger.gotReq)
@@ -100,12 +108,13 @@ func TestPrivateKeyBrokeredExchangeReplayAndRetry(t *testing.T) {
 	require.Empty(t, response.Header().Get("WWW-Authenticate"))
 	require.Nil(t, exchanger.gotReq)
 	replay.unavailable = false
-	for _, expected := range []int{http.StatusOK, http.StatusUnauthorized} {
+	for _, expected := range []int{http.StatusOK, http.StatusBadRequest} {
 		response = matrixTokenRequest(t, environment.handler, client, "private_key_jwt", brokeredExchangeForm(), func(request *http.Request) {
 			require.NoError(t, request.ParseForm())
 			request.PostForm.Set("client_assertion", assertion)
 			request.Form.Set("client_assertion", assertion)
 		})
 		require.Equal(t, expected, response.Code, response.Body.String())
+		require.Empty(t, response.Header().Get("WWW-Authenticate"))
 	}
 }

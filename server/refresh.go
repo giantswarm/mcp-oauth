@@ -540,7 +540,7 @@ func (s *Server) refuseRefreshResourceMismatch(ctx context.Context, resource, au
 	if audience == "" {
 		audience = s.Config.GetResourceIdentifier()
 	}
-	if helpers.NormalizeURL(resource) == helpers.NormalizeURL(audience) {
+	if resourcesMatch(resource, audience) {
 		return nil
 	}
 	s.Logger.Debug("Refresh refused: resource is not the grant's audience",

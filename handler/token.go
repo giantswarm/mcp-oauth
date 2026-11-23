@@ -63,6 +63,14 @@ func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	grantType := r.Form.Get("grant_type")
+	if len(r.Form["grant_type"]) > 1 {
+		h.logAuthFailure(r.Context(), "", clientIP, "token_request_duplicate_grant_type", "Token request rejected: duplicate grant_type")
+		h.recordTokenFailure(r.Context(), grantType, constants.ErrorCodeInvalidRequest)
+		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "duplicate grant_type")
+		h.writeError(w, constants.ErrorCodeInvalidRequest, "grant_type must not be repeated", http.StatusBadRequest)
+		return
+	}
 
 	if len(r.Form["resource"]) > 1 {
 		h.logAuthFailure(r.Context(), "", clientIP, auditReasonMultipleResources, "Token request rejected: more than one resource parameter")
@@ -406,6 +414,10 @@ func (h *Handler) authenticateClientWithLookup(r *http.Request, clientID, client
 		return h.authenticateAssertion(r, clientID, clientIP)
 	}
 	basicClientID, basicClientSecret := h.parseBasicAuth(r)
+	if r.Header.Get("Authorization") != "" && basicClientID == "" {
+		h.logAuthFailure(r.Context(), clientID, clientIP, "client_authentication_failed", "Client authentication failed")
+		return nil, oauth.ErrInvalidClient("Client authentication failed")
+	}
 	formClientID := clientID
 
 	// RFC 6749 §2.3.1: if both Basic Auth and form client_id are supplied,

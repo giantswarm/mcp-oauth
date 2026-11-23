@@ -3,6 +3,8 @@ package helpers
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestTokenSuffix(t *testing.T) {
@@ -601,4 +603,19 @@ func TestFindMatchingAudience(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNormalizeURLKeepsDistinctIdentifiersDistinct(t *testing.T) {
+	for _, test := range []struct{ name, left, right string }{
+		{"opaque URIs", "urn:example:one", "urn:example:two"},
+		{"escaped delimiter", "https://example.com/a%2Fb", "https://example.com/a/b"},
+		{"userinfo", "https://user@example.com/", "https://example.com/"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			require.NotEqual(t, NormalizeURL(test.left), NormalizeURL(test.right))
+			require.Empty(t, MatchAudienceSecure(test.left, []string{test.right}))
+		})
+	}
+	require.Equal(t, "urn:example:one", NormalizeURL("URN:example:one"))
+	require.Equal(t, "urn:example:one", MatchAudienceSecure("urn:example:one", []string{"urn:example:one"}))
 }

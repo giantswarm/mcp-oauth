@@ -17,8 +17,19 @@ import (
 	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
+	"github.com/giantswarm/mcp-oauth/storage"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
+
+func registerExchangeClient(t *testing.T, service *Server) string {
+	t.Helper()
+	const clientID = "exchange-client"
+	require.NoError(t, service.SaveClient(t.Context(), &storage.Client{
+		ClientID: clientID, ClientType: ClientTypeConfidential, TokenEndpointAuthMethod: TokenEndpointAuthMethodBasic,
+		GrantTypes: []string{GrantTypeTokenExchange},
+	}))
+	return clientID
+}
 
 func TestSelfIssuedExchange_IssuedToken(t *testing.T) {
 	key := newTestECKey(t)
@@ -66,6 +77,7 @@ func TestSelfIssuedExchange_IssuedToken(t *testing.T) {
 	})
 
 	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{
+		ClientID: registerExchangeClient(t, srv),
 		SubjectExchange: SubjectExchange{
 			Subject:  TypedToken{Token: subjectToken, Type: SubjectTokenTypeIDToken},
 			Resource: "https://api.example.com",
@@ -138,13 +150,13 @@ func TestSelfIssuedExchange_ScopeIntersection(t *testing.T) {
 	}
 
 	t.Run("requested scope within allowed", func(t *testing.T) {
-		result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{Subject: TypedToken{Token: makeToken(), Type: SubjectTokenTypeIDToken}, Resource: "https://api.example.com", Scope: "read"}})
+		result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{Subject: TypedToken{Token: makeToken(), Type: SubjectTokenTypeIDToken}, Resource: "https://api.example.com", Scope: "read"}})
 		require.NoError(t, err)
 		require.Equal(t, "read", result.Scope)
 	})
 
 	t.Run("requested scope outside allowed", func(t *testing.T) {
-		_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{Subject: TypedToken{Token: makeToken(), Type: SubjectTokenTypeIDToken}, Resource: "https://api.example.com", Scope: "admin"}})
+		_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{Subject: TypedToken{Token: makeToken(), Type: SubjectTokenTypeIDToken}, Resource: "https://api.example.com", Scope: "admin"}})
 		require.ErrorIs(t, err, ErrInvalidScope)
 	})
 }
@@ -193,7 +205,7 @@ func TestSelfIssuedExchange_NoAllowedScopes(t *testing.T) {
 		IssuedAt: josejwt.NewNumericDate(time.Now()),
 	})
 
-	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{Subject: TypedToken{Token: subjectToken, Type: SubjectTokenTypeIDToken}, Resource: "https://api.example.com", Scope: "read write admin"}})
+	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{Subject: TypedToken{Token: subjectToken, Type: SubjectTokenTypeIDToken}, Resource: "https://api.example.com", Scope: "read write admin"}})
 	require.NoError(t, err)
 	// Full requested scope granted when no per-issuer restriction.
 	scopes := strings.Fields(result.Scope)
@@ -221,7 +233,7 @@ func TestSelfIssuedExchange_UnknownTokenType(t *testing.T) {
 	require.NoError(t, err)
 	// No validators registered.
 
-	_, err = srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{Subject: TypedToken{Token: "sometoken", Type: "urn:ietf:params:oauth:token-type:saml2"}, Resource: "https://api.example.com"}})
+	_, err = srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{Subject: TypedToken{Token: "sometoken", Type: "urn:ietf:params:oauth:token-type:saml2"}, Resource: "https://api.example.com"}})
 	require.Error(t, err)
 
 	var unsupported *TokenExchangeUnsupportedTypeError
@@ -232,7 +244,7 @@ func TestSelfIssuedExchange_UnknownTokenType(t *testing.T) {
 func TestSelfIssuedExchange_RequiresJWTMode(t *testing.T) {
 	srv, _, _ := setupFlowTestServer(t) // opaque mode
 
-	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{Subject: TypedToken{Token: "tok", Type: SubjectTokenTypeIDToken}, Resource: "https://api.example.com"}})
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{Subject: TypedToken{Token: "tok", Type: SubjectTokenTypeIDToken}, Resource: "https://api.example.com"}})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "JWT access token mode")
 }
@@ -304,6 +316,7 @@ func TestSelfIssuedExchange_Audit_Success(t *testing.T) {
 	srv, buf, key := newAuditExchangeTestServer(t)
 
 	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{
+		ClientID: registerExchangeClient(t, srv),
 		SubjectExchange: SubjectExchange{
 			Subject:  TypedToken{Token: makeAuditSubjectToken(t, key), Type: SubjectTokenTypeIDToken},
 			Resource: "https://api.example.com",
@@ -339,7 +352,7 @@ func TestSelfIssuedExchange_Audit_JWTModeRequired(t *testing.T) {
 	require.NoError(t, err)
 	srv.Auditor = security.NewAuditor(logger, true)
 
-	_, err = srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{Subject: TypedToken{Token: "tok", Type: SubjectTokenTypeIDToken}, Resource: "https://api.example.com"}})
+	_, err = srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{Subject: TypedToken{Token: "tok", Type: SubjectTokenTypeIDToken}, Resource: "https://api.example.com"}})
 	require.Error(t, err)
 
 	out := buf.String()
@@ -370,7 +383,7 @@ func TestSelfIssuedExchange_Audit_UnsupportedSubjectTokenType(t *testing.T) {
 	srv.Auditor = security.NewAuditor(logger, true)
 
 	const badType = "urn:ietf:params:oauth:token-type:saml2"
-	_, err = srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{Subject: TypedToken{Token: "tok", Type: badType}, Resource: "https://api.example.com"}})
+	_, err = srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{Subject: TypedToken{Token: "tok", Type: badType}, Resource: "https://api.example.com"}})
 	require.Error(t, err)
 	var unsupported *TokenExchangeUnsupportedTypeError
 	require.ErrorAs(t, err, &unsupported)
@@ -387,7 +400,7 @@ func TestSelfIssuedExchange_Audit_UnsupportedSubjectTokenType(t *testing.T) {
 func TestSelfIssuedExchange_Audit_SubjectTokenValidationFailure(t *testing.T) {
 	srv, buf, _ := newAuditExchangeTestServer(t)
 
-	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{Subject: TypedToken{Token: "not-a-real-token", Type: SubjectTokenTypeIDToken}, Resource: "https://api.example.com"}})
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{Subject: TypedToken{Token: "not-a-real-token", Type: SubjectTokenTypeIDToken}, Resource: "https://api.example.com"}})
 	require.Error(t, err)
 
 	out := buf.String()
@@ -402,7 +415,7 @@ func TestSelfIssuedExchange_Audit_AccessTokenIssueFailure(t *testing.T) {
 
 	srv.accessTokenIssuer = failingAccessTokenIssuer{err: fmt.Errorf("signer down")}
 
-	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{Subject: TypedToken{Token: makeAuditSubjectToken(t, key), Type: SubjectTokenTypeIDToken}, Resource: "https://api.example.com", Scope: "read"}})
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{Subject: TypedToken{Token: makeAuditSubjectToken(t, key), Type: SubjectTokenTypeIDToken}, Resource: "https://api.example.com", Scope: "read"}})
 	require.Error(t, err)
 
 	out := buf.String()
@@ -419,7 +432,7 @@ func TestSelfIssuedExchange_Audit_AccessTokenIssueFailure_WithActor(t *testing.T
 	srv.Auditor = security.NewAuditor(logger, true)
 	srv.accessTokenIssuer = failingAccessTokenIssuer{err: fmt.Errorf("signer down")}
 
-	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{Subject: TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken}, Actor: TypedToken{Token: "act-tok", Type: SubjectTokenTypeIDToken}, Resource: "https://api.example.com", Scope: "read"}})
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{Subject: TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken}, Actor: TypedToken{Token: "act-tok", Type: SubjectTokenTypeIDToken}, Resource: "https://api.example.com", Scope: "read"}})
 	require.Error(t, err)
 
 	out := buf.String()
@@ -480,6 +493,7 @@ func TestSelfIssuedExchange_DPoP(t *testing.T) {
 	jkt := dpopJKTFor(t, dpopKey)
 
 	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{
+		ClientID: registerExchangeClient(t, srv),
 		SubjectExchange: SubjectExchange{
 			Subject:  TypedToken{Token: subjectToken, Type: SubjectTokenTypeIDToken},
 			Resource: "https://api.example.com",
@@ -553,6 +567,7 @@ func TestSelfIssuedExchange_WithIdentityClaims(t *testing.T) {
 	srv, signingKey, subjectToken := setupExchangeOptionsTest(t)
 
 	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{
+		ClientID: registerExchangeClient(t, srv),
 		SubjectExchange: SubjectExchange{
 			Subject:  TypedToken{Token: subjectToken, Type: SubjectTokenTypeIDToken},
 			Resource: "https://api.example.com",
@@ -585,6 +600,7 @@ func TestSelfIssuedExchange_WithExtraClaims(t *testing.T) {
 	srv, signingKey, subjectToken := setupExchangeOptionsTest(t)
 
 	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{
+		ClientID: registerExchangeClient(t, srv),
 		SubjectExchange: SubjectExchange{
 			Subject:  TypedToken{Token: subjectToken, Type: SubjectTokenTypeIDToken},
 			Resource: "https://api.example.com",
@@ -616,6 +632,7 @@ func TestSelfIssuedExchange_NoSubjectClaims_NoIdentity(t *testing.T) {
 	srv, signingKey, subjectToken := setupExchangeOptionsTest(t)
 
 	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{
+		ClientID: registerExchangeClient(t, srv),
 		SubjectExchange: SubjectExchange{
 			Subject:  TypedToken{Token: subjectToken, Type: SubjectTokenTypeIDToken},
 			Resource: "https://api.example.com",
@@ -640,6 +657,7 @@ func TestSelfIssuedExchange_EmailVerifiedFalseWithEmail(t *testing.T) {
 	srv, signingKey, subjectToken := setupExchangeOptionsTest(t)
 
 	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{
+		ClientID: registerExchangeClient(t, srv),
 		SubjectExchange: SubjectExchange{
 			Subject:  TypedToken{Token: subjectToken, Type: SubjectTokenTypeIDToken},
 			Resource: "https://api.example.com",
@@ -667,6 +685,7 @@ func TestSelfIssuedExchange_ExtraOverridesEmailVerified(t *testing.T) {
 	srv, signingKey, subjectToken := setupExchangeOptionsTest(t)
 
 	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{
+		ClientID: registerExchangeClient(t, srv),
 		SubjectExchange: SubjectExchange{
 			Subject:  TypedToken{Token: subjectToken, Type: SubjectTokenTypeIDToken},
 			Resource: "https://api.example.com",
@@ -737,7 +756,7 @@ func newActorExchangeServer(t *testing.T) (srv *Server, signingKey *rsa.PrivateK
 func TestSelfIssuedExchange_WithActor(t *testing.T) {
 	srv, signingKey := newActorExchangeServer(t)
 
-	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 		Actor:    TypedToken{Token: "act-tok", Type: SubjectTokenTypeIDToken},
 		Resource: "https://api.example.com",
@@ -775,7 +794,7 @@ func TestSelfIssuedExchange_ActorTokenValidationFailure(t *testing.T) {
 		},
 	}
 
-	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 		Actor:    TypedToken{Token: "bad-act-tok", Type: SubjectTokenTypeIDToken},
 		Resource: "https://api.example.com",
@@ -802,7 +821,7 @@ func TestSelfIssuedExchange_SelfDelegationIsNoOp(t *testing.T) {
 		},
 	}
 
-	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 		Actor:    TypedToken{Token: "act-tok", Type: SubjectTokenTypeIDToken},
 		Resource: "https://api.example.com",
@@ -828,7 +847,7 @@ func TestSelfIssuedExchange_RateLimited(t *testing.T) {
 	srv.UserRateLimiter = security.NewRateLimiter(0, 1, nil) // burst of 1, no refill
 	t.Cleanup(srv.UserRateLimiter.Stop)
 
-	req := SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	req := SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 		Resource: "https://api.example.com",
 		Scope:    "read",
@@ -877,7 +896,7 @@ func TestSelfIssuedExchange_SubjectScopeCapsGrant(t *testing.T) {
 				}},
 			}
 
-			result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+			result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 				Subject: TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 				Scope:   tc.requested,
 			}})
@@ -905,21 +924,21 @@ func TestSelfIssuedExchange_EmptyGrantCannotBeWidenedByReexchange(t *testing.T) 
 		SubjectTokenTypeAccessToken: &selfIssuedSubjectValidator{srv: srv, next: external},
 	}
 
-	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject: TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 		Actor:   TypedToken{Token: "act-tok", Type: SubjectTokenTypeIDToken},
 		Scope:   "admin",
 	}})
 	require.ErrorIs(t, err, ErrInvalidScope)
 
-	first, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	first, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject: TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 		Actor:   TypedToken{Token: "act-tok", Type: SubjectTokenTypeIDToken},
 	}})
 	require.NoError(t, err)
 	require.Equal(t, "read", first.Scope)
 
-	_, err = srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	_, err = srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject: TypedToken{Token: first.AccessToken, Type: SubjectTokenTypeAccessToken},
 		Actor:   TypedToken{Token: "act-tok-2", Type: SubjectTokenTypeIDToken},
 		Scope:   "admin",
