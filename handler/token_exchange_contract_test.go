@@ -20,8 +20,6 @@ func TestTokenExchangeRequestParameters(t *testing.T) {
 				name, parameter, value, reason string
 			}{
 				{"actor type without actor", "actor_token_type", server.SubjectTokenTypeIDToken, "token_exchange_actor_token_missing"},
-				{"requested ID token", "requested_token_type", server.SubjectTokenTypeIDToken, "token_exchange_requested_type_unsupported"},
-				{"requested JWT", "requested_token_type", "urn:ietf:params:oauth:token-type:jwt", "token_exchange_requested_type_unsupported"},
 				{"unknown requested type", "requested_token_type", "unsupported", "token_exchange_requested_type_unsupported"},
 			} {
 				t.Run(test.name, func(t *testing.T) {

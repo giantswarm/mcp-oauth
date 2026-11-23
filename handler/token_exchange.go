@@ -79,12 +79,13 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 		h.writeError(w, constants.ErrorCodeInvalidRequest, "actor_token_type requires actor_token", http.StatusBadRequest)
 		return
 	}
-	if requestedType := r.Form.Get("requested_token_type"); requestedType != "" && requestedType != server.SubjectTokenTypeAccessToken {
+	requestedType := r.Form.Get("requested_token_type")
+	if !supportedExchangeOutputType(requestedType, audience != "") {
 		h.logAuthFailure(r.Context(), "", clientIP, "token_exchange_requested_type_unsupported",
 			"token exchange: requested_token_type unsupported")
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "unsupported requested_token_type")
-		h.writeError(w, constants.ErrorCodeInvalidRequest, "only access_token is supported as requested_token_type", http.StatusBadRequest)
+		h.writeError(w, constants.ErrorCodeInvalidRequest, "requested_token_type is not supported for this exchange", http.StatusBadRequest)
 		return
 	}
 	clientID, ok := h.authenticateTokenExchangeClient(w, r, clientIP, startTime, span)
@@ -104,7 +105,7 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 	if audience != "" {
 		h.handleBrokeredTokenExchange(w, r, server.BrokeredExchangeRequest{
 			SubjectExchange: exchange, ClientID: clientID, Audience: audience,
-			RequestedTokenType: server.SubjectTokenTypeAccessToken,
+			RequestedTokenType: requestedType,
 		}, clientIP, startTime, span)
 		return
 	}
@@ -129,6 +130,13 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 	h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusOK, startTime)
 	instrumentation.SetSpanSuccess(span)
 	h.writeTokenExchangeResponse(w, result)
+}
+
+func supportedExchangeOutputType(tokenType string, brokered bool) bool {
+	if tokenType == "" || tokenType == server.SubjectTokenTypeAccessToken {
+		return true
+	}
+	return brokered && (tokenType == server.SubjectTokenTypeIDToken || tokenType == server.SubjectTokenTypeJWT)
 }
 
 // authenticateTokenExchangeClient enforces this server's confidential-client

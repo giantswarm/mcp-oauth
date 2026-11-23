@@ -80,7 +80,9 @@ type ExchangerResult struct {
 	// reported to the client — brokered tokens never outlive the downstream
 	// token, and no refresh token is issued; clients re-exchange instead.
 	ExpiresAt time.Time
-	// Scope is the scope granted by the downstream issuer. May be empty.
+	// Scope is the effective scope granted by the downstream issuer. When its
+	// response omits scope, the host must resolve it against its downstream
+	// request, which may differ from ExchangerRequest.Scope.
 	Scope string
 }
 
@@ -168,6 +170,12 @@ func (s *Server) BrokeredExchange(ctx context.Context, req BrokeredExchangeReque
 	identity, err := s.validateExchangeSubjectToken(ctx, req.Subject, nil, auditCtx)
 	if err != nil {
 		return nil, err
+	}
+	if identity.ConfirmationJKT != "" {
+		s.auditExchangeFailure(ctx, req.ClientID, req.Audience, sessionID, "token_exchange_subject_key_mismatch", map[string]any{
+			claimSub: identity.Subject, logKeySeverity: severityWarning,
+		})
+		return nil, ErrSubjectKeyMismatch
 	}
 
 	actor, err := s.resolveExchangeActor(ctx, req.Actor, identity, auditCtx)
@@ -268,8 +276,13 @@ func (s *Server) dispatchDownstreamExchange(
 		Details:  successDetails,
 	})
 
+	tokenType := "N_A"
+	if issuedTokenType == SubjectTokenTypeAccessToken {
+		tokenType = tokenTypeBearer
+	}
 	return &TokenExchangeResult{
 		AccessToken:     result.AccessToken,
+		TokenType:       tokenType,
 		ExpiresAt:       result.ExpiresAt,
 		Scope:           result.Scope,
 		IssuedTokenType: issuedTokenType,

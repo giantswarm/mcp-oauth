@@ -4,6 +4,8 @@ Token exchange lets a client present an external token (an OIDC ID token, an acc
 
 `SelfIssuedExchange` and `BrokeredExchange` are this library's names for locally issued and downstream-issued tokens. Both use the RFC 8693 token exchange grant. Locally issued access tokens are signed by this authorization server; this is separate from OpenID Connect's Self-Issued OpenID Provider profile. The `client_id` claim records the requesting client and ownership for revocation; DPoP provides proof of possession separately.
 
+The HTTP token endpoint calls `SelfIssuedExchange` when no `audience` is supplied. Local issuance requires JWT access-token mode and a signing key; applications configured for opaque tokens cannot use it. An `audience` selects `BrokeredExchange` and its host-provided downstream issuer instead.
+
 ## When to use it
 
 - Service-to-service calls where the caller already holds a token from a trusted issuer (Dex, Google Workspace, another cluster's OIDC provider).
@@ -140,7 +142,7 @@ grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 
 The request must authenticate a registered confidential client with its registered method (`client_secret_basic`, `client_secret_post` or `private_key_jwt`). This is the server's deployment policy under RFC 8693 §2.1: client authentication prevents any holder of a trusted subject token from exchanging it without client credentials. RFC 9068 §2.2 requires the requesting client's `client_id` claim; it does not itself require confidential-client authentication. The issued token records that client, so the owner can revoke it (RFC 7009) and deleting the client retires it.
 
-A request without client authentication is answered `400 invalid_client`, a public client `400 unauthorized_client`. Failed Basic authentication returns `401 invalid_client` with a Basic challenge. In-process callers of `Server.SelfIssuedExchange` must authenticate a registered confidential client and pass its ID in `SelfIssuedExchangeRequest.ClientID`; an empty, unknown, public or retired client fails with `server.ErrExchangeClientRequired`.
+A request without client authentication is answered `400 invalid_client`, a public client `400 unauthorized_client`. Failed authentication attempted through the Authorization header returns `401 invalid_client` with a challenge matching its scheme, including unsupported schemes. In-process callers of `Server.SelfIssuedExchange` must authenticate a registered confidential client and pass its ID in `SelfIssuedExchangeRequest.ClientID`; an empty, unknown, public or retired client fails with `server.ErrExchangeClientRequired`.
 
 Resource servers that verify these tokens offline against the JWKS do not see revocation or client deletion; for them a token stays valid until `exp` (`AccessTokenTTL`, default one hour). Only `ValidateToken` on this server consults the revocation and client-retirement state.
 
@@ -148,7 +150,7 @@ When upgrading, configure client credentials for HTTP callers and pass the authe
 
 Optional parameters:
 
-- `requested_token_type`: the HTTP endpoint supports only `urn:ietf:params:oauth:token-type:access_token`. Omission defaults to that type; other requested types return `invalid_request` on both exchange flows. The broker forwards the requested type to the host `Exchanger` and rejects a mismatched result with `500 server_error`, without returning its token or auditing a successful issuance.
+- `requested_token_type`: local issuance supports `urn:ietf:params:oauth:token-type:access_token`. Brokered requests also support `id_token` and `jwt` token-type URNs. An omitted or empty value lets the broker host choose its output type. An explicit type is forwarded to the host `Exchanger`; a mismatched result returns `500 server_error`, without returning its token or auditing a successful issuance. Brokered access tokens use `token_type: Bearer`; non-access-token results use `N_A` and must not be treated as MCP access tokens.
 - `actor_token` and `actor_token_type`: supply both for delegation. A nonempty actor token without its type, or a nonempty actor type without an actor token, returns `invalid_request`. Empty optional values are treated as omitted.
 - `resource` (RFC 8707): an absolute URI with no fragment component or `#` delimiter, to bind the issued token's `aud`. The maximum length is 2,048 bytes. When omitted, `aud` defaults to the server's own `ResourceIdentifier`. Malformed values return `invalid_target` on either exchange flow.
 - `scope`: requested scope subset; intersected with the issuer's `AllowedScopes` and with the subject token's `scope` claim when it has one; an empty intersection is refused with `invalid_scope`.
@@ -157,7 +159,7 @@ Optional parameters:
 Singleton parameters (`grant_type`, `subject_token`, `subject_token_type`, `actor_token`, `actor_token_type`, `requested_token_type` and `scope`) must not be repeated; duplicates return `invalid_request`. This endpoint supports one `resource` and one `audience`; multiple targets return `invalid_target`.
 
 Self-issued exchange policy:
-- **Resource allowlist**: `Config.TokenExchangeAllowedResources` caps the `resource` values that may be minted. Empty (the default) accepts any resource. When non-empty, a request whose `resource` is neither the server's own `ResourceIdentifier` nor a listed value is rejected with `invalid_target`. Values are compared ignoring scheme and host case, a default port and a trailing slash.
+- **Resource allowlist**: `Config.TokenExchangeAllowedResources` caps the `resource` values that may be minted. Empty (the default) accepts any resource. When non-empty, a request whose `resource` is neither the server's own `ResourceIdentifier` nor a listed value is rejected with `invalid_target`. HTTP identifiers are compared ignoring scheme and host case, a default port and a trailing slash. Opaque URI contents and escaped reserved characters remain distinct: `urn:example:one` does not match `urn:example:two`, and `/a%2Fb` does not match `/a/b`.
 - **Self-renewal**: a token this server issued cannot be re-exchanged without adding a new actor; a bare renewal (or re-attaching the actor already outermost on the subject's chain) is rejected with `invalid_request` to prevent open-ended TTL extension. Re-exchange to add a *different* actor extends the delegation chain and is allowed.
 - **Key-bound subjects**: if the subject token carries an RFC 9449 `cnf.jkt` confirmation, the request must present a DPoP proof for that same key; otherwise the exchange is rejected. This prevents a bearer who lacks the confirmation key from laundering the binding into a token bound to a different key.
 
@@ -244,7 +246,9 @@ srv, _ := server.New(provider, store, store, store,
 
 Return an error wrapping `server.ErrInvalidTarget` from `Exchange` to signal an audience the host cannot map; the client receives `invalid_target`. Return an error wrapping `server.ErrProviderUnavailable` when the downstream issuer did not answer; the client receives `503 Service Unavailable` with `Retry-After` and retries the same request.
 
-`ExchangerRequest.RequestedTokenType` carries the requested output type. HTTP requests always select `urn:ietf:params:oauth:token-type:access_token`, including when the parameter is omitted or empty. In-process callers can leave `BrokeredExchangeRequest.RequestedTokenType` empty to use the host's default, or provide a type that the host supports. A mismatched result returns `server.ErrIssuedTokenTypeMismatch` before a success audit event is emitted.
+`ExchangerRequest.RequestedTokenType` carries the requested output type. HTTP and in-process callers can omit it to use the host's default, or provide a supported type. A mismatched result returns `server.ErrIssuedTokenTypeMismatch` before a success audit event is emitted.
+
+`ExchangerResult.Scope` must describe the effective downstream grant. If the downstream response omits `scope`, resolve it against the scope sent downstream, which may differ from the inbound client's request. The broker returns this value to the client and includes it in the issuance audit.
 
 ### Policy enforced by the broker path
 
@@ -252,6 +256,7 @@ Return an error wrapping `server.ErrInvalidTarget` from `Exchange` to signal an 
 - **Per-client audience allowlist**: `Config.TokenExchangeClientAudiences`; a client requesting an audience outside its list gets `invalid_target`. Without `WithExchanger`, every audience request gets `invalid_target`.
 - **No refresh tokens** are issued; `expires_in` is bounded by the downstream token's expiry and clients are expected to re-exchange.
 - **DPoP is rejected** on this path (`invalid_request`); the downstream issuer never saw the proof, so the binding would be a lie.
+- **Key-bound subjects are rejected** (`invalid_request`) before contacting the host. This path cannot verify possession of the subject token's confirmation key; rejecting an output DPoP request alone does not protect a bound input token.
 - **Audit**: success and failure events carry the client ID, subject, requested audience, granted scope, and the deterministic cross-hop session ID (`ext-<hex>`, same derivation as forwarded-token acceptance, keyed by `Config.SessionIDHMACKey`) so broker audit lines correlate with downstream MCP server audit lines for the same token.
 
 ### Client request

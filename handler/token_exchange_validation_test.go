@@ -138,7 +138,7 @@ func TestTokenExchangeResourceSyntax(t *testing.T) {
 	for _, flow := range []string{"local", "brokered"} {
 		t.Run(flow, func(t *testing.T) {
 			fixture := newExchangeContractFixture(t, flow == "brokered")
-			for _, resource := range []string{"relative", "https://api.example.com/#fragment", "https://api.example.com/#", "https://api.example.com/%zz", "https://api.example.com/" + strings.Repeat("a", server.MaxResourceLength)} {
+			for _, resource := range []string{"relative", "https://api.example.com/#fragment", "https://api.example.com/#", "https://api.example.com/%zz", "https://api.example.com/a b", "https://api.example.com/?q=%zz", "urn:example:bad value", "https://api.example.com/" + strings.Repeat("a", server.MaxResourceLength)} {
 				fixture.logs.Reset()
 				form := fixture.form()
 				form.Set("resource", resource)
@@ -162,19 +162,20 @@ func TestTokenExchangeResourceSyntax(t *testing.T) {
 
 func TestBrokeredTokenExchangeRejectsUnexpectedIssuedType(t *testing.T) {
 	fixture := newExchangeContractFixture(t, true)
-	for _, requested := range []string{"omitted", "", server.SubjectTokenTypeAccessToken} {
-		for _, issued := range []string{server.SubjectTokenTypeIDToken, server.SubjectTokenTypeJWT, "unsupported"} {
+	for _, requested := range []string{server.SubjectTokenTypeAccessToken, server.SubjectTokenTypeIDToken, server.SubjectTokenTypeJWT} {
+		for _, issued := range []string{server.SubjectTokenTypeAccessToken, server.SubjectTokenTypeIDToken, server.SubjectTokenTypeJWT, "unsupported"} {
+			if requested == issued {
+				continue
+			}
 			t.Run(requested+"/"+issued, func(t *testing.T) {
 				form := fixture.form()
-				if requested != "omitted" {
-					form.Set("requested_token_type", requested)
-				}
+				form.Set("requested_token_type", requested)
 				fixture.exchanger.result.IssuedTokenType = issued
 				fixture.logs.Reset()
 				response := fixture.request(form)
 				requireOAuthError(t, response, http.StatusInternalServerError, constants.ErrorCodeServerError)
 				require.NotContains(t, response.Body.String(), fixture.exchanger.result.AccessToken)
-				require.Equal(t, server.SubjectTokenTypeAccessToken, fixture.exchanger.gotReq.RequestedTokenType)
+				require.Equal(t, requested, fixture.exchanger.gotReq.RequestedTokenType)
 				require.True(t, auditAuthFailureWithReason(t, fixture.logs, "token_exchange_issued_type_mismatch"))
 				require.False(t, auditEventLogged(t, fixture.logs, security.EventTokenIssued))
 				events := auditEvents(t, fixture.logs)
@@ -184,7 +185,7 @@ func TestBrokeredTokenExchangeRejectsUnexpectedIssuedType(t *testing.T) {
 				require.Equal(t, "warning", details["severity"])
 				require.Equal(t, server.GrantTypeTokenExchange, details["grant_type"])
 				require.Equal(t, "user@example.com", details["sub"])
-				require.Equal(t, server.SubjectTokenTypeAccessToken, details["requested_token_type"])
+				require.Equal(t, requested, details["requested_token_type"])
 				require.Equal(t, issued, details["issued_token_type"])
 			})
 		}

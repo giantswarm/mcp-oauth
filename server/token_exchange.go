@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/security"
 )
@@ -37,11 +36,10 @@ var ErrInvalidScope = errors.New("requested scope cannot be granted")
 // (e.g. a Kubernetes ServiceAccount token) is exempt.
 var ErrUnverifiedSubjectEmail = errors.New("subject email_verified is not true; refusing to issue a token asserting an unproven email")
 
-// ErrSubjectKeyMismatch is returned by SelfIssuedExchange when the subject token
-// carries an RFC 9449 §6.1 cnf.jkt proof-of-possession binding but the request
-// does not present a DPoP proof for that same key. A key-bound token may only be
-// re-exchanged by the holder of its confirmation key, so a bearer who lacks the
-// key cannot launder the binding into a token bound to a different key.
+// ErrSubjectKeyMismatch is returned when an exchange cannot verify possession
+// of the subject token's RFC 9449 §6.1 cnf.jkt key. Local issuance requires a
+// matching DPoP proof; brokered exchange refuses key-bound subjects because it
+// does not support input proofs.
 var ErrSubjectKeyMismatch = errors.New("subject token is key-bound; request must prove possession of its confirmation key")
 
 // ErrExchangeClientRequired is returned when SelfIssuedExchange's ClientID does
@@ -389,8 +387,7 @@ func (s *Server) checkAllowedResource(ctx context.Context, audience, clientID, s
 		return fmt.Errorf("%w: %v", ErrInvalidTarget, err)
 	}
 	allowed := s.Config.TokenExchangeAllowedResources
-	normalizedAudience := helpers.NormalizeURL(audience)
-	isAudience := func(resource string) bool { return helpers.NormalizeURL(resource) == normalizedAudience }
+	isAudience := func(resource string) bool { return resourcesMatch(resource, audience) }
 	if len(allowed) == 0 || isAudience(s.Config.GetResourceIdentifier()) || slices.ContainsFunc(allowed, isAudience) {
 		return nil
 	}

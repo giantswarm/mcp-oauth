@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"slices"
@@ -647,11 +646,8 @@ func (s *Server) TokenMetadata(ctx context.Context, accessToken string) (*storag
 // The token's audience must match this server's ResourceIdentifier.
 func (s *Server) validateTokenAudience(ctx context.Context, accessToken string, metadata *storage.TokenMetadata) error {
 	expectedAudience := s.Config.GetResourceIdentifier()
-	normalizedAudience := helpers.NormalizeURL(metadata.Audience)
-	normalizedExpected := helpers.NormalizeURL(expectedAudience)
-
 	// Check if audience matches this server's own resource identifier
-	if subtle.ConstantTimeCompare([]byte(normalizedAudience), []byte(normalizedExpected)) == 1 {
+	if resourcesMatch(metadata.Audience, expectedAudience) {
 		s.Logger.Debug("Token audience validation passed",
 			paramAudience, metadata.Audience,
 			"token_suffix", helpers.TokenSuffix(accessToken, 8))
