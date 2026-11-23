@@ -216,6 +216,17 @@ func TestAuthorizationServerFlows_RefusedWhenOff(t *testing.T) {
 			_, err := srv.RefreshAccessToken(ctx, "refresh-token", "client")
 			return err
 		},
+		"RefreshSession": func() error {
+			_, err := srv.RefreshSession(ctx, "family")
+			return err
+		},
+		"RefreshSessionProvider": func() error {
+			_, err := srv.RefreshSessionProvider(ctx, "family")
+			return err
+		},
+		"RevokeAllTokensForUserClient": func() error {
+			return srv.RevokeAllTokensForUserClient(ctx, "user", "client")
+		},
 		"RevokeToken": func() error {
 			return srv.RevokeToken(ctx, "token", "client", "192.0.2.1")
 		},
@@ -327,7 +338,7 @@ func collectTrustedIssuerTokens(t *testing.T, srv *Server) func() []bool {
 	}
 }
 
-func TestValidateToken_TrustedIssuerTokenCountedWithResourceAudience(t *testing.T) {
+func TestTrustedIssuerTokenCountedWithResourceAudience(t *testing.T) {
 	h := newForwardedTokenHarness(t, func(c *Config) {
 		c.TrustedAudiences = nil
 		c.ResourceIdentifier = "https://mcp.test.example/mcp"
@@ -349,6 +360,8 @@ func TestValidateToken_TrustedIssuerTokenCountedWithResourceAudience(t *testing.
 		_, err := h.srv.ValidateToken(t.Context(), h.signToken(t, claims))
 		require.NoError(t, err)
 	}
+	_, err = h.srv.AcceptTrustedIssuerToken(t.Context(), h.signToken(t, resourceToken))
+	require.NoError(t, err)
 
-	require.ElementsMatch(t, []bool{false, true}, accepted())
+	require.ElementsMatch(t, []bool{false, true, true}, accepted())
 }

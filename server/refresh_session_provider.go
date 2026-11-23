@@ -67,6 +67,9 @@ var ErrRefreshTokenFamilyNoUserID = errors.New("refresh token family carries no 
 //   - the family record carries no user ID (wrapped ErrRefreshTokenFamilyNoUserID)
 //   - the upstream provider refresh fails
 func (s *Server) RefreshSessionProvider(ctx context.Context, familyID string) (*oauth2.Token, error) {
+	if err := s.requireAuthorizationServer(); err != nil {
+		return nil, err
+	}
 	if familyID == "" {
 		return nil, fmt.Errorf("familyID is required")
 	}

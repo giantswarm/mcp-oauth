@@ -152,8 +152,8 @@ type OAuthRoutesOptions struct {
 //   - /oauth/authorize, /oauth/callback, /oauth/token, /oauth/revoke —
 //     registered unless Config.DisableAuthorizationServer is true; then only
 //     the Protected Resource Metadata routes are registered.
-//   - /oauth/register — unless Config.DisableDynamicClientRegistration is
-//     also true.
+//   - /oauth/register — with the routes above, unless
+//     Config.DisableDynamicClientRegistration is true.
 //   - /oauth/introspect — only when Config.EnableIntrospectionEndpoint is
 //     true. ServeTokenIntrospection does not self-gate on that flag, so
 //     registering it unconditionally would expose an endpoint the operator

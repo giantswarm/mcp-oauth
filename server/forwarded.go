@@ -284,6 +284,7 @@ func (s *Server) AcceptTrustedIssuerToken(ctx context.Context, bearerToken strin
 
 	s.logTrustedIssuerJWTAccepted(ctx, bearerToken, acceptance.SessionID, identity.Issuer, userInfo)
 	s.recordForwardedIDTokenAccepted(ctx, identity.Issuer, identity.Issuer, resourceID, instrumentation.ForwardedIDTokenResultOK)
+	s.Instrumentation.Metrics().RecordTrustedIssuerTokenAccepted(ctx, identity.Issuer, true)
 
 	return acceptance, nil
 }

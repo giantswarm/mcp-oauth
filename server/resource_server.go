@@ -12,8 +12,8 @@ import (
 )
 
 // ErrAuthorizationServerDisabled is returned by the authorization server
-// flows (authorization, provider callback, code exchange, refresh,
-// revocation, identity flow, forwarded ID tokens) when
+// flows (authorization, provider callback, code exchange, refresh, session
+// refresh, revocation, identity flow, forwarded ID tokens) when
 // Config.DisableAuthorizationServer is true.
 var ErrAuthorizationServerDisabled = errors.New("the authorization server is turned off (Config.DisableAuthorizationServer)")
 
@@ -32,16 +32,17 @@ func (s *Server) validateOptions() error {
 	if s.initializationError != nil {
 		return s.initializationError
 	}
-	return s.validateTrustedIssuerSettings()
+	return s.validateResourceServer()
 }
 
-// validateTrustedIssuerSettings refuses, once the options are applied, a
-// resource server that could accept no token. With the authorization server
+// validateResourceServer refuses, once the options are applied, a
+// resource server that could accept no token, and warns about a resource
+// that advertises no authorization server. With the authorization server
 // off and RequireResourceAccessTokens set, it also refuses an issuer whose
 // tokens could never name this server's resource: the issuer list then only
 // admits bearers. With the authorization server on the same list also
 // validates RFC 8693 subject tokens, whose audience is not this resource.
-func (s *Server) validateTrustedIssuerSettings() error {
+func (s *Server) validateResourceServer() error {
 	if !s.Config.DisableAuthorizationServer {
 		return nil
 	}
