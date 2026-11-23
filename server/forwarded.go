@@ -157,6 +157,9 @@ type ForwardedIDTokenAcceptance struct {
 // mismatch, JWT expired, JWT not yet valid, provider has no JWKS, parse error)
 // are returned wrapped.
 func (s *Server) AcceptForwardedIDToken(ctx context.Context, bearerToken string) (*ForwardedIDTokenAcceptance, error) {
+	if err := s.requireAuthorizationServer(); err != nil {
+		return nil, err
+	}
 	providerName := s.provider.Name()
 
 	if bearerToken == "" {
@@ -216,7 +219,9 @@ func (s *Server) AcceptForwardedIDToken(ctx context.Context, bearerToken string)
 //
 // Intended call pattern: an aggregator first calls [AcceptForwardedIDToken]; when
 // that returns [ErrTrustedAudienceMismatch] (the token's aud is the server's own
-// resource identifier, not a TrustedAudiences entry), it falls back here.
+// resource identifier, not a TrustedAudiences entry), it falls back here. With
+// Config.DisableAuthorizationServer, AcceptForwardedIDToken returns
+// [ErrAuthorizationServerDisabled] and the aggregator calls this directly.
 //
 // Preconditions:
 //
@@ -281,6 +286,7 @@ func (s *Server) AcceptTrustedIssuerToken(ctx context.Context, bearerToken strin
 
 	s.logTrustedIssuerJWTAccepted(ctx, bearerToken, acceptance.SessionID, identity.Issuer, userInfo)
 	s.recordForwardedIDTokenAccepted(ctx, identity.Issuer, identity.Issuer, resourceID, instrumentation.ForwardedIDTokenResultOK)
+	s.Instrumentation.Metrics().RecordTrustedIssuerTokenAccepted(ctx, identity.Issuer, s.namesResource(identity.Claims.Audience))
 
 	return acceptance, nil
 }

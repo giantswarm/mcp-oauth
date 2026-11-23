@@ -444,6 +444,9 @@ type refreshDPoPBinding struct {
 }
 
 func (s *Server) refreshAccessTokenForResource(ctx context.Context, refreshToken, clientID, resource string, proof *refreshDPoPBinding) (*oauth2.Token, error) {
+	if err := s.requireAuthorizationServer(); err != nil {
+		return nil, err
+	}
 	if err := refreshGrantError(s.checkClientRevocation(ctx, clientID)); err != nil {
 		return nil, err
 	}

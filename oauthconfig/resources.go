@@ -211,10 +211,19 @@ func requireHTTPS(u *url.URL, allowInsecure bool) error {
 	}
 }
 
-// loadEndpointSwitchesFromEnv reads the optional endpoint switches, named
-// after the specifications that define the endpoints.
+// loadEndpointSwitchesFromEnv reads the optional switches, named after the
+// specifications that define what they turn on.
 func loadEndpointSwitchesFromEnv(prefix string, configuration *server.Config) error {
-	var err error
+	authorizationServer, err := optionalBool(prefix+"ENABLE_AUTHORIZATION_SERVER", true)
+	if err != nil {
+		return err
+	}
+	configuration.DisableAuthorizationServer = !authorizationServer
+	dynamicClientRegistration, err := optionalBool(prefix+"ENABLE_DYNAMIC_CLIENT_REGISTRATION", true)
+	if err != nil {
+		return err
+	}
+	configuration.DisableDynamicClientRegistration = !dynamicClientRegistration
 	if configuration.EnableIntrospectionEndpoint, err = optionalBool(prefix+"ENABLE_INTROSPECTION_ENDPOINT", false); err != nil {
 		return err
 	}

@@ -59,6 +59,9 @@ func WithIdentityConnector(connectorID string) IdentityFlowOption {
 // flow cannot report an identity to another site. codeChallenge is an S256
 // PKCE challenge whose verifier the caller keeps for RedeemIdentityCode.
 func (s *Server) StartIdentityFlow(ctx context.Context, returnURL *url.URL, codeChallenge, clientState string, opts ...IdentityFlowOption) (string, error) {
+	if err := s.requireAuthorizationServer(); err != nil {
+		return "", err
+	}
 	var cfg identityFlowConfig
 	for _, opt := range opts {
 		if opt != nil {

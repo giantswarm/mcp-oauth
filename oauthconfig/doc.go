@@ -91,11 +91,21 @@
 //   - OAUTH_REQUIRE_RESOURCE_ACCESS_TOKENS    (default false) — accept only tokens whose aud names
 //     this server's resource (server.Config.RequireResourceAccessTokens)
 //
-// Endpoint switches, all default false:
+// Authorization server switches, both default true:
+//
+//   - OAUTH_ENABLE_AUTHORIZATION_SERVER          — false makes the server a resource server only:
+//     no provider is read, OAUTH_PROVIDER is refused, every token is checked against
+//     OAUTH_TRUSTED_ISSUERS, which is then required, and each OAUTH_AUTHORIZATION_SERVERS value
+//     must be a trusted issuer (server.Config.DisableAuthorizationServer)
+//   - OAUTH_ENABLE_DYNAMIC_CLIENT_REGISTRATION   — RFC 7591; false removes /oauth/register and
+//     registration_endpoint (server.Config.DisableDynamicClientRegistration)
+//
+// Endpoint switches, all default false and refused with the authorization server off:
 //
 //   - OAUTH_ENABLE_INTROSPECTION_ENDPOINT          — RFC 7662
 //   - OAUTH_ENABLE_USERINFO_ENDPOINT               — OpenID Connect Core 5.3
-//   - OAUTH_ENABLE_CLIENT_CONFIGURATION_ENDPOINT   — RFC 7592 (server.Config.EnableClientManagementEndpoint)
+//   - OAUTH_ENABLE_CLIENT_CONFIGURATION_ENDPOINT   — RFC 7592 (server.Config.EnableClientManagementEndpoint);
+//     refused with Dynamic Client Registration off
 //
 // [SettingsFromEnv] reads all of the above, the provider and storage into the
 // [Settings] that [Setup] takes.

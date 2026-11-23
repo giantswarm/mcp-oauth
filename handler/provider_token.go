@@ -22,10 +22,16 @@ type validatedProviderToken struct {
 	bearer string
 	source providers.TokenSource
 	store  storage.TokenStore
+	// openIDProvider marks a bearer accepted through the trusted issuer
+	// marked as the OpenID Provider people sign in with.
+	openIDProvider bool
 }
 
 // ProviderIDTokenFromContext resolves the provider ID token of a validated
-// request. It never substitutes an access token or application credential.
+// request: the ID token stored with an access token this server issued, a
+// forwarded ID token, or a bearer from the trusted issuer marked as
+// [server.TrustedIssuer.OpenIDProvider]. It never substitutes an access token
+// or application credential.
 func ProviderIDTokenFromContext(ctx context.Context) (string, error) {
 	if token, ok := ctx.Value(providerIDTokenKey{}).(string); ok && token != "" {
 		return token, nil
@@ -34,7 +40,7 @@ func ProviderIDTokenFromContext(ctx context.Context) (string, error) {
 	if !ok || validated.bearer == "" {
 		return "", ErrProviderIDTokenUnavailable
 	}
-	if validated.source == providers.TokenSourceSSO {
+	if validated.source == providers.TokenSourceSSO || (validated.source == providers.TokenSourceTrustedIssuer && validated.openIDProvider) {
 		return validated.bearer, nil
 	}
 	if validated.source != providers.TokenSourceOAuth {

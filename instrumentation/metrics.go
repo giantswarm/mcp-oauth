@@ -36,8 +36,9 @@ const (
 	metricAttrErrorType = "error_type"
 
 	// Forwarded-ID-token attributes
-	metricAttrIssuer   = "issuer"
-	metricAttrAudience = "audience"
+	metricAttrIssuer           = "issuer"
+	metricAttrAudience         = "audience"
+	metricAttrResourceAudience = "resource_audience"
 
 	// Audit attributes
 	metricAttrEventType = "event_type"
@@ -70,6 +71,7 @@ type Metrics struct {
 	RedirectURISecurityRejected metric.Int64Counter // Redirect URI validation failures by category
 	LegacyRefreshTokenRejected  metric.Int64Counter // Legacy refresh tokens rejected (missing client binding)
 	ForwardedIDTokenAccepted    metric.Int64Counter // Forwarded ID token acceptance attempts (labels: issuer, audience, result)
+	TrustedIssuerTokenAccepted  metric.Int64Counter // Bearers accepted from a trusted issuer (labels: issuer, resource_audience)
 	ProviderTokenStorageFailed  metric.Int64Counter // Provider token / UserInfo persistence failures (label: reason)
 
 	// Storage Metrics
@@ -209,6 +211,7 @@ func newMetrics(inst *Instrumentation) (*Metrics, error) {
 	m.RedirectURISecurityRejected = b.counter(securityMeter, "oauth.redirect_uri.security_rejected", "Number of redirect URI validation failures (SSRF/XSS protection)", "{rejection}")
 	m.LegacyRefreshTokenRejected = b.counter(securityMeter, "oauth.refresh_token.legacy_rejected", "Number of legacy refresh tokens rejected due to missing client binding (OAuth 2.1 compliance)", "{token}")
 	m.ForwardedIDTokenAccepted = b.counter(securityMeter, "oauth.forwarded_id_token.accepted_total", "Number of forwarded ID token acceptance attempts (labels: issuer, audience, result — result is a bounded enum: ok|aud_mismatch|iss_mismatch|sig_invalid|expired|not_yet_valid|no_jwks|parse_error|actor_not_trusted)", "{attempt}")
+	m.TrustedIssuerTokenAccepted = b.counter(securityMeter, "oauth.trusted_issuer_token.accepted_total", "Number of bearer tokens accepted from a trusted issuer (labels: issuer, resource_audience — true when aud names this server's resource identifier)", "{token}")
 	m.ProviderTokenStorageFailed = b.counter(securityMeter, "oauth.provider_token.storage_failed", "Provider token (or UserInfo) persistence failures keyed by reason (missing_subject, save_user_info_by_id, save_token_by_id, save_user_info_by_email, save_token_by_email)", "{failure}")
 
 	// Storage Metrics
@@ -397,6 +400,17 @@ func (m *Metrics) RecordForwardedIDTokenAccepted(ctx context.Context, provider, 
 		attribute.String(metricAttrResult, string(result)),
 	}
 	m.ForwardedIDTokenAccepted.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// RecordTrustedIssuerTokenAccepted records a bearer token accepted from a
+// trusted issuer. resourceAudience tells whether its aud names this server's
+// resource identifier; false marks a token issued to another audience, such
+// as an ID token forwarded through the issuer's entry.
+func (m *Metrics) RecordTrustedIssuerTokenAccepted(ctx context.Context, issuer string, resourceAudience bool) {
+	m.TrustedIssuerTokenAccepted.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(metricAttrIssuer, issuer),
+		attribute.Bool(metricAttrResourceAudience, resourceAudience),
+	))
 }
 
 // RecordRedirectURISecurityRejected records a redirect URI security validation failure.

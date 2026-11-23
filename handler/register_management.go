@@ -22,6 +22,9 @@ import (
 //	PUT    /oauth/register/{client_id}  — replace + rotate registration token
 //	DELETE /oauth/register/{client_id}  — remove client
 func (h *Handler) ServeClientManagement(w http.ResponseWriter, r *http.Request) {
+	if h.notFoundWhen(w, r, !h.server.Config.RegistrationEnabled()) {
+		return
+	}
 	startTime := time.Now()
 	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.client_management")
 	defer endSpan()

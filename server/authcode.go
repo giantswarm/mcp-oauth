@@ -332,6 +332,9 @@ func (s *Server) StartAuthorizationFlow(ctx context.Context, clientID string, re
 // person has not approved leaves no state behind. The parameters are those of
 // [Server.StartAuthorizationFlow].
 func (s *Server) PrepareAuthorization(ctx context.Context, clientID string, redirectURI *url.URL, scope, resource, codeChallenge, codeChallengeMethod, clientState string, authOpts *providers.AuthorizationURLOptions) (*AuthorizationRequest, error) {
+	if err := s.requireAuthorizationServer(); err != nil {
+		return nil, err
+	}
 	if err := s.validateClientStateParameter(clientState); err != nil {
 		s.logAuthFailure(ctx, "", clientID, "invalid_state_parameter")
 		return nil, newAuthorizationRequestError(ErrorCodeInvalidRequest, err.Error(), fmt.Errorf("oauth security bcp violation: %w", err))
@@ -383,6 +386,9 @@ func (s *Server) PrepareAuthorization(ctx context.Context, clientID string, redi
 // PrepareAuthorization, such as one decoded from storage, has its client and
 // redirect URI checked again, since the client's registration may have changed.
 func (s *Server) BeginAuthorization(ctx context.Context, authorizationRequest *AuthorizationRequest) (string, error) {
+	if err := s.requireAuthorizationServer(); err != nil {
+		return "", err
+	}
 	if authorizationRequest.BrowserBinding != "" {
 		if _, ok := s.flowStore.(storage.AuthorizationStateConsumer); !ok {
 			return "", fmt.Errorf("flow store does not support atomic browser callbacks")
@@ -624,6 +630,9 @@ func (s *Server) consumeProviderCallback(ctx context.Context, providerState, bin
 }
 
 func (s *Server) completeProviderCallback(ctx context.Context, providerState, code, binding string, browser bool) (*AuthorizationResult, error) {
+	if err := s.requireAuthorizationServer(); err != nil {
+		return nil, err
+	}
 	authState, err := s.consumeProviderCallback(ctx, providerState, binding, browser)
 	if err != nil {
 		return nil, err
@@ -658,6 +667,9 @@ func (s *Server) completeProviderCallback(ctx context.Context, providerState, co
 var ErrBrowserBinding = errors.New("authorization callback does not match this browser")
 
 func (s *Server) IssueAuthorizationCode(ctx context.Context, result *AuthorizationResult) (*storage.AuthorizationCode, string, error) {
+	if err := s.requireAuthorizationServer(); err != nil {
+		return nil, "", err
+	}
 	if result == nil || result.State == nil || result.User == nil || result.Token == nil {
 		return nil, "", fmt.Errorf("invalid authorization result")
 	}
@@ -1180,6 +1192,9 @@ func (s *Server) logAuthorizationCodeIssued(ctx context.Context, userID, clientI
 // dpopJKT is the JWK thumbprint from the DPoP proof header; empty string for
 // bearer-only clients. resource is optional per RFC 8707.
 func (s *Server) ExchangeAuthorizationCode(ctx context.Context, code, clientID, redirectURI, resource, codeVerifier, dpopJKT string) (*oauth2.Token, string, error) {
+	if err := s.requireAuthorizationServer(); err != nil {
+		return nil, "", err
+	}
 	ctx, span := s.startExchangeSpan(ctx, clientID)
 	if span != nil {
 		defer span.End()

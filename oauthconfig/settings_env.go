@@ -2,6 +2,7 @@ package oauthconfig
 
 import (
 	"fmt"
+	"os"
 	"slices"
 )
 
@@ -18,6 +19,8 @@ import (
 // the provider and its forwarded ID tokens. Each advertised
 // authorization server must be the server's own issuer or a trusted issuer,
 // since an MCP client only presents tokens from the servers it was pointed at.
+// With OAUTH_ENABLE_AUTHORIZATION_SERVER=false no provider is read, OAUTH_PROVIDER
+// is refused, and each advertised server must be a trusted issuer.
 //
 // Logger and Instrumentation are left for the caller to set.
 func SettingsFromEnv() (Settings, error) {
@@ -32,7 +35,11 @@ func SettingsFromEnvWithPrefix(prefix string) (Settings, error) {
 	if settings.Server, err = FromEnvWithPrefix(prefix); err != nil {
 		return Settings{}, err
 	}
-	if err := providerSettingsFromEnv(prefix, &settings); err != nil {
+	if settings.Server.DisableAuthorizationServer {
+		if name := os.Getenv(prefix + "PROVIDER"); name != "" {
+			return Settings{}, fmt.Errorf("%sPROVIDER is set but %sENABLE_AUTHORIZATION_SERVER is false", prefix, prefix)
+		}
+	} else if err := providerSettingsFromEnv(prefix, &settings); err != nil {
 		return Settings{}, err
 	}
 	if settings.Dex != nil {
@@ -54,15 +61,22 @@ func SettingsFromEnvWithPrefix(prefix string) (Settings, error) {
 }
 
 func checkAdvertisedAuthorizationServers(prefix string, settings Settings) error {
-	known := []string{settings.Server.Issuer}
+	var known []string
+	if !settings.Server.DisableAuthorizationServer {
+		known = append(known, settings.Server.Issuer)
+	}
 	for _, issuer := range settings.TrustedIssuers {
 		known = append(known, issuer.Issuer)
 	}
 	for _, resource := range settings.Server.ResourceMetadataByPath {
 		for _, advertised := range resource.AuthorizationServers {
-			if !slices.Contains(known, advertised) {
-				return fmt.Errorf("%sAUTHORIZATION_SERVERS: %q is neither %sISSUER nor in %sTRUSTED_ISSUERS", prefix, advertised, prefix, prefix)
+			if slices.Contains(known, advertised) {
+				continue
 			}
+			if settings.Server.DisableAuthorizationServer {
+				return fmt.Errorf("%sAUTHORIZATION_SERVERS: %q is not in %sTRUSTED_ISSUERS", prefix, advertised, prefix)
+			}
+			return fmt.Errorf("%sAUTHORIZATION_SERVERS: %q is neither %sISSUER nor in %sTRUSTED_ISSUERS", prefix, advertised, prefix, prefix)
 		}
 	}
 	return nil

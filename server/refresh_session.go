@@ -75,6 +75,9 @@ import (
 // in-process callers that both need a newly minted access token and can
 // hand the rotated refresh token back to the client.
 func (s *Server) RefreshSession(ctx context.Context, familyID string) (*oauth2.Token, error) {
+	if err := s.requireAuthorizationServer(); err != nil {
+		return nil, err
+	}
 	if familyID == "" {
 		return nil, fmt.Errorf("familyID is required")
 	}

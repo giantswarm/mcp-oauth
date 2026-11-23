@@ -22,6 +22,7 @@ func clearResourceEnv(t *testing.T) {
 		"OAUTH_TRUSTED_ISSUERS", "OAUTH_REQUIRE_RESOURCE_ACCESS_TOKENS",
 		"OAUTH_ENABLE_INTROSPECTION_ENDPOINT", "OAUTH_ENABLE_USERINFO_ENDPOINT",
 		"OAUTH_ENABLE_CLIENT_CONFIGURATION_ENDPOINT",
+		"OAUTH_ENABLE_AUTHORIZATION_SERVER", "OAUTH_ENABLE_DYNAMIC_CLIENT_REGISTRATION",
 		"OAUTH_DEX_SCOPES", "OAUTH_DEX_AUDIENCES", "OAUTH_DEX_CA_FILE",
 	} {
 		t.Setenv(name, "")
@@ -131,6 +132,8 @@ func TestFromEnvSwitches(t *testing.T) {
 	require.True(t, cfg.EnableIntrospectionEndpoint)
 	require.True(t, cfg.EnableUserInfoEndpoint)
 	require.True(t, cfg.EnableClientManagementEndpoint)
+	require.False(t, cfg.DisableAuthorizationServer)
+	require.False(t, cfg.DisableDynamicClientRegistration)
 }
 
 func writeCAFile(t *testing.T) string {
@@ -147,7 +150,8 @@ func TestTrustedIssuersFromEnv(t *testing.T) {
 	caFile := writeCAFile(t)
 	t.Setenv("OAUTH_TRUSTED_ISSUERS", `[
 		{"issuer": "https://dex.example.com", "jwksURI": "https://dex.example.com/keys",
-		 "audiences": ["platform"], "subjectClaim": "email", "acceptedTypHeaders": ["JWT"], "caFile": "`+caFile+`"},
+		 "audiences": ["platform"], "subjectClaim": "email", "acceptedTypHeaders": ["JWT"], "caFile": "`+caFile+`",
+		 "openIDProvider": true},
 		{"issuer": "https://kubernetes.default.svc", "jwksURI": "https://kubernetes.default.svc/openid/v1/jwks",
 		 "audiences": ["https://mcp.example.com/mcp"], "acceptedTypHeaders": [""],
 		 "allowedClaims": {"sub": "system:serviceaccount:agents:*"},
@@ -161,6 +165,8 @@ func TestTrustedIssuersFromEnv(t *testing.T) {
 	require.Equal(t, []string{"platform"}, issuers[0].AllowedAudiences)
 	require.Equal(t, "email", issuers[0].SubjectClaim)
 	require.NotNil(t, issuers[0].RootCAs)
+	require.True(t, issuers[0].OpenIDProvider)
+	require.False(t, issuers[1].OpenIDProvider)
 	require.Equal(t, []string{"https://mcp.example.com/mcp"}, issuers[1].AllowedAudiences)
 	require.Equal(t, map[string]string{"sub": "system:serviceaccount:agents:*"}, issuers[1].AllowedClaims)
 	require.Equal(t, []string{"kubernetes.default.svc"}, issuers[1].AllowPrivateIPJWKSHosts)

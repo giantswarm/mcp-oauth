@@ -66,6 +66,9 @@ func addProfileClaims(claims map[string]any, userInfo *providers.UserInfo) {
 // always returned. `profile`, `email`, and `groups` scopes gate the
 // corresponding claim groups.
 func (h *Handler) ServeUserInfo(w http.ResponseWriter, r *http.Request) {
+	if h.notFoundWhen(w, r, h.server.Config.DisableAuthorizationServer) {
+		return
+	}
 	startTime := time.Now()
 	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.userinfo")
 	defer endSpan()

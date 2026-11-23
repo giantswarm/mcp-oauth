@@ -255,6 +255,30 @@ func TestLogSecurityWarnings(t *testing.T) {
 			},
 		},
 		{
+			name: "registration and client metadata documents off warning",
+			config: &Config{
+				RequirePKCE:                      true,
+				DisableDynamicClientRegistration: true,
+			},
+			expectedWarnings: []string{
+				"CONFIGURATION WARNING: Dynamic Client Registration and Client ID Metadata Documents are both off",
+			},
+			notExpectedWarnings: []string{
+				"RegistrationAccessToken not configured",
+			},
+		},
+		{
+			name: "registration off with client metadata documents on",
+			config: &Config{
+				RequirePKCE:                      true,
+				DisableDynamicClientRegistration: true,
+				EnableClientIDMetadataDocuments:  true,
+			},
+			notExpectedWarnings: []string{
+				"Client ID Metadata Documents are both off",
+			},
+		},
+		{
 			name: "no warnings for secure config",
 			config: &Config{
 				RequirePKCE:                   true,

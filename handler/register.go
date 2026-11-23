@@ -182,6 +182,9 @@ func (h *Handler) validatePublicClientRegistration(ctx context.Context, w http.R
 
 // ServeClientRegistration handles dynamic client registration (RFC 7591)
 func (h *Handler) ServeClientRegistration(w http.ResponseWriter, r *http.Request) {
+	if h.notFoundWhen(w, r, !h.server.Config.RegistrationEnabled()) {
+		return
+	}
 	startTime := time.Now()
 
 	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.client_registration")
