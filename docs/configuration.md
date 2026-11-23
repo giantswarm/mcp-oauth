@@ -583,6 +583,15 @@ The [specification's deprecated registry](https://modelcontextprotocol.io/specif
 allows removal in the first specification revision released on or after
 2027-07-28. This is not a library removal date.
 
+[MCP 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#dynamic-client-registration)
+keeps DCR as an optional mechanism without deprecation, and clients written
+against it may support only DCR. DCR therefore stays on by default.
+`DisableDynamicClientRegistration` (`OAUTH_ENABLE_DYNAMIC_CLIENT_REGISTRATION=false`)
+turns it off: `/oauth/register` is not mounted and `registration_endpoint` is left
+out of the metadata. Turn it off only when every client is pre-registered or
+supports CIMD; with both DCR and `EnableClientIDMetadataDocuments` off the server
+logs a warning.
+
 Control dynamic client registration:
 
 ```go

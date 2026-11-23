@@ -171,6 +171,21 @@ func logSecurityWarnings(config *Config, logger *slog.Logger) {
 	logRedirectURISecurityStatus(config, logger)
 }
 
+// logRegistrationWarnings warns about client registration settings that leave
+// clients unable to register.
+func logRegistrationWarnings(config *Config, logger *slog.Logger) {
+	if config.RegistrationEnabled() && !config.AllowPublicClientRegistration && config.RegistrationAccessToken == "" {
+		logger.Warn("CONFIGURATION WARNING: RegistrationAccessToken not configured",
+			"risk", "Client registration will fail",
+			"recommendation", "Set RegistrationAccessToken or enable AllowPublicClientRegistration")
+	}
+	if !config.DisableAuthorizationServer && config.DisableDynamicClientRegistration && !config.EnableClientIDMetadataDocuments {
+		logger.Warn("CONFIGURATION WARNING: Dynamic Client Registration and Client ID Metadata Documents are both off",
+			"risk", "only pre-registered clients can sign in; an MCP client without Client ID Metadata Document support cannot register",
+			"recommendation", "Set EnableClientIDMetadataDocuments or pre-register the clients")
+	}
+}
+
 // logCoreSecurityWarnings logs warnings for core OAuth security settings.
 func logCoreSecurityWarnings(config *Config, logger *slog.Logger) {
 	if !config.RequirePKCE {
@@ -199,11 +214,7 @@ func logCoreSecurityWarnings(config *Config, logger *slog.Logger) {
 	if config.AllowNoStateParameter {
 		logger.Warn("AllowNoStateParameter is deprecated and has no effect: the client's state parameter is optional (OAuth 2.1 section 4.1.1)")
 	}
-	if config.RegistrationEnabled() && !config.AllowPublicClientRegistration && config.RegistrationAccessToken == "" {
-		logger.Warn("CONFIGURATION WARNING: RegistrationAccessToken not configured",
-			"risk", "Client registration will fail",
-			"recommendation", "Set RegistrationAccessToken or enable AllowPublicClientRegistration")
-	}
+	logRegistrationWarnings(config, logger)
 	if config.AllowInsecureHTTP {
 		logger.Warn("SECURITY WARNING: AllowInsecureHTTP is enabled",
 			"risk", "http:// issuer / redirect URIs accepted outside loopback — tokens exposed in clear",
