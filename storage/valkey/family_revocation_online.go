@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	valkeygo "github.com/valkey-io/valkey-go"
@@ -13,7 +14,10 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
-var errOnlineFamilyMigrationRequiresStandalone = errors.New("online family revocation index migration requires standalone Valkey; use the stopped-traffic migration command for clusters")
+var (
+	errOnlineFamilyMigrationRequiresStandalone = errors.New("online family revocation index migration requires standalone Valkey; use the stopped-traffic migration command for clusters")
+	errFamilyWalkInterrupted                   = errors.New("valkey server restarted or failed over during the family revocation walk")
+)
 
 const (
 	defaultFamilyIndexPollInterval = 30 * time.Second
@@ -32,23 +36,23 @@ func (s *Store) startFamilyRevocationIndexing(migrate bool) {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s.stopBackground = cancel
-	s.backgroundDone = make(chan struct{})
+	s.stopFamilyIndexing = cancel
+	s.familyIndexingDone = make(chan struct{})
 	if migrate {
 		s.logger.Info("Family revocation index requires migration; migrating while serving")
 	}
 	go func() {
-		defer close(s.backgroundDone)
+		defer close(s.familyIndexingDone)
 		s.awaitFamilyRevocationIndex(ctx, migrate)
 	}()
 }
 
 func (s *Store) stopFamilyRevocationIndexing() {
-	if s.stopBackground == nil {
+	if s.stopFamilyIndexing == nil {
 		return
 	}
-	s.stopBackground()
-	<-s.backgroundDone
+	s.stopFamilyIndexing()
+	<-s.familyIndexingDone
 }
 
 // awaitFamilyRevocationIndex polls for a completed index. Failed walks are
@@ -127,14 +131,41 @@ func (s *Store) migrateFamilyRevocationsUnderLease(ctx context.Context) (bool, e
 	}
 	defer s.releaseFamilyMigrationLease(holder)
 
+	runID, err := s.serverRunID(ctx)
+	if err != nil {
+		return false, err
+	}
 	checkLegacy, err := s.indexFamilyRevocations(ctx)
 	if err != nil {
 		return false, err
+	}
+	walkedRunID, err := s.serverRunID(ctx)
+	if err != nil {
+		return false, err
+	}
+	if walkedRunID != runID {
+		return false, errFamilyWalkInterrupted
 	}
 	if err := s.publishFamilyRevocationIndexState(ctx, checkLegacy); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// serverRunID identifies the server process. SCAN covers every key present for
+// a whole iteration only within one run, so a restart or failover during the
+// walk changes the run ID and voids the walk.
+func (s *Store) serverRunID(ctx context.Context) (string, error) {
+	info, err := s.client.Do(ctx, s.client.B().Info().Section("server").Build()).ToString()
+	if err != nil {
+		return "", fmt.Errorf("read Valkey server run ID: %w", err)
+	}
+	for line := range strings.Lines(info) {
+		if runID, found := strings.CutPrefix(strings.TrimSpace(line), "run_id:"); found && runID != "" {
+			return runID, nil
+		}
+	}
+	return "", errors.New("valkey INFO server reply has no run_id")
 }
 
 func (s *Store) acquireFamilyMigrationLease(ctx context.Context) (string, bool, error) {

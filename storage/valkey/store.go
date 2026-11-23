@@ -198,8 +198,8 @@ type Store struct {
 
 	familyIndexPollInterval time.Duration
 	familyMigrationLease    time.Duration
-	stopBackground          context.CancelFunc
-	backgroundDone          chan struct{}
+	stopFamilyIndexing      context.CancelFunc
+	familyIndexingDone      chan struct{}
 
 	// encryptor provides optional token encryption at rest; immutable after New.
 	encryptor *security.Encryptor

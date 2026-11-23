@@ -101,7 +101,9 @@ The store keeps serving with compatibility lookups and backfills the index in
 the background. Replicas that share the prefix take turns through a lease,
 so one walks the namespace at a time. When the walk completes, every replica on
 this release switches to indexed lookups within 30 seconds, whether or not it
-sets `MigrateFamilyRevocationIndex`. Failed walks keep compatibility lookups
+sets `MigrateFamilyRevocationIndex`. A walk during which the Valkey server restarts or fails over
+counts as failed, because `SCAN` only covers every key within one server run.
+Failed walks keep compatibility lookups
 and are retried after a delay that doubles from 30 seconds up to the
 ten-minute lease. A walk must finish within the lease. If it exceeds that
 deadline, the replica logs an error and stops automatic migration while

@@ -26,14 +26,17 @@ func withFamilyIndexing(poll, lease time.Duration) Option {
 	}
 }
 
+func testValkeyAddress() string {
+	if address := os.Getenv("VALKEY_TEST_ADDR"); address != "" {
+		return address
+	}
+	return "localhost:6379"
+}
+
 func replica(t *testing.T, seed *Store, migrate bool, options ...Option) *Store {
 	t.Helper()
-	addr := os.Getenv("VALKEY_TEST_ADDR")
-	if addr == "" {
-		addr = "localhost:6379"
-	}
 	store, err := New(Config{
-		Address: addr, KeyPrefix: seed.prefix, StartupTimeout: testStartupTimeout,
+		Address: testValkeyAddress(), KeyPrefix: seed.prefix, StartupTimeout: testStartupTimeout,
 		MigrateFamilyRevocationIndex: migrate,
 	}, append([]Option{withFamilyIndexing(testFamilyIndexPoll, time.Minute)}, options...)...)
 	require.NoError(t, err)
@@ -145,8 +148,9 @@ func TestPublishFamilyRevocationIndexKeepsLegacyMarkers(t *testing.T) {
 
 type familyMigrationTestClient struct {
 	valkeygo.Client
-	mode  valkeygo.ClientMode
-	after func(context.Context, []string)
+	mode    valkeygo.ClientMode
+	after   func(context.Context, []string)
+	rewrite func(valkeygo.Completed) valkeygo.Completed
 }
 
 func (client *familyMigrationTestClient) Mode() valkeygo.ClientMode {
@@ -159,13 +163,16 @@ func (client *familyMigrationTestClient) Mode() valkeygo.ClientMode {
 func (client *familyMigrationTestClient) Nodes() map[string]valkeygo.Client {
 	nodes := client.Client.Nodes()
 	for address, node := range nodes {
-		nodes[address] = &familyMigrationTestClient{Client: node, mode: client.mode, after: client.after}
+		nodes[address] = &familyMigrationTestClient{Client: node, mode: client.mode, after: client.after, rewrite: client.rewrite}
 	}
 	return nodes
 }
 
 func (client *familyMigrationTestClient) Do(ctx context.Context, command valkeygo.Completed) valkeygo.ValkeyResult {
 	arguments := slices.Clone(command.Commands())
+	if client.rewrite != nil {
+		command = client.rewrite(command)
+	}
 	result := client.Client.Do(ctx, command)
 	if client.after != nil {
 		client.after(ctx, arguments)
@@ -187,10 +194,7 @@ func TestOnlineFamilyRevocationMigrationRequiresStandalone(t *testing.T) {
 			require.NoError(t, err)
 			require.True(t, revoked)
 
-			address := os.Getenv("VALKEY_TEST_ADDR")
-			if address == "" {
-				address = "localhost:6379"
-			}
+			address := testValkeyAddress()
 			store, err := New(Config{Address: address, KeyPrefix: seed.prefix, MigrateFamilyRevocationIndex: true}, func(store *Store) {
 				store.client = &familyMigrationTestClient{Client: store.client, mode: mode}
 			})
@@ -230,6 +234,28 @@ func TestOnlineFamilyRevocationMigrationBacksOffAfterFailures(t *testing.T) {
 	require.GreaterOrEqual(t, walks.Load(), int64(2))
 	require.LessOrEqual(t, walks.Load(), int64(6))
 	require.False(t, seed.familyRevocationsIndexed.Load())
+}
+
+func TestOnlineFamilyRevocationMigrationRejectsRestartedServer(t *testing.T) {
+	seed := unindexedSeed(t)
+	seed.familyRevocationsIndexed.Store(false)
+	var infos atomic.Int64
+	client := &familyMigrationTestClient{Client: seed.client}
+	client.rewrite = func(command valkeygo.Completed) valkeygo.Completed {
+		if command.Commands()[0] == "INFO" && infos.Add(1) == 2 {
+			return client.B().Echo().Message("# Server\r\nrun_id:restarted\r\n").Build()
+		}
+		return command
+	}
+	seed.client = client
+	published, err := seed.migrateFamilyRevocationsUnderLease(t.Context())
+	require.ErrorIs(t, err, errFamilyWalkInterrupted)
+	require.False(t, published)
+	require.Empty(t, indexVersion(t, seed))
+
+	published, err = seed.migrateFamilyRevocationsUnderLease(t.Context())
+	require.NoError(t, err)
+	require.True(t, published)
 }
 
 func TestFamilyMigrationLeaseExpiryAndReplacement(t *testing.T) {
@@ -312,11 +338,7 @@ func TestOnlineFamilyRevocationMigrationClose(t *testing.T) {
 			observer := replica(t, seed, false)
 			t.Cleanup(func() {
 				seed.stopFamilyRevocationIndexing()
-				address := os.Getenv("VALKEY_TEST_ADDR")
-				if address == "" {
-					address = "localhost:6379"
-				}
-				client, err := valkeygo.NewClient(buildClientOpts(Config{Address: address}, seed.operationTimeout))
+				client, err := valkeygo.NewClient(buildClientOpts(Config{Address: testValkeyAddress()}, seed.operationTimeout))
 				require.NoError(t, err)
 				seed.client = client
 			})
@@ -342,7 +364,7 @@ func TestOnlineFamilyRevocationMigrationClose(t *testing.T) {
 				close(closed)
 			}()
 			require.Eventually(t, func() bool { return channelClosed(closed) }, time.Second, testFamilyIndexPoll)
-			require.True(t, channelClosed(seed.backgroundDone))
+			require.True(t, channelClosed(seed.familyIndexingDone))
 			require.Empty(t, indexVersion(t, observer))
 			holder, err := observer.client.Do(t.Context(), observer.client.B().Get().Key(observer.familyMigrationLeaseKey()).Build()).ToString()
 			if waitingForLease {
@@ -377,7 +399,7 @@ func TestOnlineFamilyRevocationMigrationDeadlineStopsRetries(t *testing.T) {
 	require.Empty(t, indexVersion(t, seed))
 	maintenance := replica(t, seed, false)
 	require.NoError(t, maintenance.MigrateFamilyRevocations(t.Context()))
-	require.Eventually(t, func() bool { return channelClosed(seed.backgroundDone) }, time.Second, testFamilyIndexPoll)
+	require.Eventually(t, func() bool { return channelClosed(seed.familyIndexingDone) }, time.Second, testFamilyIndexPoll)
 }
 
 func TestStoppedFamilyMigrationCancelsBackgroundWorker(t *testing.T) {
@@ -396,7 +418,7 @@ func TestStoppedFamilyMigrationCancelsBackgroundWorker(t *testing.T) {
 	seed.startFamilyRevocationIndexing(true)
 	require.Eventually(t, func() bool { return channelClosed(started) }, time.Second, testFamilyIndexPoll)
 	require.NoError(t, seed.MigrateFamilyRevocations(t.Context()))
-	require.True(t, channelClosed(seed.backgroundDone))
+	require.True(t, channelClosed(seed.familyIndexingDone))
 	revoked, err := seed.IsRefreshTokenFamilyRevoked(t.Context(), "old-revoked")
 	require.NoError(t, err)
 	require.True(t, revoked)
