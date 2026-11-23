@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
+	"github.com/giantswarm/mcp-oauth/providers/mock"
 	"github.com/giantswarm/mcp-oauth/storage/memory"
 )
 
@@ -136,6 +138,102 @@ func TestNew_RequireResourceAccessTokensAcceptsIssuerNamingResource(t *testing.T
 	}
 }
 
+func TestNew_RequireResourceAccessTokensKeepsSubjectTokenIssuersWithAuthorizationServerOn(t *testing.T) {
+	configuration := resourceServerConfig()
+	configuration.DisableAuthorizationServer = false
+	configuration.RequireResourceAccessTokens = true
+	store := memory.New()
+
+	srv, err := New(mock.NewProvider(), store, store, store, configuration, nil, WithTrustedIssuers([]TrustedIssuer{dexTrustedIssuer("platform")}))
+
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = srv.Shutdown(context.WithoutCancel(t.Context())) })
+}
+
+func TestNewOIDCValidator_OpenIDProviderRefusesAccessTokenTyp(t *testing.T) {
+	for name, tc := range map[string]struct {
+		typHeaders []string
+		refused    bool
+	}{
+		"default at+jwt":     {refused: true},
+		"at+jwt listed":      {typHeaders: []string{"JWT", "at+jwt"}, refused: true},
+		"media type spelled": {typHeaders: []string{"application/AT+JWT"}, refused: true},
+		"JWT":                {typHeaders: []string{"JWT"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dex := dexTrustedIssuer("platform")
+			dex.AcceptedTypHeaders = tc.typHeaders
+			dex.OpenIDProvider = true
+
+			_, err := NewOIDCValidator([]TrustedIssuer{dex})
+
+			if tc.refused {
+				require.ErrorContains(t, err, "OpenIDProvider needs AcceptedTypHeaders without")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestAuthorizationServerFlows_RefusedWhenOff(t *testing.T) {
+	srv, err := newResourceServer(t, resourceServerConfig(), nil, WithTrustedIssuers([]TrustedIssuer{dexTrustedIssuer("platform")}))
+	require.NoError(t, err)
+	ctx := t.Context()
+	returnURL, err := url.Parse("https://mcp.test.example/return")
+	require.NoError(t, err)
+
+	for name, call := range map[string]func() error{
+		"PrepareAuthorization": func() error {
+			_, err := srv.PrepareAuthorization(ctx, "client", returnURL, "openid", "", "challenge", PKCEMethodS256, "state", nil)
+			return err
+		},
+		"StartAuthorizationFlow": func() error {
+			_, err := srv.StartAuthorizationFlow(ctx, "client", returnURL, "openid", "", "challenge", PKCEMethodS256, "state", nil)
+			return err
+		},
+		"BeginAuthorization": func() error {
+			_, err := srv.BeginAuthorization(ctx, &AuthorizationRequest{})
+			return err
+		},
+		"HandleProviderCallback": func() error {
+			_, _, err := srv.HandleProviderCallback(ctx, "state", "code")
+			return err
+		},
+		"CompleteBrowserAuthorization": func() error {
+			_, err := srv.CompleteBrowserAuthorization(ctx, "state", "code", "binding")
+			return err
+		},
+		"IssueAuthorizationCode": func() error {
+			_, _, err := srv.IssueAuthorizationCode(ctx, &AuthorizationResult{})
+			return err
+		},
+		"ExchangeAuthorizationCode": func() error {
+			_, _, err := srv.ExchangeAuthorizationCode(ctx, "code", "client", returnURL.String(), "", "verifier", "")
+			return err
+		},
+		"RefreshAccessToken": func() error {
+			_, err := srv.RefreshAccessToken(ctx, "refresh-token", "client")
+			return err
+		},
+		"RevokeToken": func() error {
+			return srv.RevokeToken(ctx, "token", "client", "192.0.2.1")
+		},
+		"StartIdentityFlow": func() error {
+			_, err := srv.StartIdentityFlow(ctx, returnURL, "challenge", "state")
+			return err
+		},
+		"AcceptForwardedIDToken": func() error {
+			_, err := srv.AcceptForwardedIDToken(ctx, "a.b.c")
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.ErrorIs(t, call(), ErrAuthorizationServerDisabled)
+		})
+	}
+}
+
 func TestNew_AuthorizationServerOffWarnsWithoutAdvertisedAuthorizationServer(t *testing.T) {
 	for name, tc := range map[string]struct {
 		resources map[string]ProtectedResourceConfig
@@ -144,6 +242,17 @@ func TestNew_AuthorizationServerOffWarnsWithoutAdvertisedAuthorizationServer(t *
 		"none advertised": {warns: true},
 		"one advertised": {
 			resources: map[string]ProtectedResourceConfig{"/mcp": {AuthorizationServers: []string{resourceServerTestIssuer}}},
+		},
+		"only an extra resource advertised": {
+			resources: map[string]ProtectedResourceConfig{"/other": {AuthorizationServers: []string{resourceServerTestIssuer}}},
+			warns:     true,
+		},
+		"an extra resource without one": {
+			resources: map[string]ProtectedResourceConfig{
+				"/mcp":   {AuthorizationServers: []string{resourceServerTestIssuer}},
+				"/other": {},
+			},
+			warns: true,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -157,6 +157,9 @@ type ForwardedIDTokenAcceptance struct {
 // mismatch, JWT expired, JWT not yet valid, provider has no JWKS, parse error)
 // are returned wrapped.
 func (s *Server) AcceptForwardedIDToken(ctx context.Context, bearerToken string) (*ForwardedIDTokenAcceptance, error) {
+	if err := s.requireAuthorizationServer(); err != nil {
+		return nil, err
+	}
 	providerName := s.provider.Name()
 
 	if bearerToken == "" {

@@ -140,6 +140,9 @@ func TestServeAuthorizationServerEndpoints_NotFoundWhenOff(t *testing.T) {
 		"registration":  h.ServeClientRegistration,
 		"metadata":      h.ServeAuthorizationServerMetadata,
 		"openid":        h.ServeOpenIDConfiguration,
+		"introspection": h.ServeTokenIntrospection,
+		"management":    h.ServeClientManagement,
+		"userinfo":      h.ServeUserInfo,
 	} {
 		require.Equal(t, http.StatusNotFound, serveStatus(t, serve, http.MethodPost, "/"), name)
 	}
@@ -192,6 +195,39 @@ func TestValidateToken_AuthorizationServerOff(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateToken_AuthorizationServerOffWithoutBearer(t *testing.T) {
+	h := newOffHandler(t, nil, newOffIssuer(t).entry)
+	protected := h.ValidateToken(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	recorder := httptest.NewRecorder()
+
+	protected.ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", nil))
+
+	require.Equal(t, http.StatusUnauthorized, recorder.Code)
+	challenge := recorder.Header().Get("WWW-Authenticate")
+	require.Contains(t, challenge, `resource_metadata="https://mcp.test.example/.well-known/oauth-protected-resource/mcp"`)
+	require.NotContains(t, challenge, "error=")
+}
+
+func TestProtectedResourceMetadata_AuthorizationServerOffExtraResource(t *testing.T) {
+	const extraResource = "https://mcp.test.example/other"
+	h := newOffHandler(t, func(c *server.Config) {
+		c.ResourceMetadataByPath["/other"] = server.ProtectedResourceConfig{ResourceIdentifier: extraResource, AuthorizationServers: []string{offDexIssuer}}
+	}, newOffIssuer(t).entry)
+	mux := http.NewServeMux()
+	h.RegisterOAuthRoutes(mux, OAuthRoutesOptions{IncludeMetadata: true})
+
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/.well-known/oauth-protected-resource/other", nil))
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var metadata map[string]any
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &metadata))
+	require.Equal(t, extraResource, metadata["resource"])
+	require.Equal(t, []any{offDexIssuer}, metadata["authorization_servers"])
 }
 
 func TestProviderIDTokenFromContext_TrustedIssuerNotOpenIDProvider(t *testing.T) {

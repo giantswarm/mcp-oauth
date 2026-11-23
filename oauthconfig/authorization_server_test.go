@@ -136,3 +136,15 @@ func TestSetupRefusesClientConfigurationWithoutRegistration(t *testing.T) {
 
 	require.ErrorContains(t, err, "requires Dynamic Client Registration")
 }
+
+func TestSettingsFromEnvAuthorizationServerOffExtraResourceInherits(t *testing.T) {
+	authorizationServerOffEnv(t)
+	t.Setenv("OAUTH_AUTHORIZATION_SERVERS", "https://dex.example.com")
+	t.Setenv("OAUTH_ADDITIONAL_RESOURCES", `[{"resource": "https://mcp.example.com/other"}]`)
+
+	settings, err := oauthconfig.SettingsFromEnv()
+
+	require.NoError(t, err)
+	require.Equal(t, []string{"https://dex.example.com"}, settings.Server.ResourceMetadataByPath["/other"].AuthorizationServers)
+	require.Equal(t, []string{"https://dex.example.com"}, settings.Server.ResourceMetadataByPath["/mcp"].AuthorizationServers)
+}

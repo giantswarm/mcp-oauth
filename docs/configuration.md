@@ -50,30 +50,47 @@ based on OAuth concepts; they are not a standardized metadata document format.
 | Variable | Behavior |
 | --- | --- |
 | `OAUTH_RESOURCE` | Main protected resource identifier, normally the MCP endpoint URL; defaults to `OAUTH_ISSUER` |
-| `OAUTH_AUTHORIZATION_SERVERS` | Comma-separated authorization server issuer identifiers advertised by the main resource; defaults to `OAUTH_ISSUER` |
+| `OAUTH_AUTHORIZATION_SERVERS` | Comma-separated authorization server issuer identifiers advertised by the main resource; defaults to `OAUTH_ISSUER`, or to none with the authorization server off |
 | `OAUTH_ADDITIONAL_RESOURCES` | JSON array of `{resource, scopesSupported, authorizationServers}` on the main resource's origin; an omitted authorization server list inherits the main list |
 | `OAUTH_TRUSTED_ISSUERS` | JSON array of accepted external JWT issuers; unset, `[]` and `null` select no additional issuers |
 | `OAUTH_REQUIRE_RESOURCE_ACCESS_TOKENS` | Require the resource audience when validating trusted-issuer bearers and disable forwarded ID-token acceptance; default `false` for 1.x compatibility |
+| `OAUTH_ENABLE_AUTHORIZATION_SERVER` | `false` runs a resource server only: no provider, every bearer checked against `OAUTH_TRUSTED_ISSUERS`; default `true` |
+| `OAUTH_ENABLE_DYNAMIC_CLIENT_REGISTRATION` | `false` removes RFC 7591 `/oauth/register` and `registration_endpoint`; default `true` |
 | `OAUTH_ENABLE_INTROSPECTION_ENDPOINT` | Enable RFC 7662 introspection; default `false` |
 | `OAUTH_ENABLE_USERINFO_ENDPOINT` | Enable the UserInfo endpoint; default `false` |
-| `OAUTH_ENABLE_CLIENT_CONFIGURATION_ENDPOINT` | Enable the RFC 7592 Client Configuration Endpoint; default `false` |
+| `OAUTH_ENABLE_CLIENT_CONFIGURATION_ENDPOINT` | Enable the RFC 7592 Client Configuration Endpoint; default `false`, refused with Dynamic Client Registration off |
 | `OAUTH_DEX_CA_FILE` | PEM bundle added to system trust; the combined loader shares the resolved pool between Dex and forwarded-token JWKS validation |
 | `OAUTH_DEX_SCOPES` | Comma-separated Dex scopes; an explicit list must contain `openid` |
 | `OAUTH_DEX_AUDIENCES` | Comma-separated Dex cross-client IDs, requested through Dex's `audience:server:client_id:<id>` scopes |
 
 Accepted token issuers and advertised authorization servers are separate policies.
 Each advertised issuer must be `OAUTH_ISSUER` or an entry in
+`OAUTH_TRUSTED_ISSUERS`; with the authorization server off, only an entry in
 `OAUTH_TRUSTED_ISSUERS`. Root discovery uses the main resource's configured metadata
 when no separate root resource is configured. Additional resources can advertise
 their own authorization server list.
 
 Each trusted issuer object requires `issuer`, `jwksURI` and a non-empty `audiences`
 array. Optional fields are `subjectClaim`, `acceptedTypHeaders`, `allowedClaims`,
-`caFile` and `allowPrivateIPJWKSHosts`. `subjectClaim` is `sub` by default; `email`
+`caFile`, `allowPrivateIPJWKSHosts` and `openIDProvider`. `subjectClaim` is `sub` by default; `email`
 requires verified email and is a compatibility mapping, not a stable OIDC identity.
 The `jwksURI` spelling describes the JWKS endpoint; RFC 8414 metadata itself uses
 `jwks_uri`. The `audiences` array constrains the JWT `aud` claim. These trust
 settings also apply to token-exchange subject validation.
+
+`openIDProvider: true` marks the OpenID Provider people sign in with, such as Dex:
+`handler.ProviderIDTokenFromContext` returns a bearer accepted through that entry
+as the ID token. The entry needs `acceptedTypHeaders` without `at+jwt`, since an
+RFC 9068 access token is not an ID token.
+
+With `OAUTH_ENABLE_AUTHORIZATION_SERVER=false`, `OAUTH_PROVIDER` is refused and
+`OAUTH_TRUSTED_ISSUERS` is required. The authorization server routes answer 404 and
+their metadata is not served. Settings that need the authorization server are
+refused: `TrustedAudiences`, JWT access tokens, and the introspection, UserInfo and
+client configuration endpoints. A resource that advertises no authorization server
+starts with a warning; MCP requires one. With `OAUTH_REQUIRE_RESOURCE_ACCESS_TOKENS`
+also set, an issuer whose `audiences` do not name the main resource is refused at
+startup.
 
 Unknown fields, trailing JSON values, duplicate issuer entries and invalid resource
 paths are refused at load time. `Setup` and the server constructors return an error

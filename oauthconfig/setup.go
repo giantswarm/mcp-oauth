@@ -66,7 +66,7 @@ func Setup(settings Settings, options ...server.Option) (*Runtime, func(context.
 	// Settings go first so that a caller's explicit options, such as
 	// server.WithSubjectTokenValidator, take precedence.
 	options = append([]server.Option{server.WithTrustedIssuers(settings.TrustedIssuers)}, options...)
-	provider, err := configuredProvider(settings, serverConfig.DisableAuthorizationServer)
+	provider, err := configuredProvider(settings)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -134,14 +134,14 @@ func configuredStorage(configuration *valkey.Config, encryptor *security.Encrypt
 	return store, store.Close, nil
 }
 
-func configuredProvider(settings Settings, authorizationServerDisabled bool) (providers.Provider, error) {
+func configuredProvider(settings Settings) (providers.Provider, error) {
 	count := 0
 	for _, present := range []bool{settings.Dex != nil, settings.Google != nil, settings.GitHub != nil} {
 		if present {
 			count++
 		}
 	}
-	if authorizationServerDisabled {
+	if settings.Server != nil && settings.Server.DisableAuthorizationServer {
 		if count != 0 {
 			return nil, fmt.Errorf("an OAuth provider configuration requires the authorization server")
 		}

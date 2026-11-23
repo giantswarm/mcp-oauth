@@ -140,6 +140,9 @@ func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
 // This allows resource servers to validate access tokens
 // Security: Requires client authentication to prevent token scanning attacks
 func (h *Handler) ServeTokenIntrospection(w http.ResponseWriter, r *http.Request) {
+	if h.notFoundWhen(w, r, h.server.Config.DisableAuthorizationServer) {
+		return
+	}
 	startTime := time.Now()
 
 	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.introspection")

@@ -186,7 +186,9 @@ type TrustedIssuer struct {
 	// OpenIDProvider marks the issuer people sign in with, whose bearers are
 	// their ID tokens: handler.ProviderIDTokenFromContext returns a bearer
 	// accepted through this entry, as it returns the provider's ID token with
-	// the authorization server on.
+	// the authorization server on. AcceptedTypHeaders must then be set and
+	// must not accept RFC 9068 access tokens (at+jwt), which are not ID
+	// tokens.
 	OpenIDProvider bool
 	// Actors restricts which acting parties this issuer may name in the act
 	// claim (RFC 8693 §4.1). Nil leaves act unchecked. When set, a token
@@ -286,6 +288,9 @@ func newOIDCValidatorWithClients(issuers []TrustedIssuer, safeClient *oidc.JWKSC
 		if ti.JwksURL == "" {
 			return nil, fmt.Errorf("trusted issuer %q must have a non-empty JwksURL", ti.Issuer)
 		}
+		if ti.OpenIDProvider && acceptsAccessTokenTyp(ti.AcceptedTypHeaders) {
+			return nil, fmt.Errorf("trusted issuer %q: OpenIDProvider needs AcceptedTypHeaders without %q, since its bearers are returned as ID tokens", ti.Issuer, rfc9068TokenType)
+		}
 		if ti.Actors != nil {
 			if err := ti.Actors.validate(); err != nil {
 				return nil, fmt.Errorf("trusted issuer %q: %w", ti.Issuer, err)
@@ -304,6 +309,17 @@ func (v *OIDCValidator) BearerTypHeaders(issuer string) []string {
 		return ti.AcceptedTypHeaders
 	}
 	return []string{rfc9068TokenType}
+}
+
+// acceptsAccessTokenTyp reports whether a bearer typ list admits RFC 9068
+// access tokens; an empty list defaults to at+jwt.
+func acceptsAccessTokenTyp(accepted []string) bool {
+	if len(accepted) == 0 {
+		return true
+	}
+	return slices.ContainsFunc(accepted, func(typ string) bool {
+		return strings.TrimPrefix(strings.ToLower(typ), "application/") == rfc9068TokenType
+	})
 }
 
 // entry returns the configuration of a trusted issuer.

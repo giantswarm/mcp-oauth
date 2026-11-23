@@ -53,6 +53,9 @@ func (s *Server) unregisterTokenPairIfPresent(token string) {
 // scanning attacks. JWTs without a client binding, including unidentified
 // self-issued exchanges, cannot be revoked through this client-owned endpoint.
 func (s *Server) RevokeToken(ctx context.Context, token, clientID, clientIP string) error {
+	if err := s.requireAuthorizationServer(); err != nil {
+		return err
+	}
 	if recognized, err := s.revokeSelfIssuedJWT(ctx, token, clientID, clientIP); recognized {
 		return err
 	}

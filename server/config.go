@@ -998,7 +998,8 @@ type Config struct {
 
 	// DisableAuthorizationServer makes the server a resource server only: New
 	// accepts a nil provider, the authorization server routes and metadata
-	// are not mounted and their handlers answer 404, and ValidateToken accepts
+	// are not mounted and their handlers answer 404, the Server methods behind
+	// them return ErrAuthorizationServerDisabled, and ValidateToken accepts
 	// only JWTs from WithTrustedIssuers, which New then requires. A bearer
 	// that is not such a JWT is refused without a store or provider lookup.
 	// The protected resource metadata advertises only the authorization
