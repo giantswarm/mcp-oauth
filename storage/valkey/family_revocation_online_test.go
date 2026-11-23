@@ -190,24 +190,23 @@ func TestOnlineFamilyRevocationMigrationRequiresStandalone(t *testing.T) {
 			require.ErrorIs(t, err, errOnlineFamilyMigrationRequiresStandalone)
 			require.False(t, published)
 			require.Empty(t, indexVersion(t, seed))
-			revoked, err := seed.IsRefreshTokenFamilyRevoked(t.Context(), "old-revoked")
-			require.NoError(t, err)
-			require.True(t, revoked)
 
-			address := testValkeyAddress()
-			store, err := New(Config{Address: address, KeyPrefix: seed.prefix, MigrateFamilyRevocationIndex: true}, func(store *Store) {
-				store.client = &familyMigrationTestClient{Client: store.client, mode: mode}
+			var leases atomic.Int64
+			store := replica(t, seed, true, func(store *Store) {
+				store.client = &familyMigrationTestClient{Client: store.client, mode: mode, after: func(_ context.Context, arguments []string) {
+					if arguments[0] == "SET" && arguments[1] == store.familyMigrationLeaseKey() {
+						leases.Add(1)
+					}
+				}}
 			})
-			require.ErrorIs(t, err, errOnlineFamilyMigrationRequiresStandalone)
-			require.Nil(t, store)
+			require.Never(t, func() bool { return leases.Load() > 0 || store.familyRevocationsIndexed.Load() }, 5*testFamilyIndexPoll, testFamilyIndexPoll)
+			require.Empty(t, indexVersion(t, seed))
+			revoked, err := store.IsRefreshTokenFamilyRevoked(t.Context(), "old-revoked")
+			require.NoError(t, err)
+			require.True(t, revoked, "compatibility lookups must keep serving")
 
 			require.NoError(t, seed.client.Do(t.Context(), seed.client.B().Set().Key(seed.familyRevocationIndexKey()).Value("1").Build()).Error())
-			store, err = New(Config{Address: address, KeyPrefix: seed.prefix, MigrateFamilyRevocationIndex: true}, func(store *Store) {
-				store.client = &familyMigrationTestClient{Client: store.client, mode: mode}
-			})
-			require.NoError(t, err, "an indexed namespace needs no migration on any topology")
-			t.Cleanup(store.Close)
-			require.True(t, store.familyRevocationsIndexed.Load())
+			require.Eventually(t, store.familyRevocationsIndexed.Load, 5*time.Second, testFamilyIndexPoll)
 		})
 	}
 }
@@ -219,21 +218,52 @@ func TestOnlineFamilyRevocationMigrationBacksOffAfterFailures(t *testing.T) {
 	seed.familyRevocationsIndexed.Store(false)
 	seed.familyIndexPollInterval = testFamilyIndexPoll
 	seed.familyMigrationLease = time.Minute
-	var walks atomic.Int64
+	var mu sync.Mutex
+	var walks []time.Time
 	seed.client = &familyMigrationTestClient{Client: seed.client, after: func(_ context.Context, arguments []string) {
 		if arguments[0] == "SET" && arguments[1] == seed.familyMigrationLeaseKey() {
-			walks.Add(1)
+			mu.Lock()
+			walks = append(walks, time.Now())
+			mu.Unlock()
 		}
 	}}
-	seed.startFamilyRevocationIndexing(true)
-	t.Cleanup(seed.stopFamilyRevocationIndexing)
+	seed.migrateFamilyIndex = true
+	seed.startFamilyRevocationIndexing()
+	t.Cleanup(func() { seed.stopFamilyRevocationIndexing(false) })
 
-	// Delays of 20, 40, 80 and 160 ms allow at most five walks in 400 ms;
-	// retrying at the poll interval would allow twenty.
-	time.Sleep(20 * testFamilyIndexPoll)
-	require.GreaterOrEqual(t, walks.Load(), int64(2))
-	require.LessOrEqual(t, walks.Load(), int64(6))
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(walks) >= 4
+	}, 5*time.Second, testFamilyIndexPoll)
+	seed.stopFamilyRevocationIndexing(false)
+	mu.Lock()
+	defer mu.Unlock()
+	delay := testFamilyIndexPoll
+	for i := 1; i < 4; i++ {
+		require.GreaterOrEqual(t, walks[i].Sub(walks[i-1]), delay, "walk %d", i)
+		delay *= 2
+	}
 	require.False(t, seed.familyRevocationsIndexed.Load())
+}
+
+func TestFailedStoppedFamilyMigrationResumesWaiting(t *testing.T) {
+	seed := unindexedSeed(t)
+	seed.familyRevocationsIndexed.Store(false)
+	seed.familyIndexPollInterval = testFamilyIndexPoll
+	seed.startFamilyRevocationIndexing()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	require.Error(t, seed.MigrateFamilyRevocations(ctx))
+	require.False(t, seed.familyRevocationsIndexed.Load())
+
+	require.NoError(t, seed.client.Do(t.Context(), seed.client.B().Set().Key(seed.familyRevocationIndexKey()).Value("1").Build()).Error())
+	require.Eventually(t, seed.familyRevocationsIndexed.Load, 5*time.Second, testFamilyIndexPoll)
+
+	seed.stopFamilyRevocationIndexing(true)
+	seed.familyRevocationsIndexed.Store(false)
+	seed.startFamilyRevocationIndexing()
+	require.Nil(t, seed.stopFamilyIndexing, "a closed store must not restart its worker")
 }
 
 func TestOnlineFamilyRevocationMigrationRejectsRestartedServer(t *testing.T) {
@@ -337,7 +367,7 @@ func TestOnlineFamilyRevocationMigrationClose(t *testing.T) {
 			seed := unindexedSeed(t)
 			observer := replica(t, seed, false)
 			t.Cleanup(func() {
-				seed.stopFamilyRevocationIndexing()
+				seed.stopFamilyRevocationIndexing(false)
 				client, err := valkeygo.NewClient(buildClientOpts(Config{Address: testValkeyAddress()}, seed.operationTimeout))
 				require.NoError(t, err)
 				seed.client = client
@@ -356,7 +386,8 @@ func TestOnlineFamilyRevocationMigrationClose(t *testing.T) {
 				}
 			}}
 			seed.familyRevocationsIndexed.Store(false)
-			seed.startFamilyRevocationIndexing(true)
+			seed.migrateFamilyIndex = true
+			seed.startFamilyRevocationIndexing()
 			require.Eventually(t, func() bool { return channelClosed(started) }, time.Second, testFamilyIndexPoll)
 			closed := make(chan struct{})
 			go func() {
@@ -388,7 +419,8 @@ func TestOnlineFamilyRevocationMigrationDeadlineStopsRetries(t *testing.T) {
 			<-ctx.Done()
 		}
 	}}
-	seed.startFamilyRevocationIndexing(true)
+	seed.migrateFamilyIndex = true
+	seed.startFamilyRevocationIndexing()
 	require.Eventually(t, func() bool { return scans.Load() == 1 }, time.Second, testFamilyIndexPoll)
 	require.Eventually(t, func() bool {
 		held, err := seed.client.Do(t.Context(), seed.client.B().Exists().Key(seed.familyMigrationLeaseKey()).Build()).AsInt64()
@@ -415,7 +447,8 @@ func TestStoppedFamilyMigrationCancelsBackgroundWorker(t *testing.T) {
 			})
 		}
 	}}
-	seed.startFamilyRevocationIndexing(true)
+	seed.migrateFamilyIndex = true
+	seed.startFamilyRevocationIndexing()
 	require.Eventually(t, func() bool { return channelClosed(started) }, time.Second, testFamilyIndexPoll)
 	require.NoError(t, seed.MigrateFamilyRevocations(t.Context()))
 	require.True(t, channelClosed(seed.familyIndexingDone))

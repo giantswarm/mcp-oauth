@@ -84,10 +84,10 @@ startup.
 For standalone Valkey with an unindexed namespace, once no binary built from a
 release older than v1.17.2 writes to the key prefix, set
 `MigrateFamilyRevocationIndex` in the Valkey `Config` of the OAuth servers.
-On Valkey Cluster, an unindexed namespace that holds family records fails
-startup with this setting; migrate it with the stopped-traffic command and a
-stable topology. Once a namespace is indexed, the setting has no effect on any
-topology.
+On Valkey Cluster, the setting does not migrate: the store logs an error and
+keeps compatibility lookups. Migrate such a namespace with the stopped-traffic
+command and a stable topology. Once a namespace is indexed, the setting has no
+effect on any topology.
 
 ```go
 store, err := valkey.New(valkey.Config{

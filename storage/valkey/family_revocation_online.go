@@ -30,29 +30,44 @@ func (s *Store) familyMigrationLeaseKey() string {
 
 // startFamilyRevocationIndexing keeps an unindexed store on compatibility
 // lookups until the index is complete, then switches it to indexed lookups.
-// With migrate set, it also backfills the index while traffic is served.
-func (s *Store) startFamilyRevocationIndexing(migrate bool) {
-	if s.familyRevocationsIndexed.Load() {
+// With migrateFamilyIndex set on standalone Valkey, it also backfills the index
+// while traffic is served.
+func (s *Store) startFamilyRevocationIndexing() {
+	s.familyIndexingMu.Lock()
+	defer s.familyIndexingMu.Unlock()
+	if s.familyIndexingClosed || s.familyRevocationsIndexed.Load() {
 		return
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	s.stopFamilyIndexing = cancel
-	s.familyIndexingDone = make(chan struct{})
-	if migrate {
+	migrate := s.migrateFamilyIndex
+	switch {
+	case migrate && s.client.Mode() != valkeygo.ClientModeStandalone:
+		migrate = false
+		s.logger.Error("Family revocation index requires migration, which only runs online on standalone Valkey; compatibility lookups remain enabled; run the stopped-traffic migration command")
+	case migrate:
 		s.logger.Info("Family revocation index requires migration; migrating while serving")
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	s.stopFamilyIndexing = cancel
+	s.familyIndexingDone = done
 	go func() {
-		defer close(s.familyIndexingDone)
+		defer close(done)
 		s.awaitFamilyRevocationIndex(ctx, migrate)
 	}()
 }
 
-func (s *Store) stopFamilyRevocationIndexing() {
+// stopFamilyRevocationIndexing stops the worker and waits for it to exit.
+// With closing set, the worker is never started again.
+func (s *Store) stopFamilyRevocationIndexing(closing bool) {
+	s.familyIndexingMu.Lock()
+	defer s.familyIndexingMu.Unlock()
+	s.familyIndexingClosed = s.familyIndexingClosed || closing
 	if s.stopFamilyIndexing == nil {
 		return
 	}
 	s.stopFamilyIndexing()
 	<-s.familyIndexingDone
+	s.stopFamilyIndexing = nil
 }
 
 // awaitFamilyRevocationIndex polls for a completed index. Failed walks are

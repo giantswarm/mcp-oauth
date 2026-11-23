@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -169,8 +170,9 @@ type Config struct {
 	StartupTimeout time.Duration
 
 	// MigrateFamilyRevocationIndex backfills an unindexed namespace on standalone
-	// Valkey while the store serves traffic. [New] returns an error when a
-	// cluster namespace still needs migration; an indexed namespace needs none.
+	// Valkey while the store serves traffic. On Valkey Cluster, an unindexed
+	// namespace keeps compatibility lookups and logs an error; migrate it with
+	// the stopped-traffic MigrateFamilyRevocations method.
 	// Replicas sharing the key prefix take turns through a lease. Every replica
 	// adopts a completed index, whether this setting is enabled or not.
 	// Enable it only when no binary built from a release older than v1.17.2
@@ -198,8 +200,13 @@ type Store struct {
 
 	familyIndexPollInterval time.Duration
 	familyMigrationLease    time.Duration
-	stopFamilyIndexing      context.CancelFunc
-	familyIndexingDone      chan struct{}
+	migrateFamilyIndex      bool
+
+	// familyIndexingMu guards the family revocation index worker's lifecycle.
+	familyIndexingMu     sync.Mutex
+	familyIndexingClosed bool
+	stopFamilyIndexing   context.CancelFunc
+	familyIndexingDone   chan struct{}
 
 	// encryptor provides optional token encryption at rest; immutable after New.
 	encryptor *security.Encryptor
@@ -296,6 +303,7 @@ func New(cfg Config, opts ...Option) (*Store, error) {
 		operationTimeout:           operationTimeout,
 		familyIndexPollInterval:    defaultFamilyIndexPollInterval,
 		familyMigrationLease:       defaultFamilyMigrationLease,
+		migrateFamilyIndex:         cfg.MigrateFamilyRevocationIndex,
 	}
 
 	for _, opt := range opts {
@@ -303,13 +311,13 @@ func New(cfg Config, opts ...Option) (*Store, error) {
 	}
 	indexContext, cancelIndex := context.WithTimeout(context.Background(), startupTimeout)
 	defer cancelIndex()
-	if err := s.initializeFamilyRevocationIndex(indexContext, cfg.MigrateFamilyRevocationIndex); err != nil {
+	if err := s.initializeFamilyRevocationIndex(indexContext); err != nil {
 		client.Close()
 		return nil, fmt.Errorf("initialize family revocation index: %w", err)
 	}
 
 	s.wireInstrumentation(logger)
-	s.startFamilyRevocationIndexing(cfg.MigrateFamilyRevocationIndex)
+	s.startFamilyRevocationIndexing()
 
 	logger.Debug("storage connected", "store", s)
 	return s, nil
@@ -317,7 +325,7 @@ func New(cfg Config, opts ...Option) (*Store, error) {
 
 // Close closes the Valkey client connection.
 func (s *Store) Close() {
-	s.stopFamilyRevocationIndexing()
+	s.stopFamilyRevocationIndexing(true)
 	s.client.Close()
 	s.logger.Debug("storage connection closed", "store", s)
 }
