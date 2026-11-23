@@ -24,7 +24,7 @@ func (h *Handler) auditMissingRefreshAuthentication(ctx context.Context, clientI
 	h.server.Auditor.LogEvent(ctx, security.Event{
 		Type: security.EventAuthFailure, ClientID: clientID,
 		Details: map[string]any{
-			"severity": "high", fieldClientType: "confidential", "auth_missing": true,
+			auditDetailSeverity: "high", fieldClientType: "confidential", "auth_missing": true,
 			"endpoint": grantTypeRefreshToken, "ip": clientIP, "oauth_spec": "OAuth 2.1 Section 6",
 		},
 	})
@@ -46,7 +46,11 @@ func (h *Handler) writeEndpointClientAuthenticationError(w http.ResponseWriter, 
 		code, description, status = oauthError.Code, oauthError.Description, oauthError.Status
 	}
 	authorization := r.Header.Get("Authorization")
-	if status == http.StatusUnauthorized && (strings.EqualFold(authorization, "Basic") || strings.HasPrefix(strings.ToLower(authorization), "basic ")) {
+	usesBasic := strings.EqualFold(authorization, "Basic") || strings.HasPrefix(strings.ToLower(authorization), "basic ")
+	if status == http.StatusUnauthorized && grant == server.GrantTypeTokenExchange && !usesBasic {
+		status = http.StatusBadRequest
+	}
+	if status == http.StatusUnauthorized && usesBasic {
 		w.Header().Set("WWW-Authenticate", `Basic realm="oauth"`)
 	}
 	if grant != "" {

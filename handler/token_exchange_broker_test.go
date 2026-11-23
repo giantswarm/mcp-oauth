@@ -209,7 +209,7 @@ func TestHandleBrokeredTokenExchange_MissingClientAuth(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.handler.ServeToken(w, req)
 
-	requireOAuthError(t, w, http.StatusBadRequest, constants.ErrorCodeInvalidRequest)
+	requireOAuthError(t, w, http.StatusBadRequest, constants.ErrorCodeInvalidClient)
 	require.Nil(t, ex.gotReq)
 }
 
@@ -264,7 +264,7 @@ func TestHandleBrokeredTokenExchange_DownstreamFailure(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.handler.ServeToken(w, req)
 
-	requireOAuthError(t, w, http.StatusBadRequest, constants.ErrorCodeInvalidGrant)
+	requireOAuthError(t, w, http.StatusBadRequest, constants.ErrorCodeInvalidRequest)
 }
 
 func TestHandleBrokeredTokenExchange_ActorTokenMissingType(t *testing.T) {

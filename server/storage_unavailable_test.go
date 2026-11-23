@@ -346,7 +346,7 @@ func TestTokenExchange_StorageUnavailable(t *testing.T) {
 						"act-tok": {Subject: "agent-a", Issuer: "https://k8s.example.com"},
 					}},
 				}
-				req := SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+				req := SelfIssuedExchangeRequest{ClientID: f.clientID, SubjectExchange: SubjectExchange{
 					Subject:  TypedToken{Token: subject, Type: SubjectTokenTypeAccessToken},
 					Actor:    TypedToken{Token: "act-tok", Type: SubjectTokenTypeIDToken},
 					Resource: "https://api.example.com",

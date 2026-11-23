@@ -189,7 +189,7 @@ func TestSelfIssuedExchange_AllowedResourceComparedNormalized(t *testing.T) {
 				}},
 			}
 
-			_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+			_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 				Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 				Resource: tt.resource,
 			}})

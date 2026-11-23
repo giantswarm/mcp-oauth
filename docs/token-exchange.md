@@ -35,7 +35,7 @@ srv, _ := oauth.NewServer(
 )
 ```
 
-`WithTrustedIssuers` registers an `OIDCValidator` for `id_token`, `access_token`, and `jwt` subject token types **and** as a Bearer validator on `ValidateToken`. A peer-issued JWT presented at `/mcp` is accepted when its `iss` matches a configured entry; the audience is checked against the entry's `AllowedAudiences` (or the server's `ResourceIdentifier` when empty), and RFC 9068 §4 requires the `typ: at+jwt` header on this path. The `Issuer` and `JwksURL` are independent — set `JwksURL` explicitly when the issuer's discovery document is unavailable or its JWKS is hosted separately.
+`WithTrustedIssuers` registers an `OIDCValidator` for `id_token`, `access_token`, and `jwt` subject token types **and** as a Bearer validator on `ValidateToken`. A peer-issued JWT presented at `/mcp` is accepted when its `iss` matches a configured entry; the audience is checked against the entry's `AllowedAudiences` (or the server's `ResourceIdentifier` when empty), and RFC 9068 §4 requires the `typ: at+jwt` header on this path. The `Issuer` and `JwksURL` are independent; set `JwksURL` explicitly when the issuer's discovery document is unavailable or its JWKS is hosted separately.
 
 `AllowedScopes` caps the scopes the server will include in the issued token for this issuer. `nil` means no restriction. A subject token's own `scope` claim, when present, narrows the grant further: an exchange never issues a scope the subject token does not carry. When these bounds leave nothing to grant, the exchange fails with `invalid_scope` rather than issuing an unscoped token.
 
@@ -43,7 +43,7 @@ srv, _ := oauth.NewServer(
 
 `AllowedClaims` adds a claim-level gate after signature verification. Each entry requires the named JWT claim to match a pattern. Patterns support `*` (matches any sequence of characters, including `/`) and `?` (matches any single character). An absent claim or a non-string claim value is rejected.
 
-**Kubernetes ServiceAccount tokens** — restrict to a specific namespace:
+**Kubernetes ServiceAccount tokens**: restrict to a specific namespace:
 
 ```go
 server.WithTrustedIssuers([]server.TrustedIssuer{
@@ -61,7 +61,7 @@ The `sub` claim of a projected SA token has the form `system:serviceaccount:<nam
 
 To restrict to a single SA: `"sub": "system:serviceaccount:ai-platform:my-worker"`.
 
-**GitHub Actions OIDC tokens** — restrict to a specific repository:
+**GitHub Actions OIDC tokens**: restrict to a specific repository:
 
 ```go
 server.WithTrustedIssuers([]server.TrustedIssuer{
@@ -128,6 +128,7 @@ Return an error wrapping `server.ErrProviderUnavailable` from `Validate` when an
 ```
 POST /oauth/token
 Content-Type: application/x-www-form-urlencoded
+Authorization: Basic <base64(form-encoded-client-id:form-encoded-client-secret)>
 
 grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 &subject_token=<external-token>
@@ -135,14 +136,23 @@ grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 &scope=openid email
 ```
 
+The request must authenticate a registered confidential client with its registered method (`client_secret_basic`, `client_secret_post` or `private_key_jwt`). This is the server's deployment policy under RFC 8693 §2.1: client authentication prevents any holder of a trusted subject token from exchanging it without client credentials. RFC 9068 §2.2 requires the requesting client's `client_id` claim; it does not itself require confidential-client authentication. The issued token records that client, so the owner can revoke it (RFC 7009) and deleting the client retires it.
+
+A request without client authentication is answered `400 invalid_client`, a public client `400 unauthorized_client`. Failed Basic authentication returns `401 invalid_client` with a Basic challenge. In-process callers of `Server.SelfIssuedExchange` must authenticate a registered confidential client and pass its ID in `SelfIssuedExchangeRequest.ClientID`; an empty, unknown, public or retired client fails with `server.ErrExchangeClientRequired`.
+
+Resource servers that verify these tokens offline against the JWKS do not see revocation or client deletion; for them a token stays valid until `exp` (`AccessTokenTTL`, default one hour). Only `ValidateToken` on this server consults the revocation and client-retirement state.
+
 Optional parameters:
+
+- `requested_token_type`: only `urn:ietf:params:oauth:token-type:access_token` is supported. Omission defaults to that type; other requested types return `invalid_request` on both exchange flows.
+- `actor_token` and `actor_token_type`: supply both for delegation. An actor token without its type, or an actor type without an actor token, returns `invalid_request`.
 - `resource` (RFC 8707): target resource server URI to bind the issued token's `aud`. When omitted, `aud` defaults to the server's own `ResourceIdentifier`.
 - `scope`: requested scope subset; intersected with the issuer's `AllowedScopes` and with the subject token's `scope` claim when it has one; an empty intersection is refused with `invalid_scope`.
 - `DPoP` header: if present, the issued token is DPoP-bound (see [DPoP guide](./dpop.md)).
 
 Self-issued exchange policy:
 - **Resource allowlist**: `Config.TokenExchangeAllowedResources` caps the `resource` values that may be minted. Empty (the default) accepts any resource. When non-empty, a request whose `resource` is neither the server's own `ResourceIdentifier` nor a listed value is rejected with `invalid_target`. Values are compared ignoring scheme and host case, a default port and a trailing slash.
-- **Self-renewal**: a token this server issued cannot be re-exchanged without adding a new actor — a bare renewal (or re-attaching the actor already outermost on the subject's chain) is rejected with `invalid_grant` to prevent open-ended TTL extension. Re-exchange to add a *different* actor extends the delegation chain and is allowed.
+- **Self-renewal**: a token this server issued cannot be re-exchanged without adding a new actor; a bare renewal (or re-attaching the actor already outermost on the subject's chain) is rejected with `invalid_request` to prevent open-ended TTL extension. Re-exchange to add a *different* actor extends the delegation chain and is allowed.
 - **Key-bound subjects**: if the subject token carries an RFC 9449 `cnf.jkt` confirmation, the request must present a DPoP proof for that same key; otherwise the exchange is rejected. This prevents a bearer who lacks the confirmation key from laundering the binding into a token bound to a different key.
 
 ## Issued token
@@ -175,6 +185,7 @@ result, err := srv.SelfIssuedExchange(ctx, server.SelfIssuedExchangeRequest{
         Resource: resource,
         Scope:    scope,
     },
+    ClientID: authenticatedClientID,
     DPoPJKT: dpopJKT,
     Options: server.ExchangeOptions{
         Email:         "klaus-sre@machine.giantswarm.io",
@@ -187,13 +198,13 @@ result, err := srv.SelfIssuedExchange(ctx, server.SelfIssuedExchangeRequest{
 
 The resulting JWT carries `email`, `email_verified: true`, `groups: ["klaus-sre"]`, and `principal_kind: "machine"` alongside the standard exchanged-token claims (`sub`, `iss`, `aud`, `act`, etc).
 
-`Extra` is merged into the JWT body after the standard claims. RFC 7519 §4.1 registered claim names (`iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`) are rejected: `SelfIssuedExchange` returns an error if `Extra` contains any of them. OIDC-profile claims already set via struct fields (`email`, `name`, `groups`, `email_verified`) are not guarded and `Extra` can override them.
+`Extra` is merged into the JWT body after the standard claims. RFC 7519 §4.1 registered claim names (`iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`) and `client_id` are rejected: `SelfIssuedExchange` returns an error if `Extra` contains any of them. OIDC-profile claims already set via struct fields (`email`, `name`, `groups`, `email_verified`) are not guarded and `Extra` can override them.
 
 This is library API only: the HTTP `/oauth/token` endpoint does not extract these from the request form (it relies on the subject-claim defaulting). Use `Options` from in-process wrappers that have already resolved the identity out-of-band.
 
 ## Brokered exchange (audience parameter)
 
-When the client sends an RFC 8693 `audience` parameter, the server acts as a **token broker** instead of issuing a local JWT: it validates the subject token, enforces policy, and delegates the downstream exchange to a host-provided `Exchanger`. The returned token comes from the downstream issuer verbatim — useful when the target (e.g. a Kubernetes API server behind its own Dex) will not accept tokens issued by this server.
+When the client sends an RFC 8693 `audience` parameter, the server acts as a **token broker** instead of issuing a local JWT: it validates the subject token, enforces policy, and delegates the downstream exchange to a host-provided `Exchanger`. The returned token comes from the downstream issuer verbatim; useful when the target (e.g. a Kubernetes API server behind its own Dex) will not accept tokens issued by this server.
 
 ### Host setup
 
@@ -205,7 +216,7 @@ func (e *myExchanger) Exchange(ctx context.Context, req *server.ExchangerRequest
     // typically forwarded as the subject_token of the downstream RFC 8693 request.
     token, expiry, err := e.exchangeAtRemoteDex(ctx, req.Audience, req.SubjectToken, req.Scope)
     if err != nil {
-        return nil, err // reported to the client as a generic invalid_grant
+        return nil, err // reported to the client as a generic invalid_request
     }
     return &server.ExchangerResult{AccessToken: token, ExpiresAt: expiry}, nil
 }
@@ -229,17 +240,17 @@ Return an error wrapping `server.ErrInvalidTarget` from `Exchange` to signal an 
 
 ### Policy enforced by the broker path
 
-- **Client authentication is mandatory** and only confidential clients are accepted — the allowlist is keyed by client ID, which is spoofable for public clients (`unauthorized_client` otherwise).
+- **Client authentication is mandatory** and only confidential clients are accepted; the allowlist is keyed by client ID, which is spoofable for public clients (`unauthorized_client` otherwise).
 - **Per-client audience allowlist**: `Config.TokenExchangeClientAudiences`; a client requesting an audience outside its list gets `invalid_target`. Without `WithExchanger`, every audience request gets `invalid_target`.
 - **No refresh tokens** are issued; `expires_in` is bounded by the downstream token's expiry and clients are expected to re-exchange.
-- **DPoP is rejected** on this path (`invalid_request`) — the downstream issuer never saw the proof, so the binding would be a lie.
+- **DPoP is rejected** on this path (`invalid_request`); the downstream issuer never saw the proof, so the binding would be a lie.
 - **Audit**: success and failure events carry the client ID, subject, requested audience, granted scope, and the deterministic cross-hop session ID (`ext-<hex>`, same derivation as forwarded-token acceptance, keyed by `Config.SessionIDHMACKey`) so broker audit lines correlate with downstream MCP server audit lines for the same token.
 
 ### Client request
 
 ```
 POST /oauth/token
-Authorization: Basic <client_id:client_secret>
+Authorization: Basic <base64(form-encoded-client-id:form-encoded-client-secret)>
 Content-Type: application/x-www-form-urlencoded
 
 grant_type=urn:ietf:params:oauth:grant-type:token-exchange
@@ -251,4 +262,4 @@ grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 
 ## Route registration
 
-Token exchange is handled by `ServeToken` — no separate route is required. It activates automatically when the `grant_type` is `urn:ietf:params:oauth:grant-type:token-exchange` and at least one `SubjectTokenValidator` is registered. No `SubjectTokenValidator` = token exchange returns `unsupported_grant_type`. The brokered flow additionally requires `server.WithExchanger`.
+Token exchange is handled by `ServeToken`; no separate route is required. It activates automatically when the `grant_type` is `urn:ietf:params:oauth:grant-type:token-exchange` and at least one `SubjectTokenValidator` is registered. No `SubjectTokenValidator` = token exchange returns `invalid_request`. The brokered flow additionally requires `server.WithExchanger`.

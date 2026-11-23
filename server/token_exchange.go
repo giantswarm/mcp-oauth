@@ -44,6 +44,11 @@ var ErrUnverifiedSubjectEmail = errors.New("subject email_verified is not true; 
 // key cannot launder the binding into a token bound to a different key.
 var ErrSubjectKeyMismatch = errors.New("subject token is key-bound; request must prove possession of its confirmation key")
 
+// ErrExchangeClientRequired is returned when SelfIssuedExchange's ClientID does
+// not identify a registered, non-retired confidential client. Requiring client
+// authentication is this server's RFC 8693 §2.1 deployment policy.
+var ErrExchangeClientRequired = errors.New("self-issued token exchange requires an authenticated confidential client")
+
 // TokenExchangeResult holds the output of a successful token exchange.
 type TokenExchangeResult struct {
 	AccessToken     string
@@ -59,8 +64,8 @@ type TokenExchangeResult struct {
 // String and slice fields are omitted from the JWT when empty. EmailVerified is
 // emitted only when Email is also non-empty (consistent with AccessTokenClaims
 // semantics). Extra is merged into the JWT body after the standard claims; RFC
-// 7519 §4.1 registered claim names (iss, sub, aud, exp, nbf, iat, jti) are
-// rejected: Issue returns an error if Extra contains any of them. OIDC profile
+// 7519 §4.1 registered claim names (iss, sub, aud, exp, nbf, iat, jti) and
+// client_id are rejected: Issue returns an error if Extra contains any of them. OIDC profile
 // claims set via struct fields (email, name, groups, email_verified) are not
 // guarded and can be overridden by Extra.
 type ExchangeOptions struct {
@@ -104,6 +109,11 @@ type SubjectExchange struct {
 // BrokeredExchange-only).
 type SelfIssuedExchangeRequest struct {
 	SubjectExchange
+	// ClientID is the confidential client the caller authenticated; it becomes
+	// the issued token's client_id (RFC 9068 §2.2), which revocation (RFC 7009
+	// §2.1) and client retirement match against. It must name a registered
+	// confidential client and must not be empty.
+	ClientID string
 	// DPoPJKT is the JWK thumbprint from a validated DPoP proof (RFC 9449 §6.1),
 	// written into the issued token's cnf.jkt claim. Empty when no proof was
 	// presented.
@@ -156,6 +166,10 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 		return nil, ErrExchangeRateLimited
 	}
 
+	if err := s.checkExchangeClient(ctx, req.ClientID); err != nil {
+		return nil, err
+	}
+
 	identity, err := s.validateExchangeSubjectToken(ctx, req.Subject, nil, nil)
 	if err != nil {
 		return nil, err
@@ -200,6 +214,7 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 		paramScope:           grantedScope,
 		claimJTI:             jti,
 		logKeySessionID:      sessionID,
+		paramClientID:        req.ClientID,
 	}
 	if act != nil {
 		auditDetails["actor_iss"] = act.Iss
@@ -208,6 +223,7 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 
 	tokenStr, err := s.accessTokenIssuer.Issue(ctx, AccessTokenClaims{
 		Subject:       identity.Subject,
+		ClientID:      req.ClientID,
 		Audience:      audience,
 		Scopes:        strings.Fields(grantedScope),
 		IssuedAt:      now,
@@ -224,10 +240,12 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 	if err != nil {
 		auditDetails[logKeyReason] = "access_token_issue_failed"
 		auditDetails[logKeyError] = err.Error()
+		auditDetails[logKeySeverity] = severityWarning
 		s.Auditor.LogEvent(ctx, security.Event{
-			Type:    security.EventAuthFailure,
-			UserID:  identity.Subject,
-			Details: auditDetails,
+			Type:     security.EventAuthFailure,
+			UserID:   identity.Subject,
+			ClientID: req.ClientID,
+			Details:  auditDetails,
 		})
 		return nil, fmt.Errorf("failed to issue exchange token: %w", err)
 	}
@@ -237,9 +255,10 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 		"delegated", act != nil)
 
 	s.Auditor.LogEvent(ctx, security.Event{
-		Type:    security.EventTokenIssued,
-		UserID:  identity.Subject,
-		Details: auditDetails,
+		Type:     security.EventTokenIssued,
+		UserID:   identity.Subject,
+		ClientID: req.ClientID,
+		Details:  auditDetails,
 	})
 
 	return &TokenExchangeResult{
@@ -662,4 +681,41 @@ func (s *Server) grantExchangeScope(ctx context.Context, requestedScope string, 
 		return "", err
 	}
 	return granted, nil
+}
+
+// checkExchangeClient requires a registered confidential client that has not
+// been retired. The caller is responsible for authenticating that client.
+func (s *Server) checkExchangeClient(ctx context.Context, clientID string) error {
+	refuse := func(reason string) error {
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type:     security.EventAuthFailure,
+			ClientID: clientID,
+			Details: map[string]any{
+				logKeyReason:   reason,
+				logKeySeverity: severityWarning,
+				paramGrantType: GrantTypeTokenExchange,
+			},
+		})
+		return ErrExchangeClientRequired
+	}
+	if clientID == "" {
+		return refuse("token_exchange_client_required")
+	}
+	client, err := s.GetRegisteredClient(ctx, clientID)
+	if errors.Is(err, ErrStorageUnavailable) {
+		return err
+	}
+	if err != nil || client == nil {
+		return refuse("token_exchange_client_unknown")
+	}
+	if !client.IsConfidential() {
+		return refuse("token_exchange_public_client")
+	}
+	if err := s.checkClientRevocation(ctx, clientID); err != nil {
+		if errors.Is(err, ErrStorageUnavailable) {
+			return err
+		}
+		return refuse("token_exchange_client_revoked")
+	}
+	return nil
 }

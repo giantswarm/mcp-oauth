@@ -85,10 +85,10 @@ type AccessTokenClaims struct {
 
 	// Extra holds application-defined claims merged into the JWT body verbatim
 	// after the standard claims. Keys must not collide with RFC 7519 §4.1
-	// registered claim names (iss, sub, aud, exp, nbf, iat, jti) — Issue
-	// returns an error if they do. OIDC-profile claims (email, name, groups,
-	// email_verified) set via struct fields are not guarded and can be
-	// overridden by Extra. Nil is a no-op.
+	// registered claim names (iss, sub, aud, exp, nbf, iat, jti) or the RFC 9068
+	// client_id claim. Issue returns an error if they do. OIDC-profile claims
+	// (email, name, groups, email_verified) set via struct fields can be overridden
+	// by Extra. Nil is a no-op.
 	Extra map[string]any
 }
 
@@ -176,12 +176,12 @@ func newJWTIssuer(cfg *Config) (*jwtIssuer, error) {
 // confusing the two enables a class of token-substitution attacks.
 const rfc9068TokenType = "at+jwt"
 
-// jwtReservedClaims is the set of RFC 7519 §4.1 registered claim names that
-// Issue sets explicitly. Allowing Extra to override them would let callers
-// extend token lifetime (exp), forge issuers (iss), or substitute subjects (sub).
+// jwtReservedClaims protects token validity, subject identity and requesting
+// client identity from application-defined claims.
 var jwtReservedClaims = map[string]struct{}{
 	claimIss: {}, claimSub: {}, "aud": {},
 	"exp": {}, "nbf": {}, "iat": {}, claimJTI: {},
+	paramClientID: {},
 }
 
 // rfc9068Claims is the on-the-wire claim shape for an RFC 9068 access token.

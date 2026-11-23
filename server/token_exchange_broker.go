@@ -88,7 +88,7 @@ type ExchangerResult struct {
 // unknown to the host. An error wrapping ErrProviderUnavailable signals that an
 // issuer the exchange depends on did not answer; the client gets 503
 // with Retry-After and retries the same request. Any
-// other error is reported to the client as a generic invalid_grant without
+// other error is reported to the client as a generic invalid_request without
 // leaking detail.
 type Exchanger interface {
 	Exchange(ctx context.Context, req *ExchangerRequest) (*ExchangerResult, error)

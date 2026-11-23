@@ -40,7 +40,7 @@ func TestSelfIssuedExchange_NestsPriorActorChain(t *testing.T) {
 		}},
 	}
 
-	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 		Actor:    TypedToken{Token: "act-tok", Type: SubjectTokenTypeIDToken},
 		Resource: "https://api.example.com",
@@ -69,7 +69,7 @@ func TestSelfIssuedExchange_PreservesChainWithoutNewActor(t *testing.T) {
 		}},
 	}
 
-	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 		Resource: "https://api.example.com",
 		Scope:    "read",
@@ -99,7 +99,7 @@ func TestSelfIssuedExchange_RejectsTooDeepActorChain(t *testing.T) {
 		}},
 	}
 
-	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 		Actor:    TypedToken{Token: "act-tok", Type: SubjectTokenTypeIDToken},
 		Resource: "https://api.example.com",
@@ -126,7 +126,7 @@ func TestSelfIssuedExchange_DefaultsIdentityFromSubject(t *testing.T) {
 		}},
 	}
 
-	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 		Resource: "https://api.example.com",
 		Scope:    "read",
@@ -155,6 +155,7 @@ func TestSelfIssuedExchange_ExplicitOptionsOverrideSubjectClaims(t *testing.T) {
 	}
 
 	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{
+		ClientID: registerExchangeClient(t, srv),
 		SubjectExchange: SubjectExchange{
 			Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 			Resource: "https://api.example.com",
@@ -178,7 +179,7 @@ func TestSelfIssuedExchange_ExplicitOptionsOverrideSubjectClaims(t *testing.T) {
 func TestSelfIssuedExchange_DefaultsAudienceToResourceIdentifier(t *testing.T) {
 	srv, signingKey := newActorExchangeServer(t)
 
-	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject: TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 		Scope:   "read",
 	}})
@@ -203,7 +204,7 @@ func TestSelfIssuedExchange_DeniesBareSelfRenewal(t *testing.T) {
 		}},
 	}
 
-	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject:  TypedToken{Token: "self-tok", Type: SubjectTokenTypeIDToken},
 		Resource: "https://api.example.com",
 		Scope:    "read",
@@ -228,7 +229,7 @@ func TestSelfIssuedExchange_DeniesSelfRenewalViaSelfActor(t *testing.T) {
 		}},
 	}
 
-	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject:  TypedToken{Token: "self-tok", Type: SubjectTokenTypeIDToken},
 		Actor:    TypedToken{Token: "self-tok2", Type: SubjectTokenTypeIDToken},
 		Resource: "https://api.example.com",
@@ -251,7 +252,7 @@ func TestSelfIssuedExchange_AllowsSelfSubjectChainExtension(t *testing.T) {
 		}},
 	}
 
-	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject:  TypedToken{Token: "self-tok", Type: SubjectTokenTypeIDToken},
 		Actor:    TypedToken{Token: "act-tok", Type: SubjectTokenTypeIDToken},
 		Resource: "https://api.example.com",
@@ -280,7 +281,7 @@ func TestSelfIssuedExchange_DeniesRepeatedActorReattachment(t *testing.T) {
 		}},
 	}
 
-	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject:  TypedToken{Token: "self-tok", Type: SubjectTokenTypeIDToken},
 		Actor:    TypedToken{Token: "act-a", Type: SubjectTokenTypeIDToken},
 		Resource: "https://api.example.com",
@@ -304,7 +305,7 @@ func TestSelfIssuedExchange_AllowsDifferentActorReattachment(t *testing.T) {
 		}},
 	}
 
-	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject:  TypedToken{Token: "self-tok", Type: SubjectTokenTypeIDToken},
 		Actor:    TypedToken{Token: "act-b", Type: SubjectTokenTypeIDToken},
 		Resource: "https://api.example.com",
@@ -329,7 +330,7 @@ func TestSelfIssuedExchange_DeniesKeyBoundSubjectWithoutProof(t *testing.T) {
 		}},
 	}
 
-	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 		Resource: "https://api.example.com",
 	}})
@@ -349,6 +350,7 @@ func TestSelfIssuedExchange_DeniesKeyBoundSubjectWithDifferentKey(t *testing.T) 
 	}
 
 	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{
+		ClientID: registerExchangeClient(t, srv),
 		SubjectExchange: SubjectExchange{
 			Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 			Resource: "https://api.example.com",
@@ -370,6 +372,7 @@ func TestSelfIssuedExchange_AllowsKeyBoundSubjectWithMatchingKey(t *testing.T) {
 	}
 
 	result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{
+		ClientID: registerExchangeClient(t, srv),
 		SubjectExchange: SubjectExchange{
 			Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 			Resource: "https://api.example.com",
@@ -394,7 +397,7 @@ func TestSelfIssuedExchange_AllowsListedResource(t *testing.T) {
 		}},
 	}
 
-	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 		Resource: "https://backend.example.com",
 	}})
@@ -413,7 +416,7 @@ func TestSelfIssuedExchange_DeniesUnlistedResource(t *testing.T) {
 		}},
 	}
 
-	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 		Resource: "https://evil.example.com",
 	}})
@@ -431,14 +434,14 @@ func TestSelfIssuedExchange_ResourceAllowlistPassthrough(t *testing.T) {
 		}},
 	}
 
-	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 		Resource: "https://anything.example.com",
 	}})
 	require.NoError(t, err, "empty allowlist imposes no restriction")
 
 	srv.Config.TokenExchangeAllowedResources = []string{"https://backend.example.com"}
-	_, err = srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	_, err = srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject: TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 	}})
 	require.NoError(t, err, "server resource identifier is always allowed")
@@ -474,7 +477,7 @@ func TestSelfIssuedExchange_TokenExpiry(t *testing.T) {
 		}
 
 		start := time.Now().UTC()
-		result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+		result, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 			Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 			Resource: "https://api.example.com",
 			Scope:    "read",
@@ -500,7 +503,7 @@ func TestSelfIssuedExchange_RefusesUnverifiedSubjectEmail(t *testing.T) {
 		}},
 	}
 
-	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 		Resource: "https://api.example.com",
 	}})
@@ -519,7 +522,7 @@ func TestSelfIssuedExchange_EmaillessSubjectExemptFromEmailGate(t *testing.T) {
 		}},
 	}
 
-	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{SubjectExchange: SubjectExchange{
+	_, err := srv.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{ClientID: registerExchangeClient(t, srv), SubjectExchange: SubjectExchange{
 		Subject:  TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
 		Resource: "https://api.example.com",
 	}})

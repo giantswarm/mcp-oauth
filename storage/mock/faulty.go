@@ -227,6 +227,13 @@ func (f *FaultyStore) GetClient(ctx context.Context, clientID string) (*storage.
 	return f.Store.GetClient(ctx, clientID)
 }
 
+func (f *FaultyStore) IsClientRevoked(ctx context.Context, clientID string) (bool, error) {
+	if err := f.gate(ctx, "is_client_revoked"); err != nil {
+		return false, err
+	}
+	return f.Store.IsClientRevoked(ctx, clientID)
+}
+
 // ValidateClientSecret gates storage.ClientStore.ValidateClientSecret.
 func (f *FaultyStore) ValidateClientSecret(ctx context.Context, clientID, clientSecret string) error {
 	if err := f.gate(ctx, "validate_client_secret"); err != nil {

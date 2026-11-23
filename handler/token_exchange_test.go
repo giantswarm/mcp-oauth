@@ -120,6 +120,14 @@ func newTokenExchangeRequest(form url.Values) *http.Request {
 	return req
 }
 
+func newAuthenticatedTokenExchangeRequest(t *testing.T, handler *Handler, form url.Values) *http.Request {
+	t.Helper()
+	client := newMatrixClient(t, handler, "client_secret_basic")
+	request := newTokenExchangeRequest(form)
+	request.SetBasicAuth(client.client.ClientID, client.secret)
+	return request
+}
+
 func happyExchangeForm() url.Values {
 	return url.Values{
 		"grant_type":         {server.GrantTypeTokenExchange},
@@ -190,7 +198,7 @@ func TestHandleTokenExchangeGrant(t *testing.T) {
 				return v
 			}(),
 			wantStatus:      http.StatusBadRequest,
-			wantErrorCode:   constants.ErrorCodeUnsupportedGrantType,
+			wantErrorCode:   constants.ErrorCodeInvalidRequest,
 			wantHeaders:     wantHeaders{contentTypeJSON: true, cacheNoStore: true},
 			wantAuditReason: "unsupported_subject_token_type",
 		},
@@ -216,7 +224,7 @@ func TestHandleTokenExchangeGrant(t *testing.T) {
 			newValidator:    reject,
 			form:            happyExchangeForm(),
 			wantStatus:      http.StatusBadRequest,
-			wantErrorCode:   constants.ErrorCodeInvalidGrant,
+			wantErrorCode:   constants.ErrorCodeInvalidRequest,
 			wantHeaders:     wantHeaders{contentTypeJSON: true, cacheNoStore: true},
 			wantAuditReason: "subject_token_validation_failed",
 		},
@@ -259,7 +267,7 @@ func TestHandleTokenExchangeGrant(t *testing.T) {
 			opts := append([]tokenExchangeHarnessOption{withSubjectValidator(tc.newValidator())}, tc.extraHarnessOpts...)
 			h, buf := setupTokenExchangeHandler(t, opts...)
 
-			req := newTokenExchangeRequest(tc.form)
+			req := newAuthenticatedTokenExchangeRequest(t, h, tc.form)
 			if tc.mutateRequest != nil {
 				tc.mutateRequest(t, req)
 			}
@@ -301,9 +309,6 @@ func TestHandleTokenExchangeGrant(t *testing.T) {
 	}
 }
 
-// A self-issued exchange rejected by the in-process per-session issuance limiter
-// (server.ErrExchangeRateLimited) must surface as 429 rate_limit_exceeded with a
-// Retry-After header, not the generic 400 invalid_grant fallback.
 func TestHandleTokenExchangeGrant_RateLimited(t *testing.T) {
 	h, _ := setupTokenExchangeHandler(t, withSubjectValidator(&fakeSubjectValidator{
 		identity: server.SubjectIdentity{Subject: "sub", Issuer: "https://oidc.example.com"},
@@ -312,10 +317,10 @@ func TestHandleTokenExchangeGrant_RateLimited(t *testing.T) {
 	t.Cleanup(h.server.UserRateLimiter.Stop)
 
 	// First request consumes the single token; second is rejected.
-	h.ServeToken(httptest.NewRecorder(), newTokenExchangeRequest(happyExchangeForm()))
+	h.ServeToken(httptest.NewRecorder(), newAuthenticatedTokenExchangeRequest(t, h, happyExchangeForm()))
 
 	w := httptest.NewRecorder()
-	h.ServeToken(w, newTokenExchangeRequest(happyExchangeForm()))
+	h.ServeToken(w, newAuthenticatedTokenExchangeRequest(t, h, happyExchangeForm()))
 
 	requireOAuthError(t, w, http.StatusTooManyRequests, constants.ErrorCodeRateLimitExceeded)
 	require.NotEmpty(t, w.Header().Get("Retry-After"))
@@ -340,7 +345,7 @@ func TestHandleTokenExchangeGrant_BodyTooLarge(t *testing.T) {
 	)
 
 	form := happyExchangeForm()
-	req := newTokenExchangeRequest(form)
+	req := newAuthenticatedTokenExchangeRequest(t, h, form)
 	w := httptest.NewRecorder()
 	h.ServeToken(w, req)
 
@@ -397,7 +402,7 @@ func TestHandleTokenExchangeError_UnsupportedSubjectTokenType(t *testing.T) {
 
 	var body map[string]string
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-	require.Equal(t, constants.ErrorCodeUnsupportedGrantType, body["error"])
+	require.Equal(t, constants.ErrorCodeInvalidRequest, body["error"])
 }
 
 func TestHandleTokenExchangeError_InvalidScope(t *testing.T) {
@@ -421,7 +426,7 @@ func TestHandleTokenExchangeGrant_ProviderUnavailable(t *testing.T) {
 	h, _ := setupTokenExchangeHandler(t, withSubjectValidator(validator))
 
 	w := httptest.NewRecorder()
-	h.ServeToken(w, newTokenExchangeRequest(happyExchangeForm()))
+	h.ServeToken(w, newAuthenticatedTokenExchangeRequest(t, h, happyExchangeForm()))
 
 	requireUnavailableResponse(t, w)
 }
