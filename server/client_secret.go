@@ -1,10 +1,12 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/hkdf"
 	"crypto/sha256"
 	"fmt"
+	"slices"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -23,7 +25,37 @@ func (s *Server) UpdateClientRegistration(ctx context.Context, client, previous 
 	if storage.IsTransientError(err) {
 		return s.storageUnavailable(ctx, "update client registration", client.ClientID, "", err)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type:     security.EventClientUpdated,
+		ClientID: client.ClientID,
+		Details:  map[string]any{"changed": changedRegistrationFields(previous, client)},
+	})
+	return nil
+}
+
+// changedRegistrationFields reports metadata and credential names, never values.
+func changedRegistrationFields(previous, current *storage.Client) []string {
+	changed := []string{}
+	add := func(name string, differs bool) {
+		if differs {
+			changed = append(changed, name)
+		}
+	}
+	add("client_name", previous.ClientName != current.ClientName)
+	add("client_type", previous.ClientType != current.ClientType)
+	add("redirect_uris", !slices.Equal(previous.RedirectURIs, current.RedirectURIs))
+	add("grant_types", !slices.Equal(previous.GrantTypes, current.GrantTypes))
+	add("response_types", !slices.Equal(previous.ResponseTypes, current.ResponseTypes))
+	add("scope", !slices.Equal(previous.Scopes, current.Scopes))
+	add("token_endpoint_auth_method", previous.TokenEndpointAuthMethod != current.TokenEndpointAuthMethod)
+	add("token_endpoint_auth_signing_alg", previous.TokenEndpointAuthSigningAlg != current.TokenEndpointAuthSigningAlg)
+	add("jwks", !bytes.Equal(previous.JWKS, current.JWKS))
+	add("client_secret", previous.ClientSecretHash != current.ClientSecretHash)
+	add("registration_access_token", previous.RegistrationAccessTokenHash != current.RegistrationAccessTokenHash)
+	return changed
 }
 
 func (s *Server) clientSecretEncryptor(clientID, registrationToken string) (*security.Encryptor, error) {

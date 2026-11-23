@@ -34,6 +34,38 @@ revocation because some writes may already have completed. Unknown, invalid and
 other-client tokens retain the RFC 7009 success response for authenticated clients.
 Client deletion and rejected use of a deleted client's tokens emit audit reasons
 `client_deleted` and `client_revoked`.
+With audit logging enabled, a successful `PUT` emits the local audit event
+`client_updated`. Its `changed` list contains metadata and credential field names
+(for example `jwks`, `token_endpoint_auth_signing_alg` or
+`registration_access_token`), never their values or hashes. These names describe
+the persisted changes for investigation; they are not an OAuth or MCP event schema.
+
+## Snapshot and rollback recovery
+
+After a store rollback, keep authorization endpoints and protected-resource
+traffic closed until the current authorization state is independently established
+or reset. Restoring an older snapshot can restore deleted clients, revoked tokens,
+old signing-key metadata and old registration access tokens.
+
+Audit records are best-effort forensic evidence, not a recovery journal. Storage
+writes and audit delivery are separate: a crash, an uncertain write result or a
+log-sink failure can leave a committed change without an event. Logs spanning the
+whole interval do not prove that every change was recorded. Replaying only client
+and family events misses individual `token_revoked` and direct `all_tokens_revoked`
+operations; `token_revoked` does not identify the individual token to delete.
+`authorization_code_reuse_detected` contains a hashed user ID, and PII redaction
+can also hash client IDs. Targeted action requires an independently maintained
+mapping to the original identifiers. Do not weaken audit redaction for recovery.
+
+When the post-snapshot state or required identity mappings cannot be established,
+stop all old writers and restart every authorization-server replica against a
+fresh, empty key prefix. Do not import backed-up clients or token records into it.
+Re-provision clients with fresh credentials and require every user to sign in
+again. A new prefix does not invalidate self-issued JWTs: remove the old
+access-token verification keys from every accepting server, or keep protected
+traffic closed until all previously issued tokens have expired, including clock
+skew. Reopen traffic only after that prerequisite is satisfied. Registrations
+created after the snapshot must register again in either recovery path.
 
 ## Enabling
 
