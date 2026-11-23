@@ -3,6 +3,7 @@ package oauthconfig
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/giantswarm/mcp-oauth/providers"
@@ -34,19 +35,30 @@ func ProviderFromEnv() (providers.Provider, error) {
 // ProviderFromEnvWithPrefix is [ProviderFromEnv] with a caller-supplied prefix.
 // See [FromEnvWithPrefix] for the convention.
 func ProviderFromEnvWithPrefix(prefix string) (providers.Provider, error) {
-	name := os.Getenv(prefix + "PROVIDER")
-	switch name {
-	case "":
-		return nil, fmt.Errorf("%sPROVIDER is required (one of: dex, google, github)", prefix)
-	case "dex":
-		return DexFromEnvWithPrefix(prefix)
-	case "google":
-		return GoogleFromEnvWithPrefix(prefix)
-	case "github":
-		return GitHubFromEnvWithPrefix(prefix)
-	default:
-		return nil, fmt.Errorf("%sPROVIDER: unknown provider %q (want dex, google, or github)", prefix, name)
+	var settings Settings
+	if err := providerSettingsFromEnv(prefix, &settings); err != nil {
+		return nil, err
 	}
+	return configuredProvider(settings)
+}
+
+// providerSettingsFromEnv sets the one provider configuration that PROVIDER
+// selects.
+func providerSettingsFromEnv(prefix string, settings *Settings) error {
+	var err error
+	switch name := os.Getenv(prefix + "PROVIDER"); name {
+	case "dex":
+		settings.Dex, err = dexConfigFromEnv(prefix)
+	case "google":
+		settings.Google, err = googleConfigFromEnv(prefix)
+	case "github":
+		settings.GitHub, err = githubConfigFromEnv(prefix)
+	case "":
+		err = fmt.Errorf("%sPROVIDER is required (one of: dex, google, github)", prefix)
+	default:
+		err = fmt.Errorf("%sPROVIDER: unknown provider %q (want dex, google, or github)", prefix, name)
+	}
+	return err
 }
 
 // DexFromEnv reads OAUTH_DEX_* variables and returns a configured Dex provider.
@@ -56,6 +68,9 @@ func ProviderFromEnvWithPrefix(prefix string) (providers.Provider, error) {
 //	OAUTH_DEX_CLIENT_SECRET[_FILE]  (required)
 //	OAUTH_DEX_REDIRECT_URL          (optional; defaults to OAUTH_ISSUER + "/oauth/callback")
 //	OAUTH_DEX_CONNECTOR_ID          (optional) — e.g. "github", "ldap"
+//	OAUTH_DEX_SCOPES                (optional; comma-separated, must contain openid)
+//	OAUTH_DEX_AUDIENCES             (optional; comma-separated cross-client IDs, e.g. a Kubernetes API server's client)
+//	OAUTH_DEX_CA_FILE               (optional) — PEM bundle added to the system roots for Dex; a path, not a secret
 //
 // OAUTH_DEX_REDIRECT_URL is required ONLY when OAUTH_ISSUER is also unset.
 // When OAUTH_ISSUER is set (the typical deployment shape), the redirect URL
@@ -67,9 +82,6 @@ func ProviderFromEnvWithPrefix(prefix string) (providers.Provider, error) {
 //
 // Deliberately NOT exposed as env vars (opinionated defaults):
 //
-//   - Scopes — the default Dex-optimized scope set is strictly better than
-//     what an operator would hand-configure; callers needing custom scopes
-//     build dex.Config themselves.
 //   - HTTPClient — overriding the HTTP client is a programmatic concern
 //     (proxies, custom TLS, test doubles); the env surface would force the
 //     loader to invent a serialization for *http.Client.
@@ -112,13 +124,33 @@ func dexConfigFromEnv(prefix string) (*dex.Config, error) {
 		return nil, err
 	}
 
-	return &dex.Config{
+	configuration := &dex.Config{
 		IssuerURL:    issuer,
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		RedirectURL:  redirectURL,
 		ConnectorID:  os.Getenv(prefix + "DEX_CONNECTOR_ID"),
-	}, nil
+	}
+	if raw := os.Getenv(prefix + "DEX_SCOPES"); raw != "" {
+		scopes := splitAndTrim(raw, ",")
+		if !slices.Contains(scopes, "openid") {
+			return nil, fmt.Errorf("%sDEX_SCOPES must contain openid (OpenID Connect Core 3.1.2.1)", prefix)
+		}
+		configuration.Scopes = scopes
+	}
+	if raw := os.Getenv(prefix + "DEX_AUDIENCES"); raw != "" {
+		audiences := splitAndTrim(raw, ",")
+		if err := dex.ValidateAudiences(audiences); err != nil {
+			return nil, fmt.Errorf("%sDEX_AUDIENCES: %w", prefix, err)
+		}
+		configuration.AudienceResolver = func() []string { return audiences }
+	}
+	roots, err := LoadRootCAs(os.Getenv(prefix + "DEX_CA_FILE"))
+	if err != nil {
+		return nil, fmt.Errorf("%sDEX_CA_FILE: %w", prefix, err)
+	}
+	configuration.RootCAs = roots
+	return configuration, nil
 }
 
 // GoogleFromEnv reads OAUTH_GOOGLE_* variables and returns a configured Google
