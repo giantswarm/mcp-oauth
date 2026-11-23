@@ -1355,7 +1355,14 @@ func getAndUnmarshal[J any, T any](
 	notFoundErr error,
 	fromJSON func(*J) *T,
 ) (*T, error) {
-	data, err := s.client.Do(ctx, s.client.B().Get().Key(key).Build()).ToString()
+	return decodeResult(s.client.Do(ctx, s.client.B().Get().Key(key).Build()), notFoundErr, fromJSON)
+}
+
+// decodeResult unmarshals the JSON reply of one GET into the target type. It
+// maps a missing key to notFoundErr; any other reply error and a value that
+// does not decode are returned as errors.
+func decodeResult[J any, T any](result valkeygo.ValkeyResult, notFoundErr error, fromJSON func(*J) *T) (*T, error) {
+	data, err := result.ToString()
 	if err != nil {
 		if isNilError(err) {
 			return nil, notFoundErr
