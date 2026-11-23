@@ -99,6 +99,7 @@ func newOutageEnvWithFormat(t *testing.T, format server.AccessTokenFormat) *outa
 	client, secret, err := srv.RegisterClient(context.Background(), "gateway", server.ClientTypeConfidential, "",
 		[]string{"https://example.com/callback"}, []string{"openid", "email"}, testClientRemoteAddr, 10)
 	require.NoError(t, err)
+	allowTokenExchangeGrant(t, srv, client)
 
 	return &outageEnv{
 		handler: New(srv, logger), provider: provider, store: store, faulty: faulty, logs: logs,

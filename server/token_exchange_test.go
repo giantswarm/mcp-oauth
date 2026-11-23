@@ -26,6 +26,7 @@ func registerExchangeClient(t *testing.T, service *Server) string {
 	const clientID = "exchange-client"
 	require.NoError(t, service.SaveClient(t.Context(), &storage.Client{
 		ClientID: clientID, ClientType: ClientTypeConfidential, TokenEndpointAuthMethod: TokenEndpointAuthMethodBasic,
+		GrantTypes: []string{GrantTypeTokenExchange},
 	}))
 	return clientID
 }

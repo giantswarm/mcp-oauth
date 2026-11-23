@@ -71,6 +71,8 @@ func newFaultyFixture(t *testing.T, format AccessTokenFormat) *faultyGrantFixtur
 	client, secret, err := srv.RegisterClient(context.Background(), "gateway", ClientTypeConfidential, "",
 		[]string{"https://example.com/callback"}, []string{"openid", "email"}, "192.168.1.100", 10)
 	require.NoError(t, err)
+	client.GrantTypes = append(client.GrantTypes, GrantTypeTokenExchange)
+	require.NoError(t, store.SaveClient(context.Background(), client))
 
 	return &faultyGrantFixture{srv: srv, provider: provider, store: store, faulty: faulty, clientID: client.ClientID, clientSecret: secret}
 }

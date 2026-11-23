@@ -309,7 +309,7 @@ func brokeredTokenUsage(tokenType, issuedTokenType string) (string, error) {
 		case SubjectTokenTypeAccessToken:
 			return tokenTypeBearer, nil
 		case SubjectTokenTypeIDToken:
-			return "N_A", nil
+			return tokenTypeNotApplicable, nil
 		default:
 			return "", fmt.Errorf("%w: token_type is required for this representation", ErrInvalidExchangerResult)
 		}
@@ -317,8 +317,8 @@ func brokeredTokenUsage(tokenType, issuedTokenType string) (string, error) {
 	switch {
 	case strings.EqualFold(tokenType, tokenTypeBearer) && issuedTokenType != SubjectTokenTypeIDToken:
 		return tokenTypeBearer, nil
-	case strings.EqualFold(tokenType, "N_A") && issuedTokenType != SubjectTokenTypeAccessToken:
-		return "N_A", nil
+	case strings.EqualFold(tokenType, tokenTypeNotApplicable) && issuedTokenType != SubjectTokenTypeAccessToken:
+		return tokenTypeNotApplicable, nil
 	default:
 		return "", fmt.Errorf("%w: unsupported token_type for this representation", ErrInvalidExchangerResult)
 	}

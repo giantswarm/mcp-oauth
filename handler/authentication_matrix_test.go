@@ -44,6 +44,7 @@ func newMatrixClient(t *testing.T, handler *Handler, method string) matrixClient
 	}
 	registered, err := handler.server.RegisterClientWithKeys(t.Context(), "matrix", "confidential", method, []string{"https://example.com/callback"}, []string{"mcp"}, "192.0.2.1", 100, keys, algorithm)
 	require.NoError(t, err)
+	allowTokenExchangeGrant(t, handler.server, registered.Client)
 	return matrixClient{client: registered.Client, secret: registered.ClientSecret, key: key, registrationToken: registered.RegistrationToken}
 }
 
@@ -215,4 +216,13 @@ func TestAuthenticationMethodAmbiguousCredentials(t *testing.T) {
 			})
 		}
 	}
+}
+
+// allowTokenExchangeGrant registers the token exchange grant for client, as a
+// client provisioned for exchange would be; dynamic registration does not
+// grant it.
+func allowTokenExchangeGrant(t *testing.T, srv *server.Server, client *storage.Client) {
+	t.Helper()
+	client.GrantTypes = append(client.GrantTypes, server.GrantTypeTokenExchange)
+	require.NoError(t, srv.SaveClient(t.Context(), client))
 }

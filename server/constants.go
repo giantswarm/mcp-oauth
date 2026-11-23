@@ -45,7 +45,10 @@ const (
 	fieldActive     = "active"
 	fieldTokenType  = "token_type"
 	tokenTypeBearer = "Bearer"
-	tokenTypeDPoP   = "DPoP"
+	// tokenTypeNotApplicable is the RFC 8693 §2.2.1 token_type for an issued
+	// token that is not an access token.
+	tokenTypeNotApplicable = "N_A"
+	tokenTypeDPoP          = "DPoP"
 )
 
 func tokenTypeForKeyBinding(thumbprint string) string {

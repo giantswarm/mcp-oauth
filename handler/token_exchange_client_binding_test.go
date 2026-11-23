@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/giantswarm/mcp-oauth/internal/constants"
 	"github.com/giantswarm/mcp-oauth/providers/oidc"
 	"github.com/giantswarm/mcp-oauth/server"
 )
@@ -178,4 +179,18 @@ func TestSelfIssuedExchangeAdmitsOnlyRegisteredConfidentialClients(t *testing.T)
 	claims, err := oidc.ParseUnverifiedClaims(result.AccessToken)
 	require.NoError(t, err)
 	require.Equal(t, confidential.client.ClientID, claims["client_id"])
+}
+
+func TestSelfIssuedExchangeRejectsClientWithoutExchangeGrant(t *testing.T) {
+	handler, _ := setupTokenExchangeHandler(t, withSubjectValidator(selfIssuedSubjectValidator()))
+	registered, secret, err := handler.server.RegisterClient(t.Context(), "dynamic", server.ClientTypeConfidential, "",
+		[]string{"https://example.com/callback"}, []string{"mcp"}, "192.0.2.1", 100)
+	require.NoError(t, err)
+
+	request := newTokenExchangeRequest(happyExchangeForm())
+	request.SetBasicAuth(registered.ClientID, secret)
+	response := serveToken(handler, request)
+
+	requireOAuthError(t, response, http.StatusBadRequest, constants.ErrorCodeUnauthorizedClient)
+	require.NotContains(t, response.Body.String(), "access_token")
 }

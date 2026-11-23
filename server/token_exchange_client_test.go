@@ -80,3 +80,24 @@ func TestSelfIssuedExchangeClientStorageUnavailable(t *testing.T) {
 		}
 	}
 }
+
+func TestSelfIssuedExchangeRequiresRegisteredExchangeGrant(t *testing.T) {
+	service, _ := newActorExchangeServer(t)
+	logger, logs := captureLogger()
+	service.Auditor = security.NewAuditor(logger, true)
+	registered, _, err := service.RegisterClient(t.Context(), "dynamic", ClientTypeConfidential, "",
+		[]string{"https://example.com/callback"}, []string{"read"}, "192.0.2.1", 10)
+	require.NoError(t, err)
+
+	result, err := service.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{
+		ClientID: registered.ClientID,
+		SubjectExchange: SubjectExchange{
+			Subject: TypedToken{Token: "sub-tok", Type: SubjectTokenTypeIDToken},
+			Scope:   "read",
+		},
+	})
+	require.ErrorIs(t, err, ErrExchangeGrantNotRegistered)
+	require.Nil(t, result)
+	require.True(t, containsAuthFailure(logs.String(), "token_exchange_grant_not_registered"))
+	require.Contains(t, logs.String(), registered.ClientID)
+}

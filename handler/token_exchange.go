@@ -74,6 +74,7 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 	if actorToken == "" && actorTokenType != "" {
 		h.logAuthFailure(r.Context(), "", clientIP, "token_exchange_actor_token_missing",
 			"token exchange: actor_token_type without actor_token")
+		h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, constants.ErrorCodeInvalidRequest)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "actor_token missing")
 		h.writeError(w, constants.ErrorCodeInvalidRequest, "actor_token_type requires actor_token", http.StatusBadRequest)
@@ -83,6 +84,7 @@ func (h *Handler) handleTokenExchangeGrant(w http.ResponseWriter, r *http.Reques
 	if !supportedExchangeOutputType(requestedType, audience != "") {
 		h.logAuthFailure(r.Context(), "", clientIP, "token_exchange_requested_type_unsupported",
 			"token exchange: requested_token_type unsupported")
+		h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, constants.ErrorCodeInvalidRequest)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "unsupported requested_token_type")
 		h.writeError(w, constants.ErrorCodeInvalidRequest, "requested_token_type is not supported for this exchange", http.StatusBadRequest)
@@ -309,6 +311,14 @@ func (h *Handler) handleTokenExchangeError(
 	}
 	if errors.Is(err, server.ErrExchangeClientRequired) {
 		h.writeClientAuthenticationError(w, r, server.GrantTypeTokenExchange, span, startTime, err)
+		return
+	}
+	if errors.Is(err, server.ErrExchangeGrantNotRegistered) {
+		h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, constants.ErrorCodeUnauthorizedClient)
+		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, "token exchange grant not registered")
+		h.writeError(w, constants.ErrorCodeUnauthorizedClient,
+			"client is not registered for the token exchange grant", http.StatusBadRequest)
 		return
 	}
 	if errors.Is(err, server.ErrInvalidTarget) {
