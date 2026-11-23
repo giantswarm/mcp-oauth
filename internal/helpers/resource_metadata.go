@@ -12,7 +12,29 @@ func ProtectedResourceMetadataURL(resource string) string {
 	if err != nil {
 		return ""
 	}
-	parsed.Path = "/.well-known/oauth-protected-resource" + strings.TrimRight(parsed.Path, "/")
-	parsed.RawPath, parsed.RawQuery, parsed.Fragment = "", "", ""
+	resourcePath := parsed.EscapedPath()
+	if resourcePath == "/" {
+		resourcePath = ""
+	}
+	metadataPath := "/.well-known/oauth-protected-resource" + resourcePath
+	parsed.Path, err = url.PathUnescape(metadataPath)
+	if err != nil {
+		return ""
+	}
+	parsed.RawPath = metadataPath
+	parsed.Fragment, parsed.RawFragment = "", ""
 	return parsed.String()
+}
+
+// CanonicalEscapedPath normalizes percent-encoding within path segments without
+// turning an encoded slash into a path separator. It is a routing key, not a
+// replacement for the resource identifier.
+func CanonicalEscapedPath(resource *url.URL) string {
+	segments := strings.Split(resource.EscapedPath(), "/")
+	for index, segment := range segments {
+		// EscapedPath guarantees valid percent-encoding.
+		decoded, _ := url.PathUnescape(segment)
+		segments[index] = url.PathEscape(decoded)
+	}
+	return strings.Join(segments, "/")
 }

@@ -82,7 +82,7 @@ func TestSetupDexCustomTrustRoot(t *testing.T) {
 }
 
 func TestSetupRefusesInvalidConfiguration(t *testing.T) {
-	for _, name := range []string{"missing server", "missing provider", "multiple providers", "persistent without encryption", "invalid CA", "invalid server"} {
+	for _, name := range []string{"missing server", "missing provider", "multiple providers", "persistent without encryption", "invalid CA", "invalid server", "invalid trusted issuer"} {
 		t.Run(name, func(t *testing.T) {
 			settings := resolvedGoogleSettings()
 			switch name {
@@ -98,6 +98,8 @@ func TestSetupRefusesInvalidConfiguration(t *testing.T) {
 				settings.RootCAFile = filepath.Join(t.TempDir(), "missing")
 			case "invalid server":
 				settings.Server.Issuer = ""
+			case "invalid trusted issuer":
+				settings.TrustedIssuers = []server.TrustedIssuer{{Issuer: "https://issuer.example.com"}}
 			}
 			runtime, cleanup, err := oauthconfig.Setup(settings)
 			require.Error(t, err)
@@ -105,6 +107,35 @@ func TestSetupRefusesInvalidConfiguration(t *testing.T) {
 			require.Nil(t, cleanup)
 		})
 	}
+}
+
+func TestSetupDexFromEnvSharesResolvedCA(t *testing.T) {
+	var issuer string
+	identityProvider := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"issuer":%q,"authorization_endpoint":%q,"token_endpoint":%q,"jwks_uri":%q,"response_types_supported":["code"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"]}`, issuer, issuer+"/authorize", issuer+"/token", issuer+"/keys")
+	}))
+	t.Cleanup(identityProvider.Close)
+	issuer = identityProvider.URL
+	caFile := filepath.Join(t.TempDir(), "ca.pem")
+	require.NoError(t, os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: identityProvider.Certificate().Raw}), 0o600))
+	clearProviderEnv(t)
+	clearStorageEnv(t)
+	resourceEnv(t)
+	t.Setenv("OAUTH_PROVIDER", "dex")
+	t.Setenv("OAUTH_DEX_ISSUER_URL", issuer)
+	t.Setenv("OAUTH_DEX_CLIENT_ID", "client")
+	t.Setenv("OAUTH_DEX_CLIENT_SECRET", "test-secret")
+	t.Setenv("OAUTH_DEX_CA_FILE", caFile)
+	settings, err := oauthconfig.SettingsFromEnv()
+	require.NoError(t, err)
+	require.Same(t, settings.Dex.RootCAs, settings.Server.JWKSRootCAs)
+	require.NoError(t, os.Remove(caFile))
+	settings.Dex.DiscoveryTimeout = time.Second
+	runtime, cleanup, err := oauthconfig.Setup(settings)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, cleanup(context.WithoutCancel(t.Context()))) })
+	require.Same(t, settings.Dex.RootCAs, runtime.Server.Config.JWKSRootCAs)
 }
 
 func TestSetupValkeyLive(t *testing.T) {

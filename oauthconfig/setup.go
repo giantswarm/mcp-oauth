@@ -23,8 +23,11 @@ import (
 
 // Settings contains resolved configuration. Exactly one provider must be set.
 // Nil Valkey selects in-memory storage; persistent storage requires encryption.
+// TrustedIssuers are the issuers whose JWTs are accepted besides the server's
+// own tokens; see [TrustedIssuersFromEnv].
 type Settings struct {
 	Server          *server.Config
+	TrustedIssuers  []server.TrustedIssuer
 	Dex             *dex.Config
 	Google          *google.Config
 	GitHub          *github.Config
@@ -56,18 +59,12 @@ func Setup(settings Settings, options ...server.Option) (*Runtime, func(context.
 		logger = slog.Default()
 	}
 	serverConfig := *settings.Server
-	if settings.RootCAFile != "" {
-		roots, err := LoadRootCAs(settings.RootCAFile)
-		if err != nil {
-			return nil, nil, err
-		}
-		serverConfig.JWKSRootCAs = roots
-		if settings.Dex != nil {
-			dexConfig := *settings.Dex
-			dexConfig.RootCAs = roots
-			settings.Dex = &dexConfig
-		}
+	if err := applyRootCAs(&settings, &serverConfig); err != nil {
+		return nil, nil, err
 	}
+	// Settings go first so that a caller's explicit options, such as
+	// server.WithSubjectTokenValidator, take precedence.
+	options = append([]server.Option{server.WithTrustedIssuers(settings.TrustedIssuers)}, options...)
 	provider, err := configuredProvider(settings)
 	if err != nil {
 		return nil, nil, err
@@ -96,6 +93,25 @@ func Setup(settings Settings, options ...server.Option) (*Runtime, func(context.
 		return cleanupError
 	}
 	return &Runtime{Server: authorizationServer, Handler: handler.New(authorizationServer, logger)}, cleanup, nil
+}
+
+// applyRootCAs points the provider and the forwarded-token JWKS client at
+// RootCAFile, on copies so the caller's configuration stays unchanged.
+func applyRootCAs(settings *Settings, serverConfig *server.Config) error {
+	if settings.RootCAFile == "" {
+		return nil
+	}
+	roots, err := LoadRootCAs(settings.RootCAFile)
+	if err != nil {
+		return err
+	}
+	serverConfig.JWKSRootCAs = roots
+	if settings.Dex != nil {
+		dexConfig := *settings.Dex
+		dexConfig.RootCAs = roots
+		settings.Dex = &dexConfig
+	}
+	return nil
 }
 
 func configuredStorage(configuration *valkey.Config, encryptor *security.Encryptor, telemetry *instrumentation.Instrumentation, logger *slog.Logger) (storage.Combined, func(), error) {
@@ -143,7 +159,7 @@ func LoadRootCAs(caFile string) (*x509.CertPool, error) {
 	if caFile == "" {
 		return nil, nil
 	}
-	pem, err := os.ReadFile(caFile) // #nosec G304 -- operator-configured CA bundle
+	pem, err := os.ReadFile(caFile) // #nosec G304 G703 -- operator-configured CA bundle
 	if err != nil {
 		return nil, fmt.Errorf("read OAuth CA bundle: %w", err)
 	}

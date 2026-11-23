@@ -98,7 +98,7 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 		return nil, err
 	}
 
-	if err := loadClientMetadataFromEnv(prefix, cfg); err != nil {
+	if err := loadResourceServerFromEnv(prefix, cfg); err != nil {
 		return nil, err
 	}
 
@@ -136,9 +136,7 @@ func loadTrustedAllowlistsFromEnv(prefix string, cfg *server.Config) error {
 // (or CONSENT_COOKIE_KEY_FILE), a 32-byte key in base64 or hex.
 func loadConsentFromEnv(prefix string, cfg *server.Config) error {
 	if raw := os.Getenv(prefix + "TRUSTED_CLIENTS"); raw != "" {
-		dec := json.NewDecoder(strings.NewReader(raw))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&cfg.TrustedClients); err != nil {
+		if err := decodeJSON(raw, &cfg.TrustedClients); err != nil {
 			return fmt.Errorf("%sTRUSTED_CLIENTS: %w", prefix, err)
 		}
 	}
@@ -156,6 +154,18 @@ func loadConsentFromEnv(prefix string, cfg *server.Config) error {
 	}
 	cfg.ConsentCookieKey = key
 	return nil
+}
+
+// loadResourceServerFromEnv reads the client metadata, endpoint switch and
+// protected resource variables.
+func loadResourceServerFromEnv(prefix string, cfg *server.Config) error {
+	if err := loadClientMetadataFromEnv(prefix, cfg); err != nil {
+		return err
+	}
+	if err := loadEndpointSwitchesFromEnv(prefix, cfg); err != nil {
+		return err
+	}
+	return loadProtectedResourcesFromEnv(prefix, cfg)
 }
 
 // loadClientMetadataFromEnv reads PRE_REGISTERED_CLIENT_METADATA, a JSON array

@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -167,13 +168,29 @@ type Config struct {
 	// fail at once. Zero selects [DefaultStartupTimeout]; a negative value
 	// causes [New] to return an error.
 	StartupTimeout time.Duration
+
+	// MigrateFamilyRevocationIndex backfills an unindexed namespace on standalone
+	// Valkey while the store serves traffic. With Valkey Cluster or Sentinel, an
+	// unindexed namespace keeps compatibility lookups and logs an error; migrate
+	// it with the stopped-traffic MigrateFamilyRevocations method. The migrating
+	// replica needs the INFO command, which ACLs place in @dangerous.
+	// Replicas sharing the key prefix take turns through a lease. Every replica
+	// adopts a completed index, whether this setting is enabled or not.
+	// Enable it only when no binary built from a release older than v1.17.2
+	// writes to the key prefix: those releases revoke families without the
+	// shared marker, and indexed lookups do not see such revocations. An existing
+	// completion key is trusted; recovery after incompatible writers requires
+	// the stopped-traffic MigrateFamilyRevocations method instead.
+	// A walk exceeding the ten-minute lease disables automatic migration on
+	// this replica; use the stopped-traffic command with a larger timeout.
+	MigrateFamilyRevocationIndex bool
 }
 
 // Store is a Valkey-backed implementation of all storage interfaces.
 // It implements TokenStore, ClientStore, FlowStore, RefreshTokenFamilyStore, and TokenRevocationStore.
 type Store struct {
 	familyRevocationsIndexed   atomic.Bool
-	legacyFamilyMarkers        atomic.Bool
+	checkLegacyFamilyMarkers   atomic.Bool
 	client                     valkeygo.Client
 	prefix                     string
 	logger                     *slog.Logger
@@ -181,6 +198,16 @@ type Store struct {
 	refreshTokenTTL            time.Duration
 	maxTokenDataSize           int
 	operationTimeout           time.Duration
+
+	familyIndexPollInterval time.Duration
+	familyMigrationLease    time.Duration
+	migrateFamilyIndex      bool
+
+	// familyIndexingMu guards the family revocation index worker's lifecycle.
+	familyIndexingMu     sync.Mutex
+	familyIndexingClosed bool
+	stopFamilyIndexing   context.CancelFunc
+	familyIndexingDone   chan struct{}
 
 	// encryptor provides optional token encryption at rest; immutable after New.
 	encryptor *security.Encryptor
@@ -275,6 +302,9 @@ func New(cfg Config, opts ...Option) (*Store, error) {
 		refreshTokenTTL:            refreshTokenTTL,
 		maxTokenDataSize:           maxTokenDataSize,
 		operationTimeout:           operationTimeout,
+		familyIndexPollInterval:    defaultFamilyIndexPollInterval,
+		familyMigrationLease:       defaultFamilyMigrationLease,
+		migrateFamilyIndex:         cfg.MigrateFamilyRevocationIndex,
 	}
 
 	for _, opt := range opts {
@@ -288,6 +318,7 @@ func New(cfg Config, opts ...Option) (*Store, error) {
 	}
 
 	s.wireInstrumentation(logger)
+	s.startFamilyRevocationIndexing()
 
 	logger.Debug("storage connected", "store", s)
 	return s, nil
@@ -295,6 +326,7 @@ func New(cfg Config, opts ...Option) (*Store, error) {
 
 // Close closes the Valkey client connection.
 func (s *Store) Close() {
+	s.stopFamilyRevocationIndexing(true)
 	s.client.Close()
 	s.logger.Debug("storage connection closed", "store", s)
 }

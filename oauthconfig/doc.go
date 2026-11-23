@@ -70,6 +70,36 @@
 //   - OAUTH_CONSENT_COOKIE_KEY                — 32-byte AES-GCM key for the consent cookies,
 //     base64 or hex; optional override of the store's automatic issuer-specific key
 //
+// Protected resources (RFC 8707, RFC 9728). Each value is set once:
+//
+//   - OAUTH_RESOURCE                          — the main resource identifier, an absolute https URI
+//     without a fragment, normally the MCP endpoint URL (server.Config.ResourceIdentifier;
+//     defaults to OAUTH_ISSUER)
+//
+//   - OAUTH_AUTHORIZATION_SERVERS             — comma-separated issuer identifiers the main
+//     resource's metadata advertises. [SettingsFromEnv] refuses one that is neither
+//     OAUTH_ISSUER nor a trusted issuer. Unset advertises OAUTH_ISSUER
+//
+//   - OAUTH_ADDITIONAL_RESOURCES              — JSON array of {"resource", "scopesSupported",
+//     "authorizationServers"} for extra resources on the main resource's origin, each by its
+//     full URL; authorizationServers defaults to OAUTH_AUTHORIZATION_SERVERS
+//     (server.Config.ResourceMetadataByPath)
+//
+//   - OAUTH_TRUSTED_ISSUERS                   — JSON array of issuers whose JWTs are accepted;
+//     read by [TrustedIssuersFromEnv], never advertised
+//
+//   - OAUTH_REQUIRE_RESOURCE_ACCESS_TOKENS    (default false) — accept only tokens whose aud names
+//     this server's resource (server.Config.RequireResourceAccessTokens)
+//
+// Endpoint switches, all default false:
+//
+//   - OAUTH_ENABLE_INTROSPECTION_ENDPOINT          — RFC 7662
+//   - OAUTH_ENABLE_USERINFO_ENDPOINT               — OpenID Connect Core 5.3
+//   - OAUTH_ENABLE_CLIENT_CONFIGURATION_ENDPOINT   — RFC 7592 (server.Config.EnableClientManagementEndpoint)
+//
+// [SettingsFromEnv] reads all of the above, the provider and storage into the
+// [Settings] that [Setup] takes.
+//
 // Defaults are not applied in this package. [FromEnv] only populates the
 // fields it reads; server.New runs applyDefaults afterwards and is the single
 // source of truth for default values.

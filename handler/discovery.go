@@ -51,8 +51,16 @@ func (h *Handler) ServeProtectedResourceMetadata(w http.ResponseWriter, r *http.
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	security.SetDiscoveryCacheHeaders(w, h.server.Config.DiscoveryCacheMaxAge)
 
-	resourcePath := h.extractResourcePath(r.URL.Path)
+	resourcePath := h.extractResourcePath(r.URL.EscapedPath())
 	pathConfig := h.findPathConfig(resourcePath)
+	if resourcePath == "/" && pathConfig == nil {
+		resource := h.server.Config.GetResourceIdentifier()
+		if parsed, err := url.Parse(resource); err == nil {
+			if configuration := h.findPathConfig(parsed.EscapedPath()); configuration != nil && configuration.ResourceIdentifier == resource {
+				pathConfig = configuration
+			}
+		}
+	}
 	metadata := h.buildProtectedResourceMetadata(resourcePath, pathConfig)
 
 	h.recordHTTPMetrics(r.Context(), endpointProtectedResource, http.MethodGet, http.StatusOK, startTime)
@@ -86,6 +94,11 @@ func (h *Handler) findPathConfig(resourcePath string) *server.ProtectedResourceC
 	if len(h.server.Config.ResourceMetadataByPath) == 0 {
 		return nil
 	}
+	resourceURL, err := url.ParseRequestURI(resourcePath)
+	if err != nil {
+		return nil
+	}
+	resourcePath = helpers.CanonicalEscapedPath(resourceURL)
 
 	var bestMatchLength int
 	var bestConfig *server.ProtectedResourceConfig
@@ -99,7 +112,7 @@ func (h *Handler) findPathConfig(resourcePath string) *server.ProtectedResourceC
 			continue
 		}
 		matchLength := 0
-		for _, candidate := range []string{normalizedConfigPath, resourceURL.Path} {
+		for _, candidate := range []string{normalizedConfigPath, helpers.CanonicalEscapedPath(resourceURL)} {
 			if helpers.PathMatchesPrefix(resourcePath, candidate) {
 				matchLength = max(matchLength, len(candidate))
 			}
@@ -195,9 +208,7 @@ func (h *Handler) RegisterProtectedResourceMetadataRoutes(mux *http.ServeMux, mc
 	// Track registered paths to avoid duplicate registrations
 	registeredPaths := make(map[string]bool)
 	registeredPaths[oauth.MetadataPathProtectedResource] = true
-	if resource, err := url.Parse(h.server.Config.GetResourceIdentifier()); err == nil && resource.Path != "" && resource.Path != "/" {
-		h.registerMetadataSubPath(mux, resource.Path, registeredPaths)
-	}
+	h.registerMetadataSubPath(mux, h.server.Config.GetResourceIdentifier(), registeredPaths)
 
 	// Register explicit mcpPath if provided (backward compatibility)
 	if mcpPath != "" && mcpPath != "/" {
@@ -207,41 +218,45 @@ func (h *Handler) RegisterProtectedResourceMetadataRoutes(mux *http.ServeMux, mc
 	// Register paths from ResourceMetadataByPath configuration (MCP 2025-11-25)
 	for configPath, configuration := range h.server.Config.ResourceMetadataByPath {
 		h.registerMetadataSubPath(mux, configPath, registeredPaths)
-		if resource, err := url.Parse(h.server.Config.PathResourceIdentifier(configPath, configuration)); err == nil && resource.Path != "" {
-			h.registerMetadataSubPath(mux, resource.Path, registeredPaths)
-		}
+		h.registerMetadataSubPath(mux, h.server.Config.PathResourceIdentifier(configPath, configuration), registeredPaths)
 	}
 }
 
-// registerMetadataSubPath registers a single sub-path for Protected Resource Metadata.
-// It validates the path for security concerns and avoids duplicate registrations.
-func (h *Handler) registerMetadataSubPath(mux *http.ServeMux, resourcePath string, registered map[string]bool) {
-	// SECURITY: Validate path before registration to prevent attacks
-	if err := h.validateMetadataPath(resourcePath); err != nil {
+// registerMetadataSubPath registers a literal protected resource metadata path.
+func (h *Handler) registerMetadataSubPath(mux *http.ServeMux, resource string, registered map[string]bool) {
+	resourceURL, err := url.Parse(resource)
+	if err != nil {
+		h.logger.Warn("Rejecting invalid resource metadata URL", "resource", resource, paramError, err)
+		return
+	}
+	if err := h.validateMetadataPath(resourceURL.Path); err != nil {
 		h.logger.Warn("Rejecting invalid metadata path registration",
-			"path", resourcePath,
+			"path", resourceURL.Path,
 			paramError, err,
 			"security_event", "invalid_metadata_path")
 		return
 	}
-
-	// Clean and normalize the path
-	cleanPath := path.Clean("/" + strings.TrimPrefix(resourcePath, "/"))
-	subPath := oauth.MetadataPathProtectedResource + cleanPath
-
-	// Skip if already registered
-	if registered[subPath] {
-		h.logger.Debug("Skipping duplicate metadata path registration",
-			"path", subPath)
+	if !resourceURL.IsAbs() {
+		resource = path.Clean("/" + strings.TrimPrefix(resource, "/"))
+	}
+	metadataURL, err := url.Parse(helpers.ProtectedResourceMetadataURL(resource))
+	if err != nil {
+		h.logger.Warn("Rejecting invalid resource metadata URL", "resource", resource, paramError, err)
 		return
 	}
-
-	h.logger.Debug("Registering metadata sub-path endpoint",
-		"path", subPath,
-		"resource_path", resourcePath)
-
-	mux.HandleFunc(subPath, h.ServeProtectedResourceMetadata)
-	registered[subPath] = true
+	subPath := metadataURL.EscapedPath()
+	routePath := helpers.CanonicalEscapedPath(metadataURL)
+	if registered[routePath] {
+		h.logger.Debug("Skipping duplicate metadata path registration", "path", subPath)
+		return
+	}
+	pattern := subPath
+	if strings.HasSuffix(pattern, "/") {
+		pattern += "{$}"
+	}
+	h.logger.Debug("Registering metadata sub-path endpoint", "path", subPath, "resource_path", resourceURL.EscapedPath())
+	mux.HandleFunc(pattern, h.ServeProtectedResourceMetadata)
+	registered[routePath] = true
 }
 
 // validateMetadataPath validates a metadata path for security concerns.

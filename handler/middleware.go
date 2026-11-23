@@ -265,7 +265,7 @@ func (h *Handler) setUnauthorizedChallenge(w http.ResponseWriter, r *http.Reques
 	if !h.server.Config.DisableWWWAuthenticateMetadata {
 		// Get endpoint-specific scopes (or fallback to defaults)
 		scope := h.getChallengeScopes(r)
-		w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, code, description, r.URL.Path))
+		w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, code, description, r.URL.EscapedPath()))
 	} else {
 		// Minimal header for backward compatibility with legacy clients (opt-in)
 		w.Header().Set("WWW-Authenticate", `Bearer realm="oauth"`)
@@ -564,7 +564,7 @@ func (h *Handler) validateTokenScopesFromMetadata(w http.ResponseWriter, r *http
 		}
 		description = fmt.Sprintf("Token lacks required scopes for endpoint %s", safePath)
 	}
-	h.writeInsufficientScopeError(w, requiredScopes, description, r.URL.Path)
+	h.writeInsufficientScopeError(w, requiredScopes, description, r.URL.EscapedPath())
 	return false
 }
 

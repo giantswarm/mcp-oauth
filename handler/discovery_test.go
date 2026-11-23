@@ -1373,3 +1373,23 @@ func TestHandler_ServeAuthorizationServerMetadata_CacheMaxAgeOverride(t *testing
 
 	require.Equal(t, "public, max-age=90", w.Header().Get("Cache-Control"))
 }
+
+func TestHandler_RegisterProtectedResourceMetadataRoutes_RootPathEntry(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+	handler.server.Config.ResourceMetadataByPath = map[string]server.ProtectedResourceConfig{
+		"/": {AuthorizationServers: []string{"https://dex.example.com"}},
+	}
+
+	mux := http.NewServeMux()
+	handler.RegisterProtectedResourceMetadataRoutes(mux, "")
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, []string{"https://dex.example.com"}, decodeProtectedResourceMetadata(t, w).AuthorizationServers)
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource/unknown", nil))
+	require.Equal(t, http.StatusNotFound, w.Code)
+}

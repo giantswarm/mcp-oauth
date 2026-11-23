@@ -20,11 +20,11 @@ func main() {
 	database := flag.Int("db", 0, "Valkey database")
 	passwordFile := flag.String("password-file", "", "File containing the Valkey password")
 	useTLS := flag.Bool("tls", false, "Use TLS with system certificate verification")
-	writersStopped := flag.Bool("writers-stopped", false, "Confirm all OAuth traffic and old writers are stopped")
+	writersStopped := flag.Bool("writers-stopped", false, "Confirm all OAuth server replicas and other writers to the key prefix are stopped")
 	timeout := flag.Duration("timeout", 10*time.Minute, "Migration deadline")
 	flag.Parse()
 	if !*writersStopped || *address == "" {
-		fmt.Fprintln(os.Stderr, "Stop all OAuth traffic and old writers, then provide -writers-stopped and -address")
+		fmt.Fprintln(os.Stderr, "Stop all OAuth server replicas and other writers, then provide -writers-stopped and -address")
 		os.Exit(1)
 	}
 	configuration := valkey.Config{Address: *address, KeyPrefix: *prefix, DB: *database}

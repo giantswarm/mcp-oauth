@@ -114,6 +114,7 @@ type Server struct {
 	// Non-nil enables the trusted-issuer Bearer branch in ValidateToken;
 	// token-exchange uses the same instance via subjectValidators.
 	trustedIssuerValidator *OIDCValidator
+	initializationError    error
 	// dpopReplayCache is used to detect replayed DPoP proof JTIs.
 	dpopReplayCache DPoPReplayCache
 	// dpopNonceProvider enforces RFC 9449 §8 nonces when non-nil.
@@ -170,6 +171,15 @@ func New(
 
 	// Create cleanup context for background goroutines
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
+	// An option may replace the metadata fetch rate limiter; only the one New
+	// creates is stopped when construction fails.
+	var ownRateLimiter *security.RateLimiter
+	constructed := false
+	defer func() {
+		if !constructed {
+			stopBackgroundWork(cleanupCancel, ownRateLimiter)
+		}
+	}()
 
 	srv := &Server{
 		provider:                   provider,
@@ -204,14 +214,17 @@ func New(
 	srv.attachRevokedTokenStore(tokenStore)
 
 	srv.initializeMetadataSupport()
+	ownRateLimiter = srv.metadataFetchRateLimiter
 	srv.validateProviderDefaultScopes(logger)
 	srv.logForwardedSessionIDKeyFingerprint()
 
 	for _, opt := range opts {
 		opt(srv)
 	}
+	if srv.initializationError != nil {
+		return nil, srv.initializationError
+	}
 	if err := srv.initializeConsentCookieKey(cleanupCtx); err != nil {
-		cleanupCancel()
 		return nil, err
 	}
 
@@ -239,7 +252,17 @@ func New(
 		srv.Auditor = security.NewAuditor(nil, false)
 	}
 
+	constructed = true
 	return srv, nil
+}
+
+// stopBackgroundWork ends the goroutines New started for a server it does not
+// return.
+func stopBackgroundWork(cancel context.CancelFunc, rateLimiter *security.RateLimiter) {
+	cancel()
+	if rateLimiter != nil {
+		rateLimiter.Stop()
+	}
 }
 
 // initializeAccessTokenIssuer wires the AccessTokenIssuer implementation

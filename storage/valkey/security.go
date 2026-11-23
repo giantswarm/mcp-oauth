@@ -373,8 +373,7 @@ type familyMemberMetadata struct {
 // revocation marker excluded) in at most two pipelined batches, so the cost in
 // round trips does not grow with the family: one batch reads the current-layout
 // keys, and a second one reads the legacy keys of the members whose current key
-// is missing. It is the batched form of readMemberFamilyMetadata. The result
-// keeps the order of tokens.
+// is missing. The result keeps the order of tokens.
 func (s *Store) readFamilyMembersMetadata(ctx context.Context, tokens []string) []familyMemberMetadata {
 	members := make([]familyMemberMetadata, 0, len(tokens))
 	for _, token := range tokens {
@@ -415,20 +414,6 @@ func (s *Store) readMembersMetadataBatch(ctx context.Context, members []familyMe
 		}
 	}
 	return missing
-}
-
-// readMemberFamilyMetadata reads one family member's metadata, falling back to
-// the key layout written by pre-migration pods. It returns
-// ErrRefreshTokenFamilyNotFound when the member has metadata under neither.
-func (s *Store) readMemberFamilyMetadata(ctx context.Context, refreshToken string) (*storage.RefreshTokenFamilyMetadata, error) {
-	meta, err := getAndUnmarshal(ctx, s, s.refreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
-	if err == nil {
-		return meta, nil
-	}
-	if !errors.Is(err, storage.ErrRefreshTokenFamilyNotFound) {
-		return nil, err
-	}
-	return getAndUnmarshal(ctx, s, s.legacyRefreshTokenMetaKey(refreshToken), storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
 }
 
 // GetActiveRefreshTokenByFamily returns the most recent (highest generation)
