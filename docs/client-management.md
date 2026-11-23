@@ -75,12 +75,43 @@ Fresh storage namespaces used exclusively by the new release use a direct family
 revocation lookup. Existing namespaces
 keep the compatibility lookup until their older revocation records are migrated.
 No revoked result is discarded, and storage errors continue to refuse requests.
+Drain writers older than v1.17.2 before upgrading, including when no token
+families currently exist: a namespace without family records is indexed at
+startup.
 
-Drain old writers before upgrading, including when no token families currently
-exist. Stop all OAuth traffic and all old writers before migration. Keep them stopped
-until the command succeeds. Keep Valkey's topology stable during migration.
-Build the migration tool from the same library release
-that the OAuth servers will use:
+#### While serving traffic
+
+Once no binary built from a release older than v1.17.2 writes to the key
+prefix, set `MigrateFamilyRevocations` in the Valkey `Config` of the OAuth
+servers:
+
+```go
+store, err := valkey.New(valkey.Config{
+    Address:                  address,
+    KeyPrefix:                prefix,
+    MigrateFamilyRevocations: true,
+})
+```
+
+The store keeps serving with compatibility lookups and backfills the index in
+the background. Replicas that share the prefix take turns through a lease,
+so one walks the namespace at a time. When the walk completes, every replica on
+this release switches to indexed lookups within 30 seconds, whether or not it
+sets `MigrateFamilyRevocations`. A failed walk, or one that overlaps a Valkey
+topology change, keeps compatibility lookups and is retried.
+
+Releases from v1.17.2 on record a family revocation in the shared marker before
+they touch its members, so revocations made during the walk are already
+indexed. Older releases do not: a revocation they write to a migrated namespace
+is invisible to indexed lookups. Drain them before enabling the setting, and
+after a rollback or snapshot restore to such a release, migrate again.
+
+#### With traffic stopped
+
+When older writers may still be running, stop all OAuth traffic and all old
+writers, and keep them stopped until the command succeeds. Keep Valkey's
+topology stable during migration. Build the migration tool from the same
+library release that the OAuth servers will use:
 
 ```bash
 go build -o "$HOME/.cache/tmp/mcp-oauth-migrate-family-revocations" ./cmd/migrate-family-revocations
@@ -97,7 +128,7 @@ Do not restore traffic after a failed or interrupted migration.
 
 Restart every OAuth server on the new release after migration, then restore traffic.
 Old binaries must not write to a migrated namespace. A rollback or snapshot restore
-requires another stopped-traffic migration before the new release resumes serving.
+requires another migration before the new release resumes serving.
 Keep the same precautions for lost client retirement state and JWT signing keys.
 
 Self-issued exchange JWTs without a client binding remain valid until expiry and

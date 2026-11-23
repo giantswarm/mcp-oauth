@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -121,26 +120,11 @@ func (s *Store) walkNodeFamilyKeys(ctx context.Context, node valkeygo.Client, vi
 }
 
 func (s *Store) migrateFamilyRevocation(ctx context.Context, key string) error {
-	members, err := s.client.Do(ctx, s.client.B().Smembers().Key(key).Build()).AsStrSlice()
-	if err != nil {
-		return fmt.Errorf("read family revocation members: %w", err)
-	}
-	if slices.Contains(members, familyRevocationMarker) {
+	marked, err := s.indexFamilyRevocation(ctx, key)
+	if marked {
 		s.legacyFamilyMarkers.Store(true)
 	}
-	remaining, err := s.client.Do(ctx, s.client.B().Pttl().Key(key).Build()).AsInt64()
-	if err != nil {
-		return fmt.Errorf("read family revocation retention: %w", err)
-	}
-	for _, member := range members {
-		if member == familyRevocationMarker {
-			continue
-		}
-		if err := s.migrateRevokedMember(ctx, member, remaining); err != nil {
-			return err
-		}
-	}
-	return nil
+	return err
 }
 
 func (s *Store) migrateRevokedMember(ctx context.Context, member string, remaining int64) error {

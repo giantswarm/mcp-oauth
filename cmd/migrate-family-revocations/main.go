@@ -20,7 +20,7 @@ func main() {
 	database := flag.Int("db", 0, "Valkey database")
 	passwordFile := flag.String("password-file", "", "File containing the Valkey password")
 	useTLS := flag.Bool("tls", false, "Use TLS with system certificate verification")
-	writersStopped := flag.Bool("writers-stopped", false, "Confirm all OAuth traffic and old writers are stopped")
+	writersStopped := flag.Bool("writers-stopped", false, "Confirm all OAuth traffic and writers older than v1.17.2 are stopped")
 	timeout := flag.Duration("timeout", 10*time.Minute, "Migration deadline")
 	flag.Parse()
 	if !*writersStopped || *address == "" {

@@ -167,6 +167,15 @@ type Config struct {
 	// fail at once. Zero selects [DefaultStartupTimeout]; a negative value
 	// causes [New] to return an error.
 	StartupTimeout time.Duration
+
+	// MigrateFamilyRevocations backfills the family revocation index in the
+	// background while the store serves traffic. Replicas that share the key
+	// prefix take turns through a lease, and every replica, with or without
+	// this setting, switches to indexed lookups once the index is complete.
+	// Enable it only when no binary built from a release older than v1.17.2
+	// writes to the key prefix: those releases revoke families without the
+	// shared marker, and indexed lookups do not see such revocations.
+	MigrateFamilyRevocations bool
 }
 
 // Store is a Valkey-backed implementation of all storage interfaces.
@@ -181,6 +190,11 @@ type Store struct {
 	refreshTokenTTL            time.Duration
 	maxTokenDataSize           int
 	operationTimeout           time.Duration
+
+	familyIndexPollInterval time.Duration
+	familyMigrationLease    time.Duration
+	stopBackground          context.CancelFunc
+	backgroundDone          chan struct{}
 
 	// encryptor provides optional token encryption at rest; immutable after New.
 	encryptor *security.Encryptor
@@ -275,6 +289,8 @@ func New(cfg Config, opts ...Option) (*Store, error) {
 		refreshTokenTTL:            refreshTokenTTL,
 		maxTokenDataSize:           maxTokenDataSize,
 		operationTimeout:           operationTimeout,
+		familyIndexPollInterval:    defaultFamilyIndexPollInterval,
+		familyMigrationLease:       defaultFamilyMigrationLease,
 	}
 
 	for _, opt := range opts {
@@ -288,6 +304,7 @@ func New(cfg Config, opts ...Option) (*Store, error) {
 	}
 
 	s.wireInstrumentation(logger)
+	s.startFamilyRevocationIndexing(cfg.MigrateFamilyRevocations)
 
 	logger.Debug("storage connected", "store", s)
 	return s, nil
@@ -295,6 +312,7 @@ func New(cfg Config, opts ...Option) (*Store, error) {
 
 // Close closes the Valkey client connection.
 func (s *Store) Close() {
+	s.stopFamilyRevocationIndexing()
 	s.client.Close()
 	s.logger.Debug("storage connection closed", "store", s)
 }
