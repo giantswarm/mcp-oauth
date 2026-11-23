@@ -35,19 +35,30 @@ func ProviderFromEnv() (providers.Provider, error) {
 // ProviderFromEnvWithPrefix is [ProviderFromEnv] with a caller-supplied prefix.
 // See [FromEnvWithPrefix] for the convention.
 func ProviderFromEnvWithPrefix(prefix string) (providers.Provider, error) {
-	name := os.Getenv(prefix + "PROVIDER")
-	switch name {
-	case "":
-		return nil, fmt.Errorf("%sPROVIDER is required (one of: dex, google, github)", prefix)
-	case "dex":
-		return DexFromEnvWithPrefix(prefix)
-	case "google":
-		return GoogleFromEnvWithPrefix(prefix)
-	case "github":
-		return GitHubFromEnvWithPrefix(prefix)
-	default:
-		return nil, fmt.Errorf("%sPROVIDER: unknown provider %q (want dex, google, or github)", prefix, name)
+	var settings Settings
+	if err := providerSettingsFromEnv(prefix, &settings); err != nil {
+		return nil, err
 	}
+	return configuredProvider(settings)
+}
+
+// providerSettingsFromEnv sets the one provider configuration that PROVIDER
+// selects.
+func providerSettingsFromEnv(prefix string, settings *Settings) error {
+	var err error
+	switch name := os.Getenv(prefix + "PROVIDER"); name {
+	case "dex":
+		settings.Dex, err = dexConfigFromEnv(prefix)
+	case "google":
+		settings.Google, err = googleConfigFromEnv(prefix)
+	case "github":
+		settings.GitHub, err = githubConfigFromEnv(prefix)
+	case "":
+		err = fmt.Errorf("%sPROVIDER is required (one of: dex, google, github)", prefix)
+	default:
+		err = fmt.Errorf("%sPROVIDER: unknown provider %q (want dex, google, or github)", prefix, name)
+	}
+	return err
 }
 
 // DexFromEnv reads OAUTH_DEX_* variables and returns a configured Dex provider.

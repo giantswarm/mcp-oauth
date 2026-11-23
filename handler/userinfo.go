@@ -108,7 +108,7 @@ func (h *Handler) ServeUserInfo(w http.ResponseWriter, r *http.Request) {
 	if _, ok := scopeSet["openid"]; !ok {
 		instrumentation.SetSpanError(span, "openid scope missing")
 		h.recordHTTPMetrics(r.Context(), endpointUserInfo, r.Method, http.StatusForbidden, startTime)
-		h.writeInsufficientScopeError(w, []string{"openid"}, "openid scope is required to call /userinfo", r.URL.Path)
+		h.writeInsufficientScopeError(w, []string{"openid"}, "openid scope is required to call /userinfo", r.URL.EscapedPath())
 		return
 	}
 

@@ -76,10 +76,9 @@ The `jwksURI` spelling describes the JWKS endpoint; RFC 8414 metadata itself use
 settings also apply to token-exchange subject validation.
 
 Unknown fields, trailing JSON values, duplicate issuer entries and invalid resource
-paths are refused at load time. `Setup` and the server constructors reject missing
-issuer or JWKS fields and invalid actor policies in programmatic trusted-issuer
-configuration. Invalid `WithTrustedIssuers` options cannot silently leave validation
-disabled.
+paths are refused at load time. `Setup` and the server constructors return an error
+for a programmatic trusted-issuer list with a missing issuer or JWKS field or an
+invalid actor policy.
 
 Resource metadata URLs preserve escaped path segments and query components.
 Trailing slashes below the origin are significant and receive exact routes rather
@@ -87,8 +86,9 @@ than subtree patterns. Prefer the slash-free canonical form unless a slash has
 meaning for the resource. Origin comparisons use scheme, hostname and effective
 port, so HTTPS with omitted port and explicit port 443 share an origin; the
 configured resource identifiers remain unchanged.
-Equivalent escaped spellings that collide at one metadata route are refused;
-an encoded slash remains distinct from a path separator.
+Equivalent escaped spellings that collide at one metadata route are refused, and so
+are two resources that differ only by a trailing slash; an encoded slash remains
+distinct from a path separator.
 
 See [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728.html#section-3) for discovery,
 [RFC 7592](https://www.rfc-editor.org/rfc/rfc7592.html#section-2) for the Client

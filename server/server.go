@@ -209,18 +209,21 @@ func New(
 	srv.validateProviderDefaultScopes(logger)
 	srv.logForwardedSessionIDKeyFingerprint()
 
-	for _, opt := range opts {
-		opt(srv)
-	}
-	if srv.initializationError != nil {
+	stopBackgroundWork := func() {
 		cleanupCancel()
 		if metadataRateLimiter != nil {
 			metadataRateLimiter.Stop()
 		}
+	}
+	for _, opt := range opts {
+		opt(srv)
+	}
+	if srv.initializationError != nil {
+		stopBackgroundWork()
 		return nil, srv.initializationError
 	}
 	if err := srv.initializeConsentCookieKey(cleanupCtx); err != nil {
-		cleanupCancel()
+		stopBackgroundWork()
 		return nil, err
 	}
 

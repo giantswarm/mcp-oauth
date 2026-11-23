@@ -77,8 +77,8 @@
 //     defaults to OAUTH_ISSUER)
 //
 //   - OAUTH_AUTHORIZATION_SERVERS             — comma-separated issuer identifiers the main
-//     resource's metadata advertises; each must be OAUTH_ISSUER or a trusted issuer.
-//     Unset advertises OAUTH_ISSUER
+//     resource's metadata advertises. [SettingsFromEnv] refuses one that is neither
+//     OAUTH_ISSUER nor a trusted issuer. Unset advertises OAUTH_ISSUER
 //
 //   - OAUTH_ADDITIONAL_RESOURCES              — JSON array of {"resource", "scopesSupported",
 //     "authorizationServers"} for extra resources on the main resource's origin, each by its

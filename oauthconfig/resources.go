@@ -24,11 +24,14 @@ type additionalResource struct {
 // metadata entry carries its identifier explicitly, so the document's
 // resource is the URL its well-known path was derived from (RFC 9728 §3.3).
 func loadProtectedResourcesFromEnv(prefix string, configuration *server.Config) error {
-	if raw := os.Getenv(prefix + "RESOURCE"); raw != "" {
+	source := prefix + "RESOURCE"
+	if raw := os.Getenv(source); raw != "" {
 		configuration.ResourceIdentifier = raw
+	} else {
+		source = prefix + "ISSUER"
 	}
 	main := configuration.GetResourceIdentifier()
-	if err := validateResourceIdentifier(prefix+"RESOURCE", main, configuration.AllowInsecureHTTP); err != nil {
+	if err := validateResourceIdentifier(source, main, configuration.AllowInsecureHTTP); err != nil {
 		return err
 	}
 	authorizationServers := splitAndTrim(os.Getenv(prefix+"AUTHORIZATION_SERVERS"), ",")
@@ -45,23 +48,33 @@ func loadProtectedResourcesFromEnv(prefix string, configuration *server.Config) 
 
 	mainURL, err := url.Parse(main)
 	if err != nil {
-		return fmt.Errorf("%sRESOURCE: %w", prefix, err)
+		return fmt.Errorf("%s: %w", source, err)
 	}
 	byPath := make(map[string]server.ProtectedResourceConfig, len(extras)+1)
+	mainPath := metadataPath(mainURL)
 	if len(authorizationServers) > 0 {
-		byPath[metadataPath(mainURL)] = server.ProtectedResourceConfig{
+		byPath[mainPath] = server.ProtectedResourceConfig{
 			ResourceIdentifier:   main,
 			AuthorizationServers: authorizationServers,
 		}
 	}
+	// Metadata lookup ignores a trailing slash, so resources that differ only
+	// by one would be served each other's metadata.
+	mainRoute := strings.TrimRight(mainPath, "/")
+	routes := map[string]bool{mainRoute: true}
 	for i, extra := range extras {
 		name := fmt.Sprintf("%sADDITIONAL_RESOURCES[%d]", prefix, i)
 		extraPath, err := extra.validate(name, mainURL, configuration.AllowInsecureHTTP)
 		if err != nil {
 			return err
 		}
-		if _, ok := byPath[extraPath]; ok {
-			return fmt.Errorf("%s.resource: %q is listed twice", name, extra.Resource)
+		switch route := strings.TrimRight(extraPath, "/"); {
+		case route == mainRoute:
+			return fmt.Errorf("%s.resource: %q is the main resource; set it with the RESOURCE variable", name, extra.Resource)
+		case routes[route]:
+			return fmt.Errorf("%s.resource: %q is listed twice, ignoring a trailing slash", name, extra.Resource)
+		default:
+			routes[route] = true
 		}
 		servers := extra.AuthorizationServers
 		if len(servers) == 0 {
@@ -78,7 +91,7 @@ func loadProtectedResourcesFromEnv(prefix string, configuration *server.Config) 
 }
 
 func additionalResourcesFromEnv(prefix string) ([]additionalResource, error) {
-	raw := os.Getenv(prefix + "ADDITIONAL_RESOURCES")
+	raw := strings.TrimSpace(os.Getenv(prefix + "ADDITIONAL_RESOURCES"))
 	if raw == "" {
 		return nil, nil
 	}
@@ -102,14 +115,10 @@ func (extra additionalResource) validate(name string, main *url.URL, allowInsecu
 	if !sameOrigin(extraURL, main) {
 		return "", fmt.Errorf("%s.resource: %q is not on the origin of the main resource %q", name, extra.Resource, main)
 	}
-	extraPath := metadataPath(extraURL)
-	if strings.TrimRight(extraPath, "/") == strings.TrimRight(metadataPath(main), "/") {
-		return "", fmt.Errorf("%s.resource: %q is the main resource; set it with the RESOURCE variable", name, extra.Resource)
-	}
 	if err := validateIssuerIdentifiers(name+".authorizationServers", extra.AuthorizationServers, allowInsecure); err != nil {
 		return "", err
 	}
-	return extraPath, nil
+	return metadataPath(extraURL), nil
 }
 
 func validateIssuerIdentifiers(name string, issuers []string, allowInsecure bool) error {

@@ -2,7 +2,6 @@ package oauthconfig
 
 import (
 	"fmt"
-	"os"
 	"slices"
 )
 
@@ -36,6 +35,9 @@ func SettingsFromEnvWithPrefix(prefix string) (Settings, error) {
 	if err := providerSettingsFromEnv(prefix, &settings); err != nil {
 		return Settings{}, err
 	}
+	if settings.Dex != nil {
+		settings.Server.JWKSRootCAs = settings.Dex.RootCAs
+	}
 	if settings.Valkey, err = storageConfigFromEnv(prefix); err != nil {
 		return Settings{}, err
 	}
@@ -49,26 +51,6 @@ func SettingsFromEnvWithPrefix(prefix string) (Settings, error) {
 		return Settings{}, err
 	}
 	return settings, nil
-}
-
-func providerSettingsFromEnv(prefix string, settings *Settings) error {
-	var err error
-	switch name := os.Getenv(prefix + "PROVIDER"); name {
-	case "dex":
-		settings.Dex, err = dexConfigFromEnv(prefix)
-		if err == nil {
-			settings.Server.JWKSRootCAs = settings.Dex.RootCAs
-		}
-	case "google":
-		settings.Google, err = googleConfigFromEnv(prefix)
-	case "github":
-		settings.GitHub, err = githubConfigFromEnv(prefix)
-	case "":
-		err = fmt.Errorf("%sPROVIDER is required (one of: dex, google, github)", prefix)
-	default:
-		err = fmt.Errorf("%sPROVIDER: unknown provider %q (want dex, google, or github)", prefix, name)
-	}
-	return err
 }
 
 func checkAdvertisedAuthorizationServers(prefix string, settings Settings) error {

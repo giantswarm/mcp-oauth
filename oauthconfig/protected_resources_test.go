@@ -85,7 +85,14 @@ func TestFromEnvProtectedResourcesRefused(t *testing.T) {
 			"OAUTH_RESOURCE":             "https://mcp.example.com/mcp",
 			"OAUTH_ADDITIONAL_RESOURCES": `[{"resource": "https://mcp.example.com/mcp/"}]`,
 		},
-		"listed twice":  {"OAUTH_ADDITIONAL_RESOURCES": `[{"resource": "https://mcp.example.com/api"}, {"resource": "https://mcp.example.com/api"}]`},
+		"listed twice": {"OAUTH_ADDITIONAL_RESOURCES": `[{"resource": "https://mcp.example.com/api"}, {"resource": "https://mcp.example.com/api"}]`},
+		"listed twice with trailing slash": {
+			"OAUTH_ADDITIONAL_RESOURCES": `[{"resource": "https://mcp.example.com/api"}, {"resource": "https://mcp.example.com/api/"}]`,
+		},
+		"root resource repeated": {
+			"OAUTH_RESOURCE":             "https://mcp.example.com",
+			"OAUTH_ADDITIONAL_RESOURCES": `[{"resource": "https://mcp.example.com/"}]`,
+		},
 		"invalid path":  {"OAUTH_ADDITIONAL_RESOURCES": `[{"resource": "https://mcp.example.com/a/../../b"}]`},
 		"invalid bool":  {"OAUTH_REQUIRE_RESOURCE_ACCESS_TOKENS": "maybe"},
 		"invalid extra": {"OAUTH_ADDITIONAL_RESOURCES": `[{"resource": "https://mcp.example.com/api", "authorizationServers": ["dex"]}]`},
@@ -287,4 +294,32 @@ func TestSetupWithTrustedIssuersFromEnv(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, cleanup(context.WithoutCancel(t.Context()))) })
 	require.NotNil(t, runtime.Server)
+}
+
+type fixedSubjectValidator struct{}
+
+func (fixedSubjectValidator) Validate(context.Context, string, []string) (*server.SubjectIdentity, error) {
+	return &server.SubjectIdentity{Subject: "fixed"}, nil
+}
+
+func TestSetupCallerOptionsOverrideTrustedIssuers(t *testing.T) {
+	clearRequired(t)
+	clearStorageEnv(t)
+	clearProviderEnv(t)
+	clearResourceEnv(t)
+	t.Setenv("OAUTH_ISSUER", "https://mcp.example.com")
+	t.Setenv("OAUTH_PROVIDER", "github")
+	t.Setenv("OAUTH_GITHUB_CLIENT_ID", "gh")
+	t.Setenv("OAUTH_GITHUB_CLIENT_SECRET", "secret")
+	t.Setenv("OAUTH_GITHUB_REDIRECT_URL", "https://mcp.example.com/oauth/callback")
+	t.Setenv("OAUTH_TRUSTED_ISSUERS", `[{"issuer": "https://dex.example.com", "jwksURI": "https://dex.example.com/keys", "audiences": ["mcp"]}]`)
+
+	settings, err := oauthconfig.SettingsFromEnv()
+	require.NoError(t, err)
+	custom := fixedSubjectValidator{}
+	runtime, cleanup, err := oauthconfig.Setup(settings, server.WithSubjectTokenValidator(server.SubjectTokenTypeIDToken, custom))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, cleanup(context.WithoutCancel(t.Context()))) })
+	require.Equal(t, custom, runtime.Server.SubjectValidatorFor(server.SubjectTokenTypeIDToken))
+	require.NotEqual(t, custom, runtime.Server.SubjectValidatorFor(server.SubjectTokenTypeAccessToken))
 }

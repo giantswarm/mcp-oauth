@@ -62,7 +62,9 @@ func Setup(settings Settings, options ...server.Option) (*Runtime, func(context.
 	if err := applyRootCAs(&settings, &serverConfig); err != nil {
 		return nil, nil, err
 	}
-	options = append(options, server.WithTrustedIssuers(settings.TrustedIssuers))
+	// Settings go first so that a caller's explicit options, such as
+	// server.WithSubjectTokenValidator, take precedence.
+	options = append([]server.Option{server.WithTrustedIssuers(settings.TrustedIssuers)}, options...)
 	provider, err := configuredProvider(settings)
 	if err != nil {
 		return nil, nil, err
