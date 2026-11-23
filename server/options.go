@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net"
 
 	"github.com/giantswarm/mcp-oauth/instrumentation"
@@ -124,24 +125,25 @@ func WithTrustedAudiences(audiences []string) Option {
 // access. Both check the issuer's AllowedAudiences and AllowedClaims; resource
 // bearers also pass the typ check, and must name the resource identifier in aud
 // under Config.RequireResourceAccessTokens.
+// Invalid issuer configuration makes the server constructor return an error.
 func WithTrustedIssuers(issuers []TrustedIssuer) Option {
 	return func(s *Server) {
 		if len(issuers) == 0 {
 			return
 		}
 		logTrustedIssuerPrivateIPDeprecations(issuers, s.Logger)
-		v, err := NewOIDCValidator(issuers)
+		validator, err := NewOIDCValidator(issuers)
 		if err != nil {
-			s.Logger.Error("failed to initialise trusted issuer validator", logKeyError, err)
+			s.initializationError = fmt.Errorf("trusted issuers: %w", err)
 			return
 		}
 		if s.subjectValidators == nil {
 			s.subjectValidators = make(map[string]SubjectTokenValidator)
 		}
-		s.subjectValidators[SubjectTokenTypeIDToken] = v
-		s.subjectValidators[SubjectTokenTypeAccessToken] = v
-		s.subjectValidators[SubjectTokenTypeJWT] = v
-		s.trustedIssuerValidator = v
+		s.subjectValidators[SubjectTokenTypeIDToken] = validator
+		s.subjectValidators[SubjectTokenTypeAccessToken] = validator
+		s.subjectValidators[SubjectTokenTypeJWT] = validator
+		s.trustedIssuerValidator = validator
 	}
 }
 

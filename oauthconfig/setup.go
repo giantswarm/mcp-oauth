@@ -62,10 +62,7 @@ func Setup(settings Settings, options ...server.Option) (*Runtime, func(context.
 	if err := applyRootCAs(&settings, &serverConfig); err != nil {
 		return nil, nil, err
 	}
-	options, err := withTrustedIssuers(options, settings.TrustedIssuers)
-	if err != nil {
-		return nil, nil, err
-	}
+	options = append(options, server.WithTrustedIssuers(settings.TrustedIssuers))
 	provider, err := configuredProvider(settings)
 	if err != nil {
 		return nil, nil, err
@@ -113,18 +110,6 @@ func applyRootCAs(settings *Settings, serverConfig *server.Config) error {
 		settings.Dex = &dexConfig
 	}
 	return nil
-}
-
-// withTrustedIssuers checks the issuers before adding the option, because
-// WithTrustedIssuers only logs a validator error.
-func withTrustedIssuers(options []server.Option, issuers []server.TrustedIssuer) ([]server.Option, error) {
-	if len(issuers) == 0 {
-		return options, nil
-	}
-	if _, err := server.NewOIDCValidator(issuers); err != nil {
-		return nil, fmt.Errorf("trusted issuers: %w", err)
-	}
-	return append(options, server.WithTrustedIssuers(issuers)), nil
 }
 
 func configuredStorage(configuration *valkey.Config, encryptor *security.Encryptor, telemetry *instrumentation.Instrumentation, logger *slog.Logger) (storage.Combined, func(), error) {

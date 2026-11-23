@@ -1,7 +1,6 @@
 package oauthconfig
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -10,8 +9,7 @@ import (
 	"github.com/giantswarm/mcp-oauth/server"
 )
 
-// trustedIssuer is one OAUTH_TRUSTED_ISSUERS entry. Keys use the terms of
-// RFC 8414 (issuer, jwks_uri) and RFC 7519 (aud).
+// trustedIssuer is the library's configuration for an external JWT issuer.
 type trustedIssuer struct {
 	Issuer                  string            `json:"issuer"`
 	JWKSURI                 string            `json:"jwksURI"`
@@ -25,10 +23,10 @@ type trustedIssuer struct {
 
 // TrustedIssuersFromEnv reads OAUTH_TRUSTED_ISSUERS, the issuers whose JWTs
 // the server accepts, for [server.WithTrustedIssuers] or
-// [Settings.TrustedIssuers]. An unset variable returns nil.
+// [Settings.TrustedIssuers]. An unset variable or empty list returns nil.
 //
-// The value is a JSON array of objects with these keys; unknown keys are
-// refused:
+// The value is a JSON array of library configuration objects, not an OAuth
+// metadata document. Unknown keys and trailing JSON values are refused:
 //
 //   - issuer                   (required) https issuer identifier, no query or fragment
 //   - jwksURI                  (required) https JWKS endpoint
@@ -55,10 +53,11 @@ func TrustedIssuersFromEnvWithPrefix(prefix string) ([]server.TrustedIssuer, err
 		return nil, nil
 	}
 	var entries []trustedIssuer
-	dec := json.NewDecoder(strings.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&entries); err != nil {
+	if err := decodeJSON(raw, &entries); err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	if len(entries) == 0 {
+		return nil, nil
 	}
 	issuers := make([]server.TrustedIssuer, 0, len(entries))
 	seen := make(map[string]bool, len(entries))
@@ -72,9 +71,6 @@ func TrustedIssuersFromEnvWithPrefix(prefix string) ([]server.TrustedIssuer, err
 		}
 		seen[issuer.Issuer] = true
 		issuers = append(issuers, issuer)
-	}
-	if _, err := server.NewOIDCValidator(issuers); err != nil {
-		return nil, fmt.Errorf("%s: %w", name, err)
 	}
 	return issuers, nil
 }

@@ -39,6 +39,62 @@ The individual environment loaders retain their environment names and secret-fil
 precedence and use the same provider and storage constructors. Valkey storage
 requires encryption through these entry points too.
 
+### Environment setup
+
+`oauthconfig.SettingsFromEnv` combines the server, provider, trusted issuer, storage
+and encryption loaders. Pass its result to `Setup`, then register the returned
+handler's routes. `SettingsFromEnvWithPrefix` supports a caller-supplied prefix.
+These environment variables and camelCase JSON objects are library configuration
+based on OAuth concepts; they are not a standardized metadata document format.
+
+| Variable | Behavior |
+| --- | --- |
+| `OAUTH_RESOURCE` | Main protected resource identifier, normally the MCP endpoint URL; defaults to `OAUTH_ISSUER` |
+| `OAUTH_AUTHORIZATION_SERVERS` | Comma-separated authorization server issuer identifiers advertised by the main resource; defaults to `OAUTH_ISSUER` |
+| `OAUTH_ADDITIONAL_RESOURCES` | JSON array of `{resource, scopesSupported, authorizationServers}` on the main resource's origin; an omitted authorization server list inherits the main list |
+| `OAUTH_TRUSTED_ISSUERS` | JSON array of accepted external JWT issuers; unset, `[]` and `null` select no additional issuers |
+| `OAUTH_REQUIRE_RESOURCE_ACCESS_TOKENS` | Require the resource audience when validating trusted-issuer bearers and disable forwarded ID-token acceptance; default `false` for 1.x compatibility |
+| `OAUTH_ENABLE_INTROSPECTION_ENDPOINT` | Enable RFC 7662 introspection; default `false` |
+| `OAUTH_ENABLE_USERINFO_ENDPOINT` | Enable the UserInfo endpoint; default `false` |
+| `OAUTH_ENABLE_CLIENT_CONFIGURATION_ENDPOINT` | Enable the RFC 7592 Client Configuration Endpoint; default `false` |
+| `OAUTH_DEX_CA_FILE` | PEM bundle added to system trust; the combined loader shares the resolved pool between Dex and forwarded-token JWKS validation |
+| `OAUTH_DEX_SCOPES` | Comma-separated Dex scopes; an explicit list must contain `openid` |
+| `OAUTH_DEX_AUDIENCES` | Comma-separated Dex cross-client IDs, requested through Dex's `audience:server:client_id:<id>` scopes |
+
+Accepted token issuers and advertised authorization servers are separate policies.
+Each advertised issuer must be `OAUTH_ISSUER` or an entry in
+`OAUTH_TRUSTED_ISSUERS`. Root discovery uses the main resource's configured metadata
+when no separate root resource is configured. Additional resources can advertise
+their own authorization server list.
+
+Each trusted issuer object requires `issuer`, `jwksURI` and a non-empty `audiences`
+array. Optional fields are `subjectClaim`, `acceptedTypHeaders`, `allowedClaims`,
+`caFile` and `allowPrivateIPJWKSHosts`. `subjectClaim` is `sub` by default; `email`
+requires verified email and is a compatibility mapping, not a stable OIDC identity.
+The `jwksURI` spelling describes the JWKS endpoint; RFC 8414 metadata itself uses
+`jwks_uri`. The `audiences` array constrains the JWT `aud` claim. These trust
+settings also apply to token-exchange subject validation.
+
+Unknown fields, trailing JSON values, duplicate issuer entries and invalid resource
+paths are refused at load time. `Setup` and the server constructors reject missing
+issuer or JWKS fields and invalid actor policies in programmatic trusted-issuer
+configuration. Invalid `WithTrustedIssuers` options cannot silently leave validation
+disabled.
+
+Resource metadata URLs preserve escaped path segments and query components.
+Trailing slashes below the origin are significant and receive exact routes rather
+than subtree patterns. Prefer the slash-free canonical form unless a slash has
+meaning for the resource. Origin comparisons use scheme, hostname and effective
+port, so HTTPS with omitted port and explicit port 443 share an origin; the
+configured resource identifiers remain unchanged.
+Equivalent escaped spellings that collide at one metadata route are refused;
+an encoded slash remains distinct from a path separator.
+
+See [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728.html#section-3) for discovery,
+[RFC 7592](https://www.rfc-editor.org/rfc/rfc7592.html#section-2) for the Client
+Configuration Endpoint, and [Dex cross-client trust](https://dexidp.io/docs/configuration/custom-scopes-claims-clients/#cross-client-trust-and-authorized-party)
+for Dex audience scopes.
+
 ## Validated request identity
 
 `handler.UserInfoFromContext` exposes `providers.UserInfo` after `ValidateToken`.

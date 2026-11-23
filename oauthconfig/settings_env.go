@@ -15,8 +15,8 @@ import (
 //
 // It combines [FromEnv], the provider selected by OAUTH_PROVIDER, the storage
 // and encryption variables of [StorageFromEnv] and [NewEncryptorFromEnv], and
-// [TrustedIssuersFromEnv]. OAUTH_DEX_CA_FILE also becomes RootCAFile, so the
-// same roots verify the provider's forwarded ID tokens. Each advertised
+// [TrustedIssuersFromEnv]. OAUTH_DEX_CA_FILE supplies one shared CA pool for
+// the provider and its forwarded ID tokens. Each advertised
 // authorization server must be the server's own issuer or a trusted issuer,
 // since an MCP client only presents tokens from the servers it was pointed at.
 //
@@ -56,7 +56,9 @@ func providerSettingsFromEnv(prefix string, settings *Settings) error {
 	switch name := os.Getenv(prefix + "PROVIDER"); name {
 	case "dex":
 		settings.Dex, err = dexConfigFromEnv(prefix)
-		settings.RootCAFile = os.Getenv(prefix + "DEX_CA_FILE")
+		if err == nil {
+			settings.Server.JWKSRootCAs = settings.Dex.RootCAs
+		}
 	case "google":
 		settings.Google, err = googleConfigFromEnv(prefix)
 	case "github":

@@ -1,20 +1,17 @@
 package oauthconfig
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/url"
 	"os"
-	"path"
 	"strings"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/server"
 )
 
-// additionalResource is one OAUTH_ADDITIONAL_RESOURCES entry, named after the
-// RFC 9728 protected resource metadata fields.
+// additionalResource is the library's configuration for an extra OAuth protected resource.
 type additionalResource struct {
 	Resource             string   `json:"resource"`
 	ScopesSupported      []string `json:"scopesSupported,omitempty"`
@@ -26,15 +23,16 @@ type additionalResource struct {
 // the two plain variables, each extra one by its full URL in the list. Every
 // metadata entry carries its identifier explicitly, so the document's
 // resource is the URL its well-known path was derived from (RFC 9728 §3.3).
-func loadProtectedResourcesFromEnv(prefix string, cfg *server.Config) error {
+func loadProtectedResourcesFromEnv(prefix string, configuration *server.Config) error {
 	if raw := os.Getenv(prefix + "RESOURCE"); raw != "" {
-		if err := validateResourceIdentifier(prefix+"RESOURCE", raw, cfg.AllowInsecureHTTP); err != nil {
-			return err
-		}
-		cfg.ResourceIdentifier = raw
+		configuration.ResourceIdentifier = raw
+	}
+	main := configuration.GetResourceIdentifier()
+	if err := validateResourceIdentifier(prefix+"RESOURCE", main, configuration.AllowInsecureHTTP); err != nil {
+		return err
 	}
 	authorizationServers := splitAndTrim(os.Getenv(prefix+"AUTHORIZATION_SERVERS"), ",")
-	if err := validateIssuerIdentifiers(prefix+"AUTHORIZATION_SERVERS", authorizationServers, cfg.AllowInsecureHTTP); err != nil {
+	if err := validateIssuerIdentifiers(prefix+"AUTHORIZATION_SERVERS", authorizationServers, configuration.AllowInsecureHTTP); err != nil {
 		return err
 	}
 	extras, err := additionalResourcesFromEnv(prefix)
@@ -45,7 +43,6 @@ func loadProtectedResourcesFromEnv(prefix string, cfg *server.Config) error {
 		return nil
 	}
 
-	main := cfg.GetResourceIdentifier()
 	mainURL, err := url.Parse(main)
 	if err != nil {
 		return fmt.Errorf("%sRESOURCE: %w", prefix, err)
@@ -59,7 +56,7 @@ func loadProtectedResourcesFromEnv(prefix string, cfg *server.Config) error {
 	}
 	for i, extra := range extras {
 		name := fmt.Sprintf("%sADDITIONAL_RESOURCES[%d]", prefix, i)
-		extraPath, err := extra.validate(name, mainURL, cfg.AllowInsecureHTTP)
+		extraPath, err := extra.validate(name, mainURL, configuration.AllowInsecureHTTP)
 		if err != nil {
 			return err
 		}
@@ -76,7 +73,7 @@ func loadProtectedResourcesFromEnv(prefix string, cfg *server.Config) error {
 			AuthorizationServers: servers,
 		}
 	}
-	cfg.ResourceMetadataByPath = byPath
+	configuration.ResourceMetadataByPath = byPath
 	return nil
 }
 
@@ -86,9 +83,7 @@ func additionalResourcesFromEnv(prefix string) ([]additionalResource, error) {
 		return nil, nil
 	}
 	var extras []additionalResource
-	dec := json.NewDecoder(strings.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&extras); err != nil {
+	if err := decodeJSON(raw, &extras); err != nil {
 		return nil, fmt.Errorf("%sADDITIONAL_RESOURCES: %w", prefix, err)
 	}
 	return extras, nil
@@ -104,14 +99,11 @@ func (extra additionalResource) validate(name string, main *url.URL, allowInsecu
 	if err != nil {
 		return "", fmt.Errorf("%s.resource: %w", name, err)
 	}
-	if !strings.EqualFold(extraURL.Scheme, main.Scheme) || !strings.EqualFold(extraURL.Host, main.Host) {
+	if !sameOrigin(extraURL, main) {
 		return "", fmt.Errorf("%s.resource: %q is not on the origin of the main resource %q", name, extra.Resource, main)
 	}
-	if err := helpers.ValidateMetadataPath(extraURL.Path); err != nil {
-		return "", fmt.Errorf("%s.resource: %w", name, err)
-	}
 	extraPath := metadataPath(extraURL)
-	if helpers.NormalizeURL(extra.Resource) == helpers.NormalizeURL(main.String()) || extraPath == metadataPath(main) {
+	if strings.TrimRight(extraPath, "/") == strings.TrimRight(metadataPath(main), "/") {
 		return "", fmt.Errorf("%s.resource: %q is the main resource; set it with the RESOURCE variable", name, extra.Resource)
 	}
 	if err := validateIssuerIdentifiers(name+".authorizationServers", extra.AuthorizationServers, allowInsecure); err != nil {
@@ -129,10 +121,27 @@ func validateIssuerIdentifiers(name string, issuers []string, allowInsecure bool
 	return nil
 }
 
-// metadataPath is the path a resource's metadata document is served under,
-// after the well-known prefix (RFC 9728 §3.1).
+// metadataPath identifies equivalent escaped paths for metadata route lookup.
 func metadataPath(resource *url.URL) string {
-	return path.Clean("/" + strings.TrimPrefix(resource.Path, "/"))
+	if resource.Path == "" {
+		return "/"
+	}
+	return helpers.CanonicalEscapedPath(resource)
+}
+
+func sameOrigin(first, second *url.URL) bool {
+	return strings.EqualFold(first.Scheme, second.Scheme) &&
+		strings.EqualFold(first.Hostname(), second.Hostname()) && effectivePort(first) == effectivePort(second)
+}
+
+func effectivePort(resource *url.URL) string {
+	if port := resource.Port(); port != "" {
+		return port
+	}
+	if strings.EqualFold(resource.Scheme, "https") {
+		return "443"
+	}
+	return "80"
 }
 
 // validateResourceIdentifier applies RFC 8707 §2 and RFC 9728 §1.2: an
@@ -152,11 +161,14 @@ func validateResourceIdentifier(name, raw string, allowInsecure bool) error {
 	if err := requireHTTPS(u, allowInsecure); err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
+	if err := helpers.ValidateMetadataPath(u.Path); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
 	if u.RawQuery != "" {
 		slog.Default().Warn("Resource identifier has a query component; RFC 8707 §2 recommends none", "env_var", name, "resource", raw)
 	}
 	if len(u.Path) > 1 && strings.HasSuffix(u.Path, "/") {
-		slog.Default().Warn("Resource identifier ends with a slash; MCP clients send the form without it", "env_var", name, "resource", raw)
+		slog.Default().Warn("Resource identifier ends with a slash; MCP recommends omitting it unless semantically significant", "env_var", name, "resource", raw)
 	}
 	return nil
 }
@@ -192,17 +204,17 @@ func requireHTTPS(u *url.URL, allowInsecure bool) error {
 
 // loadEndpointSwitchesFromEnv reads the optional endpoint switches, named
 // after the specifications that define the endpoints.
-func loadEndpointSwitchesFromEnv(prefix string, cfg *server.Config) error {
+func loadEndpointSwitchesFromEnv(prefix string, configuration *server.Config) error {
 	var err error
-	if cfg.EnableIntrospectionEndpoint, err = optionalBool(prefix+"ENABLE_INTROSPECTION_ENDPOINT", false); err != nil {
+	if configuration.EnableIntrospectionEndpoint, err = optionalBool(prefix+"ENABLE_INTROSPECTION_ENDPOINT", false); err != nil {
 		return err
 	}
-	if cfg.EnableUserInfoEndpoint, err = optionalBool(prefix+"ENABLE_USERINFO_ENDPOINT", false); err != nil {
+	if configuration.EnableUserInfoEndpoint, err = optionalBool(prefix+"ENABLE_USERINFO_ENDPOINT", false); err != nil {
 		return err
 	}
-	if cfg.EnableClientManagementEndpoint, err = optionalBool(prefix+"ENABLE_CLIENT_CONFIGURATION_ENDPOINT", false); err != nil {
+	if configuration.EnableClientManagementEndpoint, err = optionalBool(prefix+"ENABLE_CLIENT_CONFIGURATION_ENDPOINT", false); err != nil {
 		return err
 	}
-	cfg.RequireResourceAccessTokens, err = optionalBool(prefix+"REQUIRE_RESOURCE_ACCESS_TOKENS", false)
+	configuration.RequireResourceAccessTokens, err = optionalBool(prefix+"REQUIRE_RESOURCE_ACCESS_TOKENS", false)
 	return err
 }

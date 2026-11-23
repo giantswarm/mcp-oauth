@@ -136,9 +136,7 @@ func loadTrustedAllowlistsFromEnv(prefix string, cfg *server.Config) error {
 // (or CONSENT_COOKIE_KEY_FILE), a 32-byte key in base64 or hex.
 func loadConsentFromEnv(prefix string, cfg *server.Config) error {
 	if raw := os.Getenv(prefix + "TRUSTED_CLIENTS"); raw != "" {
-		dec := json.NewDecoder(strings.NewReader(raw))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&cfg.TrustedClients); err != nil {
+		if err := decodeJSON(raw, &cfg.TrustedClients); err != nil {
 			return fmt.Errorf("%sTRUSTED_CLIENTS: %w", prefix, err)
 		}
 	}

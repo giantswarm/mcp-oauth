@@ -114,6 +114,7 @@ type Server struct {
 	// Non-nil enables the trusted-issuer Bearer branch in ValidateToken;
 	// token-exchange uses the same instance via subjectValidators.
 	trustedIssuerValidator *OIDCValidator
+	initializationError    error
 	// dpopReplayCache is used to detect replayed DPoP proof JTIs.
 	dpopReplayCache DPoPReplayCache
 	// dpopNonceProvider enforces RFC 9449 §8 nonces when non-nil.
@@ -204,11 +205,19 @@ func New(
 	srv.attachRevokedTokenStore(tokenStore)
 
 	srv.initializeMetadataSupport()
+	metadataRateLimiter := srv.metadataFetchRateLimiter
 	srv.validateProviderDefaultScopes(logger)
 	srv.logForwardedSessionIDKeyFingerprint()
 
 	for _, opt := range opts {
 		opt(srv)
+	}
+	if srv.initializationError != nil {
+		cleanupCancel()
+		if metadataRateLimiter != nil {
+			metadataRateLimiter.Stop()
+		}
+		return nil, srv.initializationError
 	}
 	if err := srv.initializeConsentCookieKey(cleanupCtx); err != nil {
 		cleanupCancel()
