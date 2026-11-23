@@ -36,9 +36,7 @@ func (s *Server) UpdateClientRegistration(ctx context.Context, client, previous 
 	return nil
 }
 
-// changedRegistrationFields names the registration fields an update changed,
-// so an operator restoring an older store state can tell which updates the
-// restore undid. Credential fields are compared by hash and reported by name only.
+// changedRegistrationFields reports metadata and credential names, never values.
 func changedRegistrationFields(previous, current *storage.Client) []string {
 	changed := []string{}
 	add := func(name string, differs bool) {
@@ -47,10 +45,13 @@ func changedRegistrationFields(previous, current *storage.Client) []string {
 		}
 	}
 	add("client_name", previous.ClientName != current.ClientName)
+	add("client_type", previous.ClientType != current.ClientType)
 	add("redirect_uris", !slices.Equal(previous.RedirectURIs, current.RedirectURIs))
 	add("grant_types", !slices.Equal(previous.GrantTypes, current.GrantTypes))
+	add("response_types", !slices.Equal(previous.ResponseTypes, current.ResponseTypes))
 	add("scope", !slices.Equal(previous.Scopes, current.Scopes))
 	add("token_endpoint_auth_method", previous.TokenEndpointAuthMethod != current.TokenEndpointAuthMethod)
+	add("token_endpoint_auth_signing_alg", previous.TokenEndpointAuthSigningAlg != current.TokenEndpointAuthSigningAlg)
 	add("jwks", !bytes.Equal(previous.JWKS, current.JWKS))
 	add("client_secret", previous.ClientSecretHash != current.ClientSecretHash)
 	add("registration_access_token", previous.RegistrationAccessTokenHash != current.RegistrationAccessTokenHash)

@@ -23,6 +23,7 @@ func captureAudit(srv *Server) *bytes.Buffer {
 
 type auditLine struct {
 	EventType string         `json:"event_type"`
+	ClientID  string         `json:"client_id"`
 	RequestID string         `json:"request_id"`
 	Details   map[string]any `json:"details"`
 }
