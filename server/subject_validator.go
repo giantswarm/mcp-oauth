@@ -90,6 +90,9 @@ func subjectIdentityFromSelfIssuedClaims(claims map[string]any) (*SubjectIdentit
 }
 
 // SubjectIdentity carries the verified identity extracted from a JWT.
+// Subject must identify the intended principal uniquely in the local issuer's
+// namespace when used for local issuance. Independent issuer namespaces require
+// a canonical SubjectClaim or a validator that maps issuer and subject together.
 // Claims is the full verified payload; callers that only need the
 // canonical fields can use Subject, Issuer, and AllowedScopes directly.
 type SubjectIdentity struct {

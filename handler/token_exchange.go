@@ -243,11 +243,11 @@ func (h *Handler) handleBrokeredTokenExchangeError(
 
 	var unsupported *server.TokenExchangeUnsupportedTypeError
 	switch {
-	case errors.Is(err, server.ErrIssuedTokenTypeMismatch):
+	case errors.Is(err, server.ErrIssuedTokenTypeMismatch), errors.Is(err, server.ErrInvalidExchangerResult):
 		h.recordTokenFailure(r.Context(), server.GrantTypeTokenExchange, constants.ErrorCodeServerError)
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusInternalServerError, startTime)
-		instrumentation.SetSpanError(span, "unexpected issued token type")
-		h.writeError(w, constants.ErrorCodeServerError, "token exchange returned an unexpected token type", http.StatusInternalServerError)
+		instrumentation.SetSpanError(span, "invalid token exchange result")
+		h.writeError(w, constants.ErrorCodeServerError, "token exchange returned an invalid result", http.StatusInternalServerError)
 	case errors.Is(err, server.ErrExchangeRateLimited):
 		h.writeExchangeRateLimited(w, r, startTime, span)
 	case errors.Is(err, server.ErrInvalidTarget):

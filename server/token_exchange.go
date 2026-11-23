@@ -142,14 +142,10 @@ type SelfIssuedExchangeRequest struct {
 // email_verified, name and groups default from the validated subject when Options
 // leaves them unset, and an explicit Options value takes precedence.
 func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeRequest) (*TokenExchangeResult, error) {
+	sessionID := s.bearerSessionID(req.Subject.Token)
+	ctx = withExchangeAuditContext(ctx, req.ClientID, sessionID)
 	if !s.Config.IsJWTAccessTokenFormat() {
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type: security.EventAuthFailure,
-			Details: map[string]any{
-				logKeyReason:   "token_exchange_jwt_mode_required",
-				paramGrantType: GrantTypeTokenExchange,
-			},
-		})
+		s.auditLocalExchangeFailure(ctx, req.ClientID, sessionID, "", "token_exchange_jwt_mode_required")
 		return nil, fmt.Errorf("token exchange requires JWT access token mode (set AccessTokenFormat=jwt)")
 	}
 
@@ -159,25 +155,27 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 	// entry point. Deliberately ahead of subject validation and the self-renewal
 	// check: a session flooding rejected requests (bad subjects, bare renewals)
 	// must still be throttled, so those attempts count against the bucket.
-	sessionID := s.bearerSessionID(req.Subject.Token)
-	if s.exchangeSessionRateLimited(ctx, sessionID) {
+	if s.exchangeSessionRateLimited(ctx, req.ClientID, sessionID) {
 		return nil, ErrExchangeRateLimited
 	}
 
-	if err := s.checkExchangeClient(ctx, req.ClientID); err != nil {
+	if err := s.checkExchangeClient(ctx, req.ClientID, sessionID); err != nil {
 		return nil, err
 	}
 
-	identity, err := s.validateExchangeSubjectToken(ctx, req.Subject, nil, nil)
+	auditContext := map[string]any{
+		paramClientID: req.ClientID, logKeySessionID: sessionID, logKeySeverity: severityWarning,
+	}
+	identity, err := s.validateExchangeSubjectToken(ctx, req.Subject, nil, auditContext)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := s.checkSubjectKeyBinding(ctx, identity, req.DPoPJKT, sessionID); err != nil {
+	if err := s.checkSubjectKeyBinding(ctx, identity, req.DPoPJKT, req.ClientID, sessionID); err != nil {
 		return nil, err
 	}
 
-	act, err := s.resolveSelfIssuedActorChain(ctx, req, identity, sessionID)
+	act, err := s.resolveSelfIssuedActorChain(ctx, req, identity, sessionID, auditContext)
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +188,7 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 		return nil, err
 	}
 
-	grantedScope, err := s.grantExchangeScope(ctx, req.Scope, identity, sessionID)
+	grantedScope, err := s.grantExchangeScope(ctx, req.Scope, identity, req.ClientID, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -273,8 +271,8 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 // the issued token. The returned chain is nil when the exchange adds no
 // delegation hop. Any act chain already on the subject token is nested beneath
 // the new actor so a multi-hop delegation chain is preserved (RFC 8693 §4.1).
-func (s *Server) resolveSelfIssuedActorChain(ctx context.Context, req SelfIssuedExchangeRequest, identity *SubjectIdentity, sessionID string) (*Actor, error) {
-	actor, err := s.resolveExchangeActor(ctx, req.Actor, identity, nil)
+func (s *Server) resolveSelfIssuedActorChain(ctx context.Context, req SelfIssuedExchangeRequest, identity *SubjectIdentity, sessionID string, auditContext map[string]any) (*Actor, error) {
+	actor, err := s.resolveExchangeActor(ctx, req.Actor, identity, auditContext)
 	if err != nil {
 		return nil, err
 	}
@@ -285,7 +283,7 @@ func (s *Server) resolveSelfIssuedActorChain(ctx context.Context, req SelfIssued
 	if actor != nil && prior != nil && actor.Issuer == prior.Iss && actor.Subject == prior.Sub {
 		actor = nil
 	}
-	if err := s.checkSelfRenewal(ctx, identity, actor, sessionID); err != nil {
+	if err := s.checkSelfRenewal(ctx, identity, actor, req.ClientID, sessionID); err != nil {
 		return nil, err
 	}
 	// The email gate applies only when the subject's own email would be
@@ -295,12 +293,13 @@ func (s *Server) resolveSelfIssuedActorChain(ctx context.Context, req SelfIssued
 	// The HTTP handler always passes zero Options, so the external exchange
 	// surface is fully gated.
 	if req.Options.Email == "" {
-		if err := s.checkSubjectEmailVerified(ctx, identity, sessionID); err != nil {
+		if err := s.checkSubjectEmailVerified(ctx, identity, req.ClientID, sessionID); err != nil {
 			return nil, err
 		}
 	}
 	act, err := buildActorChain(actor, prior)
 	if err != nil {
+		s.auditLocalExchangeFailure(ctx, req.ClientID, sessionID, identity.Subject, "token_exchange_actor_chain_invalid")
 		return nil, fmt.Errorf("token exchange: %w", err)
 	}
 	return act, nil
@@ -332,19 +331,11 @@ func defaultExchangeOptions(options ExchangeOptions, identity *SubjectIdentity) 
 // renew itself open-endedly. Re-exchange of a self-issued token is allowed only
 // to add an actor (chain extension, bounded by maxActorChainDepth). Subjects from
 // external issuers are unaffected. Returns nil when the exchange is allowed.
-func (s *Server) checkSelfRenewal(ctx context.Context, identity, actor *SubjectIdentity, sessionID string) error {
+func (s *Server) checkSelfRenewal(ctx context.Context, identity, actor *SubjectIdentity, clientID, sessionID string) error {
 	if actor != nil || identity.Issuer != s.Config.Issuer {
 		return nil
 	}
-	s.Auditor.LogEvent(ctx, security.Event{
-		Type:   security.EventAuthFailure,
-		UserID: identity.Subject,
-		Details: map[string]any{
-			logKeyReason:    "token_exchange_self_renewal_denied",
-			paramGrantType:  GrantTypeTokenExchange,
-			logKeySessionID: sessionID,
-		},
-	})
+	s.auditLocalExchangeFailure(ctx, clientID, sessionID, identity.Subject, "token_exchange_self_renewal_denied")
 	return ErrSelfRenewalDenied
 }
 
@@ -352,19 +343,11 @@ func (s *Server) checkSelfRenewal(ctx context.Context, identity, actor *SubjectI
 // cnf.jkt) is only re-exchanged by the holder of its confirmation key: the
 // request's DPoP proof thumbprint must equal the subject's cnf.jkt. A subject
 // with no confirmation is unaffected. Returns nil when the exchange is allowed.
-func (s *Server) checkSubjectKeyBinding(ctx context.Context, identity *SubjectIdentity, requestJKT, sessionID string) error {
+func (s *Server) checkSubjectKeyBinding(ctx context.Context, identity *SubjectIdentity, requestJKT, clientID, sessionID string) error {
 	if identity.ConfirmationJKT == "" || identity.ConfirmationJKT == requestJKT {
 		return nil
 	}
-	s.Auditor.LogEvent(ctx, security.Event{
-		Type:   security.EventAuthFailure,
-		UserID: identity.Subject,
-		Details: map[string]any{
-			logKeyReason:    "token_exchange_subject_key_mismatch",
-			paramGrantType:  GrantTypeTokenExchange,
-			logKeySessionID: sessionID,
-		},
-	})
+	s.auditLocalExchangeFailure(ctx, clientID, sessionID, identity.Subject, "token_exchange_subject_key_mismatch")
 	return ErrSubjectKeyMismatch
 }
 
@@ -409,19 +392,11 @@ func (s *Server) checkAllowedResource(ctx context.Context, audience, clientID, s
 // email_verified=true is refused, because the issued token emits that email
 // (see defaultExchangeOptions) and resource servers authorize on it. Subjects
 // without an email claim pass; their tokens carry no email to trust.
-func (s *Server) checkSubjectEmailVerified(ctx context.Context, identity *SubjectIdentity, sessionID string) error {
+func (s *Server) checkSubjectEmailVerified(ctx context.Context, identity *SubjectIdentity, clientID, sessionID string) error {
 	if identity.Claims == nil || identity.Claims.Email == "" || identity.Claims.EmailVerified {
 		return nil
 	}
-	s.Auditor.LogEvent(ctx, security.Event{
-		Type:   security.EventAuthFailure,
-		UserID: identity.Subject,
-		Details: map[string]any{
-			logKeyReason:    "token_exchange_unverified_subject_email",
-			paramGrantType:  GrantTypeTokenExchange,
-			logKeySessionID: sessionID,
-		},
-	})
+	s.auditLocalExchangeFailure(ctx, clientID, sessionID, identity.Subject, "token_exchange_unverified_subject_email")
 	return ErrUnverifiedSubjectEmail
 }
 
@@ -429,18 +404,11 @@ func (s *Server) checkSubjectEmailVerified(ctx context.Context, identity *Subjec
 // sessionID on the self-issued exchange and audits the rejection when it does. A
 // nil UserRateLimiter disables the check. The brokered path has its own
 // audience-aware equivalent (exchangeRateLimited).
-func (s *Server) exchangeSessionRateLimited(ctx context.Context, sessionID string) bool {
+func (s *Server) exchangeSessionRateLimited(ctx context.Context, clientID, sessionID string) bool {
 	if s.UserRateLimiter == nil || s.UserRateLimiter.Allow(sessionID) {
 		return false
 	}
-	s.Auditor.LogEvent(ctx, security.Event{
-		Type: security.EventAuthFailure,
-		Details: map[string]any{
-			logKeyReason:    "token_exchange_rate_limited",
-			paramGrantType:  GrantTypeTokenExchange,
-			logKeySessionID: sessionID,
-		},
-	})
+	s.auditLocalExchangeFailure(ctx, clientID, sessionID, "", "token_exchange_rate_limited")
 	return true
 }
 
@@ -547,11 +515,13 @@ func (s *Server) resolveExchangeActor(ctx context.Context, actor TypedToken, sub
 // (exchange, client_id, audience, session_id) so a single event carries both the
 // validation detail and the brokered-flow correlation fields.
 func (s *Server) validateExchangeToken(ctx context.Context, token TypedToken, role string, defaultAudiences []string, extra map[string]any) (*SubjectIdentity, error) {
+	clientID, _ := extra[paramClientID].(string)
 	typeKey := role + "_token_type"
 	unsupportedReason := "unsupported_" + role + "_token_type"
 	validationFailedReason := role + "_token_validation_failed"
 
 	auditDetails := func(base map[string]any) map[string]any {
+		base[logKeySeverity] = severityWarning
 		maps.Copy(base, extra)
 		return base
 	}
@@ -560,7 +530,7 @@ func (s *Server) validateExchangeToken(ctx context.Context, token TypedToken, ro
 	case SubjectTokenTypeIDToken, SubjectTokenTypeAccessToken, SubjectTokenTypeJWT:
 	default:
 		s.Auditor.LogEvent(ctx, security.Event{
-			Type: security.EventAuthFailure,
+			Type: security.EventAuthFailure, ClientID: clientID,
 			Details: auditDetails(map[string]any{
 				logKeyReason:   unsupportedReason,
 				paramGrantType: GrantTypeTokenExchange,
@@ -573,7 +543,7 @@ func (s *Server) validateExchangeToken(ctx context.Context, token TypedToken, ro
 	v := s.SubjectValidatorFor(token.Type)
 	if v == nil {
 		s.Auditor.LogEvent(ctx, security.Event{
-			Type: security.EventAuthFailure,
+			Type: security.EventAuthFailure, ClientID: clientID,
 			Details: auditDetails(map[string]any{
 				logKeyReason:   unsupportedReason,
 				paramGrantType: GrantTypeTokenExchange,
@@ -586,14 +556,13 @@ func (s *Server) validateExchangeToken(ctx context.Context, token TypedToken, ro
 	identity, err := v.Validate(ctx, token.Token, defaultAudiences)
 	if err != nil && (errors.Is(err, ErrProviderUnavailable) || isTransientProviderError(err)) {
 		// The issuer did not answer: the token was not rejected.
-		clientID, _ := extra[paramClientID].(string)
 		return nil, s.providerUnavailable(ctx, role+" token validation", "", clientID, err)
 	}
 	if err != nil {
 		s.Logger.Debug("token exchange: "+role+" token validation failed",
 			typeKey, token.Type, logKeyError, err)
 		s.Auditor.LogEvent(ctx, security.Event{
-			Type: security.EventAuthFailure,
+			Type: security.EventAuthFailure, ClientID: clientID,
 			Details: auditDetails(map[string]any{
 				logKeyReason:   validationFailedReason,
 				paramGrantType: GrantTypeTokenExchange,
@@ -674,36 +643,30 @@ func grantedExchangeScope(requestedScope string, envelope []string) (string, err
 
 // grantExchangeScope applies grantedExchangeScope to identity and audits a
 // refusal.
-func (s *Server) grantExchangeScope(ctx context.Context, requestedScope string, identity *SubjectIdentity, sessionID string) (string, error) {
+func (s *Server) grantExchangeScope(ctx context.Context, requestedScope string, identity *SubjectIdentity, clientID, sessionID string) (string, error) {
 	granted, err := grantedExchangeScope(requestedScope, exchangeScopeEnvelope(identity))
 	if err != nil {
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type:   security.EventAuthFailure,
-			UserID: identity.Subject,
-			Details: map[string]any{
-				logKeyReason:    "token_exchange_scope_not_granted",
-				paramGrantType:  GrantTypeTokenExchange,
-				logKeySessionID: sessionID,
-			},
-		})
+		s.auditLocalExchangeFailure(ctx, clientID, sessionID, identity.Subject, "token_exchange_scope_not_granted")
 		return "", err
 	}
 	return granted, nil
 }
 
+func (s *Server) auditLocalExchangeFailure(ctx context.Context, clientID, sessionID, subject, reason string) {
+	s.Auditor.LogEvent(ctx, security.Event{
+		Type: security.EventAuthFailure, ClientID: clientID, UserID: subject,
+		Details: map[string]any{
+			logKeyReason: reason, logKeySeverity: severityWarning,
+			paramGrantType: GrantTypeTokenExchange, logKeySessionID: sessionID,
+		},
+	})
+}
+
 // checkExchangeClient requires a registered confidential client that has not
 // been retired. The caller is responsible for authenticating that client.
-func (s *Server) checkExchangeClient(ctx context.Context, clientID string) error {
+func (s *Server) checkExchangeClient(ctx context.Context, clientID, sessionID string) error {
 	refuse := func(reason string) error {
-		s.Auditor.LogEvent(ctx, security.Event{
-			Type:     security.EventAuthFailure,
-			ClientID: clientID,
-			Details: map[string]any{
-				logKeyReason:   reason,
-				logKeySeverity: severityWarning,
-				paramGrantType: GrantTypeTokenExchange,
-			},
-		})
+		s.auditLocalExchangeFailure(ctx, clientID, sessionID, "", reason)
 		return ErrExchangeClientRequired
 	}
 	if clientID == "" {

@@ -35,7 +35,7 @@ func (s *Server) storageUnavailable(ctx context.Context, operation, clientID, us
 
 	s.Auditor.LogEvent(ctx, security.Event{
 		Type: security.EventAuthFailure, UserID: userID, ClientID: clientID,
-		Details: map[string]any{logKeyReason: "transient_storage_error", "operation": operation},
+		Details: exchangeFailureAuditDetails(ctx, map[string]any{logKeyReason: "transient_storage_error", "operation": operation}),
 	})
 	return fmt.Errorf("%w: %s: %w", ErrStorageUnavailable, operation, err)
 }

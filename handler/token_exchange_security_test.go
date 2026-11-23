@@ -174,6 +174,9 @@ func TestBrokeredTokenExchangePreservesDefaultIssuedType(t *testing.T) {
 		t.Run(issued, func(t *testing.T) {
 			fixture := newExchangeContractFixture(t, true)
 			fixture.exchanger.result.IssuedTokenType = issued
+			if issued == server.SubjectTokenTypeJWT {
+				fixture.exchanger.result.TokenType = "N_A"
+			}
 			response := fixture.request(fixture.form())
 			require.Equal(t, http.StatusOK, response.Code)
 			require.Empty(t, fixture.exchanger.gotReq.RequestedTokenType)
@@ -202,6 +205,9 @@ func TestTokenExchangeExplicitOutputTypes(t *testing.T) {
 				form.Set("requested_token_type", outputType)
 				if brokered {
 					fixture.exchanger.result.IssuedTokenType = outputType
+					if outputType == server.SubjectTokenTypeJWT {
+						fixture.exchanger.result.TokenType = "N_A"
+					}
 				}
 				response := fixture.request(form)
 				if !brokered && outputType != server.SubjectTokenTypeAccessToken {

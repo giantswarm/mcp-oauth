@@ -19,7 +19,7 @@ func (s *Server) checkClientRevocation(ctx context.Context, clientID string) err
 	if revoked {
 		s.Auditor.LogEvent(ctx, security.Event{
 			Type: security.EventAuthFailure, ClientID: clientID,
-			Details: map[string]any{logKeyReason: "client_revoked", logKeySeverity: severityWarning},
+			Details: exchangeFailureAuditDetails(ctx, map[string]any{logKeyReason: "client_revoked", logKeySeverity: severityWarning}),
 		})
 		return errInvalidAccessToken
 	}

@@ -169,6 +169,7 @@ func TestSelfIssuedExchangeAdmitsOnlyRegisteredConfidentialClients(t *testing.T)
 			details := events[0]["details"].(map[string]any)
 			require.Equal(t, test.reason, details["reason"])
 			require.Equal(t, "warning", details["severity"])
+			require.NotEmpty(t, details["session_id"])
 		})
 	}
 

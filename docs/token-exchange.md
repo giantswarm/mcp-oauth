@@ -43,6 +43,8 @@ srv, _ := oauth.NewServer(
 
 `AllowedScopes` caps the scopes the server will include in the issued token for this issuer. `nil` means no restriction. A subject token's own `scope` claim, when present, narrows the grant further: an exchange never issues a scope the subject token does not carry. When these bounds leave nothing to grant, the exchange fails with `invalid_scope` rather than issuing an unscoped token.
 
+For local issuance, `SubjectIdentity.Subject` must identify the intended principal uniquely within this server's issuer namespace. Independent issuers can reuse the same `sub`, for example Kubernetes ServiceAccounts with the same namespace and name in different clusters. Configure each issuer's `SubjectClaim` to a verified canonical identifier only when those identities are intended to be equivalent, or use a custom `SubjectTokenValidator` that maps the issuer and subject together. Local issuance preserves the validated subject; it does not automatically prefix it with its original issuer. Email mappings require `email_verified`, and the configured issuer must be trusted to assert that canonical identity.
+
 ### Restricting which tokens are accepted (AllowedClaims)
 
 `AllowedClaims` adds a claim-level gate after signature verification. Each entry requires the named JWT claim to match a pattern. Patterns support `*` (matches any sequence of characters, including `/`) and `?` (matches any single character). An absent claim or a non-string claim value is rejected.
@@ -150,7 +152,7 @@ When upgrading, configure client credentials for HTTP callers and pass the authe
 
 Optional parameters:
 
-- `requested_token_type`: local issuance supports `urn:ietf:params:oauth:token-type:access_token`. Brokered requests also support `id_token` and `jwt` token-type URNs. An omitted or empty value lets the broker host choose its output type. An explicit type is forwarded to the host `Exchanger`; a mismatched result returns `500 server_error`, without returning its token or auditing a successful issuance. Brokered access tokens use `token_type: Bearer`; non-access-token results use `N_A` and must not be treated as MCP access tokens.
+- `requested_token_type`: local issuance supports `urn:ietf:params:oauth:token-type:access_token`. Brokered requests also support `id_token` and `jwt` token-type URNs. An omitted or empty value lets the broker host choose its output type. An explicit type is forwarded to the host `Exchanger`; a mismatched or invalid result returns `500 server_error`, without returning its token or auditing a successful issuance. `ExchangerResult.TokenType` states how to use the token independently of its representation: `Bearer` for an access token or `N_A` for an assertion. JWT results require this field because a JWT can serve either purpose. Empty usage metadata defaults to `Bearer` for `access_token` and `N_A` for `id_token`. Other usage methods, including DPoP output binding, are unsupported. An ID token cannot be marked `Bearer`, and an access token cannot be marked `N_A`.
 - `actor_token` and `actor_token_type`: supply both for delegation. A nonempty actor token without its type, or a nonempty actor type without an actor token, returns `invalid_request`. Empty optional values are treated as omitted.
 - `resource` (RFC 8707): an absolute URI with no fragment component or `#` delimiter, to bind the issued token's `aud`. The maximum length is 2,048 bytes. When omitted, `aud` defaults to the server's own `ResourceIdentifier`. Malformed values return `invalid_target` on either exchange flow.
 - `scope`: requested scope subset; intersected with the issuer's `AllowedScopes` and with the subject token's `scope` claim when it has one; an empty intersection is refused with `invalid_scope`.
@@ -247,6 +249,8 @@ srv, _ := server.New(provider, store, store, store,
 Return an error wrapping `server.ErrInvalidTarget` from `Exchange` to signal an audience the host cannot map; the client receives `invalid_target`. Return an error wrapping `server.ErrProviderUnavailable` when the downstream issuer did not answer; the client receives `503 Service Unavailable` with `Retry-After` and retries the same request.
 
 `ExchangerRequest.RequestedTokenType` carries the requested output type. HTTP and in-process callers can omit it to use the host's default, or provide a supported type. A mismatched result returns `server.ErrIssuedTokenTypeMismatch` before a success audit event is emitted.
+
+`ExchangerResult.TokenType` carries the downstream usage method. Hosts returning `jwt` or another representation without a fixed usage method must set it explicitly to `Bearer` or `N_A`; upgrading hosts that return only `access_token` or `id_token` does not require setting it. Missing, unsupported or inconsistent usage metadata, and an empty result token, return `server.ErrInvalidExchangerResult` before a success audit event. The HTTP endpoint answers `500 server_error`. Only access tokens issued for the MCP resource may be used as MCP access tokens; a JWT representation alone does not establish that authority.
 
 `ExchangerResult.Scope` must describe the effective downstream grant. If the downstream response omits `scope`, resolve it against the scope sent downstream, which may differ from the inbound client's request. The broker returns this value to the client and includes it in the issuance audit.
 

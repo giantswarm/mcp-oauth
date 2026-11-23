@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -39,6 +41,7 @@ func TestSelfIssuedExchangeRetiredClientAudit(t *testing.T) {
 	require.Contains(t, logs.String(), "severity:warning")
 	require.Contains(t, logs.String(), clientID)
 	require.Contains(t, logs.String(), GrantTypeTokenExchange)
+	require.Contains(t, logs.String(), service.bearerSessionID("sub-tok"))
 }
 
 func TestSelfIssuedExchangeClientStorageUnavailable(t *testing.T) {
@@ -46,6 +49,8 @@ func TestSelfIssuedExchangeClientStorageUnavailable(t *testing.T) {
 		for _, operation := range []string{"get_client", "is_client_revoked"} {
 			t.Run(fault.name+"/"+operation, func(t *testing.T) {
 				fixture := newFaultyGrantFixture(t)
+				var logs bytes.Buffer
+				fixture.srv.Auditor = security.NewAuditor(slog.New(slog.NewJSONHandler(&logs, nil)), true)
 				fixture.srv.subjectValidators[SubjectTokenTypeIDToken] = &stubTokenValidator{byToken: map[string]*SubjectIdentity{
 					"subject": {Subject: "person", Issuer: "https://issuer.example.com"},
 				}}
@@ -61,6 +66,11 @@ func TestSelfIssuedExchangeClientStorageUnavailable(t *testing.T) {
 				result, err := fixture.srv.SelfIssuedExchange(t.Context(), request)
 				requireUnavailable(t, err)
 				require.Nil(t, result)
+				details := auditDetails(t, &logs, security.EventAuthFailure)
+				require.Equal(t, request.ClientID, details["__client_id"])
+				require.Equal(t, fixture.srv.bearerSessionID("subject"), details["session_id"])
+				require.Equal(t, GrantTypeTokenExchange, details["grant_type"])
+				require.Equal(t, "warning", details["severity"])
 				requireWithinDeadline(t, time.Since(started))
 				fixture.faulty.Heal()
 				result, err = fixture.srv.SelfIssuedExchange(t.Context(), request)
