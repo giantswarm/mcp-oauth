@@ -170,9 +170,10 @@ type Config struct {
 	StartupTimeout time.Duration
 
 	// MigrateFamilyRevocationIndex backfills an unindexed namespace on standalone
-	// Valkey while the store serves traffic. On Valkey Cluster, an unindexed
-	// namespace keeps compatibility lookups and logs an error; migrate it with
-	// the stopped-traffic MigrateFamilyRevocations method.
+	// Valkey while the store serves traffic. With Valkey Cluster or Sentinel, an
+	// unindexed namespace keeps compatibility lookups and logs an error; migrate
+	// it with the stopped-traffic MigrateFamilyRevocations method. The migrating
+	// replica needs the INFO command, which ACLs place in @dangerous.
 	// Replicas sharing the key prefix take turns through a lease. Every replica
 	// adopts a completed index, whether this setting is enabled or not.
 	// Enable it only when no binary built from a release older than v1.17.2

@@ -487,3 +487,25 @@ func TestFamilyRevocationMigrationBatchesMetadata(t *testing.T) {
 	require.True(t, legacy)
 	require.EqualValues(t, 3, client.commands.Load())
 }
+
+func TestOnlineFamilyRevocationMigrationSkipsCompletedIndex(t *testing.T) {
+	seed := unindexedSeed(t)
+	seed.familyRevocationsIndexed.Store(false)
+	require.NoError(t, seed.client.Do(t.Context(), seed.client.B().Set().Key(seed.familyRevocationIndexKey()).Value(familyRevocationIndexWithLegacyChecks).Build()).Error())
+	var scans atomic.Int64
+	seed.client = &familyMigrationTestClient{Client: seed.client, after: func(_ context.Context, arguments []string) {
+		if arguments[0] == "SCAN" {
+			scans.Add(1)
+		}
+	}}
+
+	complete, err := seed.migrateFamilyRevocationsUnderLease(t.Context())
+	require.NoError(t, err)
+	require.True(t, complete)
+	require.Zero(t, scans.Load(), "a completed index must not be walked again")
+	require.True(t, seed.familyRevocationsIndexed.Load())
+	require.True(t, seed.checkLegacyFamilyMarkers.Load())
+	held, err := seed.client.Do(t.Context(), seed.client.B().Exists().Key(seed.familyMigrationLeaseKey()).Build()).AsInt64()
+	require.NoError(t, err)
+	require.Zero(t, held)
+}

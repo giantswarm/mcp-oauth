@@ -132,8 +132,9 @@ func (s *Store) loadFamilyRevocationIndexState(ctx context.Context) (bool, error
 	return true, nil
 }
 
-// migrateFamilyRevocationsUnderLease requires standalone Valkey because a
-// per-node SCAN cannot cover keys moved between cluster nodes during the walk.
+// migrateFamilyRevocationsUnderLease reports whether the index is complete. It
+// requires standalone Valkey because a per-node SCAN cannot cover keys moved
+// between cluster nodes during the walk.
 func (s *Store) migrateFamilyRevocationsUnderLease(ctx context.Context) (bool, error) {
 	if s.client.Mode() != valkeygo.ClientModeStandalone {
 		return false, errOnlineFamilyMigrationRequiresStandalone
@@ -145,6 +146,11 @@ func (s *Store) migrateFamilyRevocationsUnderLease(ctx context.Context) (bool, e
 		return false, err
 	}
 	defer s.releaseFamilyMigrationLease(holder)
+	// The previous lease holder may have completed the index after this
+	// replica last checked.
+	if indexed, err := s.loadFamilyRevocationIndexState(ctx); err != nil || indexed {
+		return indexed, err
+	}
 
 	runID, err := s.serverRunID(ctx)
 	if err != nil {
