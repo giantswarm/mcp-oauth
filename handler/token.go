@@ -414,6 +414,10 @@ func (h *Handler) authenticateClientWithLookup(r *http.Request, clientID, client
 		return h.authenticateAssertion(r, clientID, clientIP)
 	}
 	basicClientID, basicClientSecret := h.parseBasicAuth(r)
+	if r.Header.Get("Authorization") != "" && basicClientID == "" {
+		h.logAuthFailure(r.Context(), clientID, clientIP, "client_authentication_failed", "Client authentication failed")
+		return nil, oauth.ErrInvalidClient("Client authentication failed")
+	}
 	formClientID := clientID
 
 	// RFC 6749 §2.3.1: if both Basic Auth and form client_id are supplied,

@@ -265,7 +265,7 @@ func (h *Handler) handleBrokeredTokenExchangeError(
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "unsupported "+unsupported.Role()+"_token_type")
 		h.writeError(w, constants.ErrorCodeInvalidRequest,
-			"no validator registered for "+unsupported.Role()+"_token_type "+unsupported.TokenType(), http.StatusBadRequest)
+			unsupported.Role()+"_token_type is not supported", http.StatusBadRequest)
 	default:
 		h.logger.Debug("brokered token exchange failed",
 			"client_id", clientID, "audience", audience, "ip", clientIP, paramError, err)
@@ -337,7 +337,7 @@ func (h *Handler) handleTokenExchangeError(
 		h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusBadRequest, startTime)
 		instrumentation.SetSpanError(span, "unsupported "+unsupported.Role()+"_token_type")
 		h.writeError(w, constants.ErrorCodeInvalidRequest,
-			"no validator registered for "+unsupported.Role()+"_token_type "+unsupported.TokenType(),
+			unsupported.Role()+"_token_type is not supported",
 			http.StatusBadRequest)
 		return
 	}

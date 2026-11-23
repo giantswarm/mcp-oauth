@@ -249,7 +249,7 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 	}
 
 	s.Logger.Debug("token exchange: issued token",
-		claimSub, identity.Subject, "aud", audience, paramScope, grantedScope, "exp", expiresAt,
+		"aud", audience, paramScope, grantedScope, "exp", expiresAt,
 		"delegated", act != nil)
 
 	s.Auditor.LogEvent(ctx, security.Event{

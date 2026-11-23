@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/giantswarm/mcp-oauth/internal/constants"
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
 )
@@ -29,19 +30,118 @@ func TestTokenExchangeResourceAllowlistPreservesIdentity(t *testing.T) {
 }
 
 func TestTokenExchangeHeaderAuthenticationFailureUsesChallenge(t *testing.T) {
-	fixture := newExchangeContractFixture(t, false)
-	for _, scheme := range []string{"Bearer", "Digest"} {
-		t.Run(scheme, func(t *testing.T) {
-			form := fixture.form()
-			form.Set("client_id", fixture.clientID)
-			request := newTokenExchangeRequest(form)
-			request.Header.Set("Authorization", scheme+" invalid-client-credential")
+	for _, flow := range []string{"local", "brokered"} {
+		t.Run(flow, func(t *testing.T) {
+			fixture := newExchangeContractFixture(t, flow == "brokered")
+			for _, scheme := range []string{"Bearer", "Digest", "Basic"} {
+				for _, withClientID := range []bool{false, true} {
+					name := scheme + "/without client_id"
+					if withClientID {
+						name = scheme + "/with client_id"
+					}
+					t.Run(name, func(t *testing.T) {
+						form := fixture.form()
+						if withClientID {
+							form.Set("client_id", fixture.clientID)
+						}
+						request := newTokenExchangeRequest(form)
+						request.Header.Set("Authorization", scheme+" invalid-client-credential")
+						fixture.logs.Reset()
+						response := serveToken(fixture.handler, request)
+						requireOAuthError(t, response, http.StatusUnauthorized, constants.ErrorCodeInvalidClient)
+						require.Equal(t, scheme+` realm="oauth"`, response.Header().Get("WWW-Authenticate"))
+						require.True(t, auditAuthFailureWithReason(t, fixture.logs, "client_authentication_failed"))
+						require.False(t, auditEventLogged(t, fixture.logs, security.EventTokenIssued))
+						if fixture.exchanger != nil {
+							require.Nil(t, fixture.exchanger.gotReq)
+						}
+					})
+				}
+			}
+		})
+	}
+}
+
+func TestTokenExchangeHeaderAuthenticationRejectsMixedCredentials(t *testing.T) {
+	for _, flow := range []string{"local", "brokered"} {
+		t.Run(flow, func(t *testing.T) {
+			fixture := newExchangeContractFixture(t, flow == "brokered")
+			for _, parameter := range []string{"client_secret", "client_id", "client_assertion"} {
+				t.Run(parameter, func(t *testing.T) {
+					form := fixture.form()
+					form.Set(parameter, "credential")
+					if parameter == "client_id" {
+						form.Add(parameter, "another-client")
+					}
+					request := newTokenExchangeRequest(form)
+					request.Header.Set("Authorization", "Bearer invalid-client-credential")
+					fixture.logs.Reset()
+					response := serveToken(fixture.handler, request)
+					requireOAuthError(t, response, http.StatusBadRequest, constants.ErrorCodeInvalidRequest)
+					require.Empty(t, response.Header().Get("WWW-Authenticate"))
+					require.True(t, auditAuthFailureWithReason(t, fixture.logs, "client_credentials_malformed"))
+					require.False(t, auditEventLogged(t, fixture.logs, security.EventTokenIssued))
+					if fixture.exchanger != nil {
+						require.Nil(t, fixture.exchanger.gotReq)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestTokenExchangeKeepsSubjectIdentityInAudit(t *testing.T) {
+	for _, flow := range []string{"local", "brokered"} {
+		t.Run(flow, func(t *testing.T) {
+			fixture := newExchangeContractFixture(t, flow == "brokered")
 			fixture.logs.Reset()
-			response := serveToken(fixture.handler, request)
-			requireOAuthError(t, response, http.StatusUnauthorized, constants.ErrorCodeInvalidClient)
-			require.Equal(t, scheme+` realm="oauth"`, response.Header().Get("WWW-Authenticate"))
-			require.True(t, auditEventLogged(t, fixture.logs, security.EventAuthFailure))
-			require.False(t, auditEventLogged(t, fixture.logs, security.EventTokenIssued))
+			response := fixture.request(fixture.form())
+			require.Equal(t, http.StatusOK, response.Code)
+			issuanceAudited := false
+			for _, record := range scanAuditRecords(t, fixture.logs) {
+				if audit, ok := record["audit"].(map[string]any); ok {
+					if audit["event_type"] == security.EventTokenIssued {
+						require.Equal(t, helpers.HashForLogging("user@example.com"), audit["user_id_hash"])
+						issuanceAudited = true
+					}
+					continue
+				}
+				encoded, err := json.Marshal(record)
+				require.NoError(t, err)
+				require.NotContains(t, string(encoded), "user@example.com")
+			}
+			require.True(t, issuanceAudited)
+		})
+	}
+}
+
+func TestTokenExchangeUnsupportedTypesUseASCIIErrorDescriptions(t *testing.T) {
+	for _, flow := range []string{"local", "brokered"} {
+		t.Run(flow, func(t *testing.T) {
+			fixture := newExchangeContractFixture(t, flow == "brokered")
+			for _, role := range []string{"subject", "actor"} {
+				t.Run(role, func(t *testing.T) {
+					form := fixture.form()
+					if role == "actor" {
+						form.Set("actor_token", "actor-jwt")
+					}
+					form.Set(role+"_token_type", "urn:example:\"\\☃")
+					fixture.logs.Reset()
+					response := fixture.request(form)
+					requireOAuthError(t, response, http.StatusBadRequest, constants.ErrorCodeInvalidRequest)
+					description := decodeErrorResponse(t, response).ErrorDescription
+					require.NotEmpty(t, description)
+					for _, character := range description {
+						require.True(t, character >= 0x20 && character <= 0x21 || character >= 0x23 && character <= 0x5b || character >= 0x5d && character <= 0x7e,
+							"error_description contains forbidden character %U", character)
+					}
+					require.True(t, auditAuthFailureWithReason(t, fixture.logs, "unsupported_"+role+"_token_type"))
+					require.False(t, auditEventLogged(t, fixture.logs, security.EventTokenIssued))
+					if fixture.exchanger != nil {
+						require.Nil(t, fixture.exchanger.gotReq)
+					}
+				})
+			}
 		})
 	}
 }

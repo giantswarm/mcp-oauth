@@ -138,7 +138,7 @@ func TestTokenExchangeResourceSyntax(t *testing.T) {
 	for _, flow := range []string{"local", "brokered"} {
 		t.Run(flow, func(t *testing.T) {
 			fixture := newExchangeContractFixture(t, flow == "brokered")
-			for _, resource := range []string{"relative", "https://api.example.com/#fragment", "https://api.example.com/#", "https://api.example.com/%zz", "https://api.example.com/a b", "https://api.example.com/?q=%zz", "urn:example:bad value", "https://api.example.com/" + strings.Repeat("a", server.MaxResourceLength)} {
+			for _, resource := range []string{"relative", "https://api.example.com/#fragment", "https://api.example.com/#", "https://api.example.com/%zz", "https://api.example.com/a b", "https://api.example.com/?q=%zz", "https://user@@api.example.com/", "urn:example:bad value", "https://api.example.com/" + strings.Repeat("a", server.MaxResourceLength)} {
 				fixture.logs.Reset()
 				form := fixture.form()
 				form.Set("resource", resource)
@@ -150,7 +150,7 @@ func TestTokenExchangeResourceSyntax(t *testing.T) {
 					require.Nil(t, fixture.exchanger.gotReq)
 				}
 			}
-			for _, resource := range []string{"", "urn:example:resource", "https://api.example.com/?value=%23fragment"} {
+			for _, resource := range []string{"", "urn:example:resource", "https://api.example.com/?value=%23fragment", "https://user%40example.com@api.example.com/"} {
 				form := fixture.form()
 				form.Set("resource", resource)
 				response := fixture.request(form)

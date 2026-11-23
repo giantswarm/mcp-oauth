@@ -31,7 +31,7 @@ func validResourceURIComponents(resource string, parsed *url.URL) bool {
 	path, _, _ := strings.Cut(resource[len(parsed.Scheme)+1:], "?")
 	if strings.HasPrefix(path, "//") {
 		authority, remaining, _ := strings.Cut(path[2:], "/")
-		if !validURICharacters(authority, ":@[]") {
+		if strings.Count(authority, "@") > 1 || !validURICharacters(authority, ":@[]") {
 			return false
 		}
 		path = remaining

@@ -252,7 +252,7 @@ func (s *Server) dispatchDownstreamExchange(
 	}
 
 	s.Logger.Debug("brokered token exchange: issued downstream token",
-		paramClientID, request.ClientID, claimSub, identity.Subject, "subject_iss", identity.Issuer,
+		paramClientID, request.ClientID, "subject_iss", identity.Issuer,
 		paramAudience, request.Audience, paramScope, result.Scope, "exp", result.ExpiresAt,
 		logKeySessionID, sessionID)
 
