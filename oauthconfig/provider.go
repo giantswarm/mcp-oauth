@@ -39,7 +39,7 @@ func ProviderFromEnvWithPrefix(prefix string) (providers.Provider, error) {
 	if err := providerSettingsFromEnv(prefix, &settings); err != nil {
 		return nil, err
 	}
-	return configuredProvider(settings)
+	return configuredProvider(settings, false)
 }
 
 // providerSettingsFromEnv sets the one provider configuration that PROVIDER
@@ -103,7 +103,7 @@ func DexFromEnvWithPrefix(prefix string) (providers.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	return configuredProvider(Settings{Dex: configuration})
+	return configuredProvider(Settings{Dex: configuration}, false)
 }
 
 func dexConfigFromEnv(prefix string) (*dex.Config, error) {
@@ -181,7 +181,7 @@ func GoogleFromEnvWithPrefix(prefix string) (providers.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	return configuredProvider(Settings{Google: configuration})
+	return configuredProvider(Settings{Google: configuration}, false)
 }
 
 func googleConfigFromEnv(prefix string) (*google.Config, error) {
@@ -243,7 +243,7 @@ func GitHubFromEnvWithPrefix(prefix string) (providers.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
-	return configuredProvider(Settings{GitHub: configuration})
+	return configuredProvider(Settings{GitHub: configuration}, false)
 }
 
 func githubConfigFromEnv(prefix string) (*github.Config, error) {

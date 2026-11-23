@@ -323,6 +323,9 @@ func (h *Handler) buildInterstitialData(redirectURL, appName string, branding *s
 // to the upstream identity provider. Errors for such a client are answered
 // directly instead of being redirected to its redirect URI.
 func (h *Handler) ServeAuthorization(w http.ResponseWriter, r *http.Request) {
+	if h.notFoundWhen(w, r, h.server.Config.DisableAuthorizationServer) {
+		return
+	}
 	startTime := time.Now()
 
 	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.authorization")
@@ -560,6 +563,9 @@ func (h *Handler) refreshConsent(w http.ResponseWriter, r *http.Request, span tr
 
 // ServeCallback handles the OAuth provider callback
 func (h *Handler) ServeCallback(w http.ResponseWriter, r *http.Request) {
+	if h.notFoundWhen(w, r, h.server.Config.DisableAuthorizationServer) {
+		return
+	}
 	startTime := time.Now()
 
 	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.callback")

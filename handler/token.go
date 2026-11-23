@@ -30,6 +30,9 @@ const (
 
 // ServeToken handles the OAuth token endpoint
 func (h *Handler) ServeToken(w http.ResponseWriter, r *http.Request) {
+	if h.notFoundWhen(w, r, h.server.Config.DisableAuthorizationServer) {
+		return
+	}
 	startTime := time.Now()
 
 	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.token")

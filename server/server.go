@@ -163,11 +163,10 @@ func New(
 	logger *slog.Logger,
 	opts ...Option,
 ) (*Server, error) {
-	if err := validateServerDependencies(provider, tokenStore, clientStore, flowStore); err != nil {
+	config, logger = applyDefaults(config, logger)
+	if err := validateServerDependencies(provider, tokenStore, clientStore, flowStore, config.DisableAuthorizationServer); err != nil {
 		return nil, err
 	}
-
-	config, logger = applyDefaults(config, logger)
 
 	// Create cleanup context for background goroutines
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
@@ -221,8 +220,8 @@ func New(
 	for _, opt := range opts {
 		opt(srv)
 	}
-	if srv.initializationError != nil {
-		return nil, srv.initializationError
+	if err := srv.validateOptions(); err != nil {
+		return nil, err
 	}
 	if err := srv.initializeConsentCookieKey(cleanupCtx); err != nil {
 		return nil, err
@@ -304,8 +303,9 @@ func (s *Server) attachRevokedTokenStore(tokenStore storage.TokenStore) {
 }
 
 // validateServerDependencies checks that all required dependencies are provided.
-func validateServerDependencies(provider providers.Provider, tokenStore storage.TokenStore, clientStore storage.ClientStore, flowStore storage.FlowStore) error {
-	if provider == nil {
+// A nil provider is accepted only with the authorization server off.
+func validateServerDependencies(provider providers.Provider, tokenStore storage.TokenStore, clientStore storage.ClientStore, flowStore storage.FlowStore, authorizationServerDisabled bool) error {
+	if provider == nil && !authorizationServerDisabled {
 		return fmt.Errorf("provider is required")
 	}
 	if tokenStore == nil {
@@ -363,6 +363,9 @@ func (s *Server) initializeMetadataSupport() {
 // Logs warnings for any provider defaults that aren't in the server's supported scopes list.
 // Also logs informational messages about mandatory audience scopes that will be auto-merged.
 func (s *Server) validateProviderDefaultScopes(logger *slog.Logger) {
+	if s.provider == nil {
+		return
+	}
 	providerDefaults := s.provider.DefaultScopes()
 
 	// Log mandatory audience scopes (these will be auto-merged into all requests)

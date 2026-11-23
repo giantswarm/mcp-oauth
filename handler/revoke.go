@@ -53,6 +53,9 @@ func (h *Handler) authenticateRevocationClient(w http.ResponseWriter, r *http.Re
 
 // ServeTokenRevocation handles the RFC 7009 token revocation endpoint
 func (h *Handler) ServeTokenRevocation(w http.ResponseWriter, r *http.Request) {
+	if h.notFoundWhen(w, r, h.server.Config.DisableAuthorizationServer) {
+		return
+	}
 	startTime := time.Now()
 
 	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.token_revocation")

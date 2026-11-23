@@ -19,6 +19,7 @@ type trustedIssuer struct {
 	AllowedClaims           map[string]string `json:"allowedClaims,omitempty"`
 	CAFile                  string            `json:"caFile,omitempty"`
 	AllowPrivateIPJWKSHosts []string          `json:"allowPrivateIPJWKSHosts,omitempty"`
+	OpenIDProvider          bool              `json:"openIDProvider,omitempty"`
 }
 
 // TrustedIssuersFromEnv reads OAUTH_TRUSTED_ISSUERS, the issuers whose JWTs
@@ -36,6 +37,8 @@ type trustedIssuer struct {
 //   - allowedClaims            claim name to exact value or glob pattern
 //   - caFile                   PEM bundle added to the system roots for the JWKS endpoint
 //   - allowPrivateIPJWKSHosts  hostnames whose JWKS endpoint may resolve to a private address
+//   - openIDProvider           true for the OpenID Provider people sign in with, such as Dex:
+//     handler.ProviderIDTokenFromContext returns its bearers as the ID token
 //
 // Trusted issuers are never advertised; OAUTH_AUTHORIZATION_SERVERS names the
 // ones a client should use. The list is a trust anchor: load it only from
@@ -112,6 +115,7 @@ func (entry trustedIssuer) resolve() (server.TrustedIssuer, error) {
 		AcceptedTypHeaders:      entry.AcceptedTypHeaders,
 		AllowPrivateIPJWKSHosts: entry.AllowPrivateIPJWKSHosts,
 		RootCAs:                 roots,
+		OpenIDProvider:          entry.OpenIDProvider,
 	}, nil
 }
 

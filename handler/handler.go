@@ -149,8 +149,11 @@ type OAuthRoutesOptions struct {
 // Routes registered (all under /oauth, paths fixed by the Config endpoint
 // builders):
 //
-//   - /oauth/authorize, /oauth/callback, /oauth/token,
-//     /oauth/revoke, /oauth/register — always registered.
+//   - /oauth/authorize, /oauth/callback, /oauth/token, /oauth/revoke —
+//     registered unless Config.DisableAuthorizationServer is true; then only
+//     the Protected Resource Metadata routes are registered.
+//   - /oauth/register — unless Config.DisableDynamicClientRegistration is
+//     also true.
 //   - /oauth/introspect — only when Config.EnableIntrospectionEndpoint is
 //     true. ServeTokenIntrospection does not self-gate on that flag, so
 //     registering it unconditionally would expose an endpoint the operator
@@ -172,12 +175,21 @@ type OAuthRoutesOptions struct {
 //	    IncludeMetadata: true,
 //	})
 func (h *Handler) RegisterOAuthRoutes(mux *http.ServeMux, opts OAuthRoutesOptions) {
+	if h.server.Config.DisableAuthorizationServer {
+		if opts.IncludeMetadata {
+			h.registerProtectedResourceMetadata(mux, opts.MCPPath)
+		}
+		return
+	}
+
 	// OAuth flow endpoints — fixed paths (see method godoc for rationale).
 	mux.HandleFunc(server.EndpointPathAuthorize, h.ServeAuthorization)
 	mux.HandleFunc(oauthCallbackPath, h.ServeCallback)
 	mux.HandleFunc(server.EndpointPathToken, h.ServeToken)
 	mux.HandleFunc(server.EndpointPathRevoke, h.ServeTokenRevocation)
-	mux.HandleFunc(server.EndpointPathRegister, h.ServeClientRegistration)
+	if h.server.Config.RegistrationEnabled() {
+		mux.HandleFunc(server.EndpointPathRegister, h.ServeClientRegistration)
+	}
 
 	// Token introspection (RFC 7662) is opt-in. ServeTokenIntrospection does
 	// not self-gate on Config.EnableIntrospectionEndpoint — registering it
@@ -204,21 +216,7 @@ func (h *Handler) RegisterOAuthRoutes(mux *http.ServeMux, opts OAuthRoutesOption
 		return
 	}
 
-	// ResourceMetadataByPath is the configuration-driven replacement for the
-	// single MCPPath argument. If both are set, the configuration wins —
-	// RegisterProtectedResourceMetadataRoutes already registers all the
-	// configured paths, so a different MCPPath value would be registered
-	// but never preferred over the config entries. Log once so consumers
-	// notice the inconsistency instead of silently ignoring the MCPPath.
-	if opts.MCPPath != "" && len(h.server.Config.ResourceMetadataByPath) > 0 {
-		h.logger.Warn(
-			"RegisterOAuthRoutes: MCPPath is set alongside non-empty Config.ResourceMetadataByPath; the configuration map is preferred and MCPPath adds only a back-compat alias route",
-			"mcp_path", opts.MCPPath,
-			"configured_paths", len(h.server.Config.ResourceMetadataByPath),
-		)
-	}
-
-	h.RegisterProtectedResourceMetadataRoutes(mux, opts.MCPPath)
+	h.registerProtectedResourceMetadata(mux, opts.MCPPath)
 	h.RegisterAuthorizationServerMetadataRoutes(mux)
 
 	// JWKS is registered only in JWT mode. AccessTokenFormat is fixed for
@@ -227,6 +225,34 @@ func (h *Handler) RegisterOAuthRoutes(mux *http.ServeMux, opts OAuthRoutesOption
 	if h.server.Config.IsJWTAccessTokenFormat() {
 		mux.HandleFunc(server.EndpointPathJWKS, h.ServeJWKS)
 	}
+}
+
+// registerProtectedResourceMetadata mounts the RFC 9728 documents.
+func (h *Handler) registerProtectedResourceMetadata(mux *http.ServeMux, mcpPath string) {
+	// ResourceMetadataByPath is the configuration-driven replacement for the
+	// single MCPPath argument. If both are set, the configuration wins —
+	// RegisterProtectedResourceMetadataRoutes already registers all the
+	// configured paths, so a different MCPPath value would be registered
+	// but never preferred over the config entries. Log once so consumers
+	// notice the inconsistency instead of silently ignoring the MCPPath.
+	if mcpPath != "" && len(h.server.Config.ResourceMetadataByPath) > 0 {
+		h.logger.Warn(
+			"RegisterOAuthRoutes: MCPPath is set alongside non-empty Config.ResourceMetadataByPath; the configuration map is preferred and MCPPath adds only a back-compat alias route",
+			"mcp_path", mcpPath,
+			"configured_paths", len(h.server.Config.ResourceMetadataByPath),
+		)
+	}
+
+	h.RegisterProtectedResourceMetadataRoutes(mux, mcpPath)
+}
+
+// notFoundWhen answers 404 for an endpoint the configuration turns off, so a
+// route a consumer mounts by hand behaves as if it were not mounted.
+func (h *Handler) notFoundWhen(w http.ResponseWriter, r *http.Request, disabled bool) bool {
+	if disabled {
+		http.NotFound(w, r)
+	}
+	return disabled
 }
 
 // oauthCallbackPath is the provider-callback path. The server's own

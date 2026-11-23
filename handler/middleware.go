@@ -64,7 +64,12 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 		}
 
 		ctx := contextWithValidatedToken(r.Context(), userInfo, metadata)
-		ctx = context.WithValue(ctx, providerTokenKey{}, validatedProviderToken{bearer: accessToken, source: userInfo.TokenSource, store: h.server.TokenStore()})
+		ctx = context.WithValue(ctx, providerTokenKey{}, validatedProviderToken{
+			bearer:         accessToken,
+			source:         userInfo.TokenSource,
+			store:          h.server.TokenStore(),
+			openIDProvider: userInfo.TokenSource == providers.TokenSourceTrustedIssuer && h.server.IsOpenIDProviderIssuer(userInfo.Issuer),
+		})
 		ctx = ContextWithSessionID(ctx, h.sessionIDForToken(accessToken, metadata))
 		next.ServeHTTP(h.protectedResponseWriter(w, r), r.WithContext(ctx))
 	})

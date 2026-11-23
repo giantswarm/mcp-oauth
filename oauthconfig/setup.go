@@ -21,7 +21,8 @@ import (
 	"github.com/giantswarm/mcp-oauth/storage/valkey"
 )
 
-// Settings contains resolved configuration. Exactly one provider must be set.
+// Settings contains resolved configuration. Exactly one provider must be set,
+// or none when Server.DisableAuthorizationServer is true.
 // Nil Valkey selects in-memory storage; persistent storage requires encryption.
 // TrustedIssuers are the issuers whose JWTs are accepted besides the server's
 // own tokens; see [TrustedIssuersFromEnv].
@@ -65,7 +66,7 @@ func Setup(settings Settings, options ...server.Option) (*Runtime, func(context.
 	// Settings go first so that a caller's explicit options, such as
 	// server.WithSubjectTokenValidator, take precedence.
 	options = append([]server.Option{server.WithTrustedIssuers(settings.TrustedIssuers)}, options...)
-	provider, err := configuredProvider(settings)
+	provider, err := configuredProvider(settings, serverConfig.DisableAuthorizationServer)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -133,12 +134,18 @@ func configuredStorage(configuration *valkey.Config, encryptor *security.Encrypt
 	return store, store.Close, nil
 }
 
-func configuredProvider(settings Settings) (providers.Provider, error) {
+func configuredProvider(settings Settings, authorizationServerDisabled bool) (providers.Provider, error) {
 	count := 0
 	for _, present := range []bool{settings.Dex != nil, settings.Google != nil, settings.GitHub != nil} {
 		if present {
 			count++
 		}
+	}
+	if authorizationServerDisabled {
+		if count != 0 {
+			return nil, fmt.Errorf("an OAuth provider configuration requires the authorization server")
+		}
+		return nil, nil
 	}
 	if count != 1 {
 		return nil, fmt.Errorf("exactly one OAuth provider configuration is required")

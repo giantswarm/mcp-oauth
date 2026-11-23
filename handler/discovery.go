@@ -138,7 +138,10 @@ func (h *Handler) findPathConfig(resourcePath string) *server.ProtectedResourceC
 func (h *Handler) buildProtectedResourceMetadata(resourcePath string, pathConfig *server.ProtectedResourceConfig) map[string]any {
 	// Default values from server configuration
 	resource := h.server.Config.GetResourceIdentifier()
-	authServers := []string{h.server.Config.Issuer}
+	var authServers []string
+	if !h.server.Config.DisableAuthorizationServer {
+		authServers = []string{h.server.Config.Issuer}
+	}
 	bearerMethods := []string{"header"}
 	var scopesSupported []string
 
@@ -169,8 +172,10 @@ func (h *Handler) buildProtectedResourceMetadata(resourcePath string, pathConfig
 
 	metadata := map[string]any{
 		"resource":                 resource,
-		"authorization_servers":    authServers,
 		"bearer_methods_supported": bearerMethods,
+	}
+	if len(authServers) > 0 {
+		metadata["authorization_servers"] = authServers
 	}
 
 	// Include scopes_supported if configured (MCP 2025-11-25)
@@ -298,6 +303,9 @@ func (h *Handler) validateMetadataPath(mcpPath string) error {
 //	//            (plus standard endpoints for backward compatibility)
 //	handler.RegisterAuthorizationServerMetadataRoutes(mux)
 func (h *Handler) RegisterAuthorizationServerMetadataRoutes(mux *http.ServeMux) {
+	if h.server.Config.DisableAuthorizationServer {
+		return
+	}
 	issuerPath := h.extractIssuerPath()
 
 	// Helper to register standard endpoints (always registered for backward compatibility)
@@ -382,6 +390,9 @@ func (h *Handler) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 // serveAuthServerMetadata is the shared render path for AS-metadata and OIDC-config.
 // The span is opened by the caller so each endpoint carries its own span name.
 func (h *Handler) serveAuthServerMetadata(w http.ResponseWriter, r *http.Request, span trace.Span) {
+	if h.notFoundWhen(w, r, h.server.Config.DisableAuthorizationServer) {
+		return
+	}
 	startTime := time.Now()
 
 	if r.Method != http.MethodGet {
@@ -492,6 +503,9 @@ func (h *Handler) addOptionalMetadata(metadata map[string]any) {
 
 // isRegistrationAvailable checks if client registration is available.
 func (h *Handler) isRegistrationAvailable() bool {
+	if !h.server.Config.RegistrationEnabled() {
+		return false
+	}
 	return h.server.Config.AllowPublicClientRegistration ||
 		h.server.Config.RegistrationAccessToken != "" ||
 		len(h.server.Config.TrustedPublicRegistrationSchemes) > 0 ||

@@ -989,6 +989,24 @@ type Config struct {
 	// Default: false.
 	EnableClientManagementEndpoint bool
 
+	// DisableDynamicClientRegistration turns off RFC 7591 Dynamic Client
+	// Registration: /oauth/register is not mounted, ServeClientRegistration
+	// answers 404 and registration_endpoint is left out of the authorization
+	// server metadata. EnableClientManagementEndpoint is refused with it.
+	// Default: false.
+	DisableDynamicClientRegistration bool
+
+	// DisableAuthorizationServer makes the server a resource server only: New
+	// accepts a nil provider, the authorization server routes and metadata
+	// are not mounted and their handlers answer 404, and ValidateToken accepts
+	// only JWTs from WithTrustedIssuers, which New then requires. A bearer
+	// that is not such a JWT is refused without a store or provider lookup.
+	// The protected resource metadata advertises only the authorization
+	// servers listed in ResourceMetadataByPath. TrustedAudiences, the JWT
+	// access token format and the introspection, userinfo and client
+	// management endpoints are refused with it. Default: false.
+	DisableAuthorizationServer bool
+
 	// ClientMetadataCacheTTL is how long to cache a fetched client metadata
 	// document whose response states no freshness lifetime. Cache-Control and
 	// Expires take precedence; no-store, no-cache and expired responses are
@@ -1188,6 +1206,13 @@ func (c *Config) TokenEndpoint() string {
 	return c.Issuer + EndpointPathToken
 }
 
+// RegistrationEnabled reports whether RFC 7591 Dynamic Client Registration
+// is served: the authorization server is on and registration is not turned
+// off.
+func (c *Config) RegistrationEnabled() bool {
+	return !c.DisableAuthorizationServer && !c.DisableDynamicClientRegistration
+}
+
 // RegistrationEndpoint returns the full URL to the dynamic client registration endpoint
 func (c *Config) RegistrationEndpoint() string {
 	return c.Issuer + EndpointPathRegister
@@ -1249,20 +1274,16 @@ func (c *Config) Validate() error {
 		return ErrMissingIssuer
 	}
 
-	if err := c.validateIntrospectionResourceServers(); err != nil {
-		return err
-	}
-
-	if err := validatePreRegisteredClientMetadata(c); err != nil {
-		return err
-	}
-
-	if err := validateRestrictClientMetadata(c); err != nil {
-		return err
-	}
-
-	if err := validateTrustedClients(c.TrustedClients); err != nil {
-		return err
+	for _, check := range []func() error{
+		c.validateIntrospectionResourceServers,
+		func() error { return validatePreRegisteredClientMetadata(c) },
+		func() error { return validateRestrictClientMetadata(c) },
+		func() error { return validateTrustedClients(c.TrustedClients) },
+		c.validateServerSwitches,
+	} {
+		if err := check(); err != nil {
+			return err
+		}
 	}
 
 	if len(c.ConsentCookieKey) > 0 {
@@ -1306,6 +1327,33 @@ func (c *Config) Validate() error {
 			c.AccessTokenSigningAlgorithm, supportedSigningAlgorithmsList())
 	}
 	return validateSigningKeyMatchesAlgorithm(c.AccessTokenSigningKey, c.AccessTokenSigningAlgorithm)
+}
+
+// validateServerSwitches refuses settings that need a part of the server
+// that DisableAuthorizationServer or DisableDynamicClientRegistration turns
+// off.
+func (c *Config) validateServerSwitches() error {
+	if c.DisableDynamicClientRegistration && c.EnableClientManagementEndpoint {
+		return errors.New("EnableClientManagementEndpoint requires Dynamic Client Registration (RFC 7592)")
+	}
+	if !c.DisableAuthorizationServer {
+		return nil
+	}
+	for _, setting := range []struct {
+		name string
+		set  bool
+	}{
+		{"TrustedAudiences", len(c.TrustedAudiences) > 0},
+		{"AccessTokenFormat jwt", c.IsJWTAccessTokenFormat()},
+		{"EnableIntrospectionEndpoint", c.EnableIntrospectionEndpoint},
+		{"EnableUserInfoEndpoint", c.EnableUserInfoEndpoint},
+		{"EnableClientManagementEndpoint", c.EnableClientManagementEndpoint},
+	} {
+		if setting.set {
+			return fmt.Errorf("%s requires the authorization server, which DisableAuthorizationServer turns off", setting.name)
+		}
+	}
+	return nil
 }
 
 // validateIntrospectionResourceServers rejects empty entries in the allowlist.

@@ -183,6 +183,11 @@ type TrustedIssuer struct {
 	// typ header at all, so use [""] to accept them. Signature, audience,
 	// and claim checks still apply unchanged.
 	AcceptedTypHeaders []string
+	// OpenIDProvider marks the issuer people sign in with, whose bearers are
+	// their ID tokens: handler.ProviderIDTokenFromContext returns a bearer
+	// accepted through this entry, as it returns the provider's ID token with
+	// the authorization server on.
+	OpenIDProvider bool
 	// Actors restricts which acting parties this issuer may name in the act
 	// claim (RFC 8693 §4.1). Nil leaves act unchecked. When set, a token
 	// carrying act is accepted only if the iss of its outermost act, the
@@ -299,6 +304,12 @@ func (v *OIDCValidator) BearerTypHeaders(issuer string) []string {
 		return ti.AcceptedTypHeaders
 	}
 	return []string{rfc9068TokenType}
+}
+
+// entry returns the configuration of a trusted issuer.
+func (v *OIDCValidator) entry(issuer string) (TrustedIssuer, bool) {
+	ti, ok := v.issuers[issuer]
+	return ti, ok
 }
 
 // ErrSubjectEmailUnverified is returned by Validate when a trusted issuer maps

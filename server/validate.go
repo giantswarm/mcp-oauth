@@ -385,6 +385,12 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 		return userInfo, err
 	}
 
+	// Without an authorization server there are no stored tokens and no
+	// provider to ask.
+	if s.Config.DisableAuthorizationServer {
+		return nil, s.rejectUnknownBearer(ctx, accessToken)
+	}
+
 	// Provider credentials are usable only through a local access-token mapping.
 	storedToken, err := s.validateStoredToken(ctx, accessToken)
 	if err != nil {
@@ -691,7 +697,12 @@ func (s *Server) validateTrustedIssuerJWT(ctx context.Context, accessToken strin
 		s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_typ_invalid")
 		return nil, fmt.Errorf("trusted issuer JWT: %w", err)
 	}
-	if identity.Claims == nil || (s.Config.RequireResourceAccessTokens && helpers.FindMatchingAudience(identity.Claims.Audience, []string{s.Config.GetResourceIdentifier()}) == "") {
+	if identity.Claims == nil {
+		s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_audience_invalid")
+		return nil, errors.New("trusted issuer JWT is not intended for this resource server")
+	}
+	resourceAudience := helpers.FindMatchingAudience(identity.Claims.Audience, []string{s.Config.GetResourceIdentifier()}) != ""
+	if s.Config.RequireResourceAccessTokens && !resourceAudience {
 		s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_audience_invalid")
 		return nil, errors.New("trusted issuer JWT is not intended for this resource server")
 	}
@@ -703,6 +714,7 @@ func (s *Server) validateTrustedIssuerJWT(ctx context.Context, accessToken strin
 	userInfo.Issuer = identity.Issuer
 	userInfo.TokenSource = providers.TokenSourceTrustedIssuer
 	s.logTrustedIssuerJWTAccepted(ctx, accessToken, s.deriveForwardedSessionID(accessToken), identity.Issuer, userInfo)
+	s.Instrumentation.Metrics().RecordTrustedIssuerTokenAccepted(ctx, identity.Issuer, resourceAudience)
 	return userInfo, nil
 }
 
