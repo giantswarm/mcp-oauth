@@ -559,21 +559,9 @@ func validateHTTPAgainstServerIssuer(scheme, serverIssuer string) error {
 // client present it to that resource server (RFC 8707 §2, invalid_target).
 // Note: Caller must ensure resource is non-empty before calling this function
 func (s *Server) validateResourceParameter(resource string) error {
-	// SECURITY: Validate resource length to prevent DoS via extremely long URIs
-	// RFC 3986 suggests 2048 characters as a reasonable limit
-	if len(resource) > MaxResourceLength {
-		return fmt.Errorf("resource exceeds maximum length of %d characters", MaxResourceLength)
-	}
-
-	// Parse as URL
-	resourceURL, err := url.Parse(resource)
+	resourceURL, err := parseResourceURI(resource)
 	if err != nil {
-		return fmt.Errorf("resource must be a valid URI: %w", err)
-	}
-
-	// RFC 8707 Section 2: Resource parameter must be an absolute URI
-	if !resourceURL.IsAbs() {
-		return fmt.Errorf("resource must be an absolute URI with scheme and host")
+		return err
 	}
 
 	// SECURITY: Resource must use HTTPS (or HTTP for localhost development only)
@@ -595,11 +583,6 @@ func (s *Server) validateResourceParameter(resource string) error {
 	// Validate hostname is not empty
 	if resourceURL.Host == "" {
 		return fmt.Errorf("resource must include a host (e.g., https://api.example.com)")
-	}
-
-	// RFC 8707 Section 6: Resource MUST NOT include fragment
-	if resourceURL.Fragment != "" {
-		return fmt.Errorf("resource must not contain fragment identifier")
 	}
 
 	if !s.Config.servesResource(resource) {

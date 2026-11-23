@@ -1,6 +1,8 @@
 # Token Exchange (RFC 8693)
 
-Token exchange lets a client present an external token (an OIDC ID token, an access token from another issuer, or a Kubernetes ServiceAccount token) and receive a new access token issued by this server. The issued token carries an `act` claim recording the original identity as the acting party.
+Token exchange lets a client present an external token (an OIDC ID token, an access token from another issuer, or a Kubernetes ServiceAccount token) and receive a new access token issued by this server. The subject remains in `sub`; an optional actor token adds the acting party in `act` for delegation.
+
+`SelfIssuedExchange` and `BrokeredExchange` are this library's names for locally issued and downstream-issued tokens. Both use the RFC 8693 token exchange grant. Locally issued access tokens are signed by this authorization server; this is separate from OpenID Connect's Self-Issued OpenID Provider profile. The `client_id` claim records the requesting client and ownership for revocation; DPoP provides proof of possession separately.
 
 ## When to use it
 
@@ -142,13 +144,17 @@ A request without client authentication is answered `400 invalid_client`, a publ
 
 Resource servers that verify these tokens offline against the JWKS do not see revocation or client deletion; for them a token stays valid until `exp` (`AccessTokenTTL`, default one hour). Only `ValidateToken` on this server consults the revocation and client-retirement state.
 
+When upgrading, configure client credentials for HTTP callers and pass the authenticated `ClientID` from in-process callers before enabling exchange. Previously issued tokens without client ownership are not retroactively associated with a client; their prior validation and revocation behavior lasts until expiry. To invalidate those JWTs before expiry, resource servers must stop trusting their signing key; this also invalidates other tokens signed with that key.
+
 Optional parameters:
 
-- `requested_token_type`: only `urn:ietf:params:oauth:token-type:access_token` is supported. Omission defaults to that type; other requested types return `invalid_request` on both exchange flows.
-- `actor_token` and `actor_token_type`: supply both for delegation. An actor token without its type, or an actor type without an actor token, returns `invalid_request`.
-- `resource` (RFC 8707): target resource server URI to bind the issued token's `aud`. When omitted, `aud` defaults to the server's own `ResourceIdentifier`.
+- `requested_token_type`: the HTTP endpoint supports only `urn:ietf:params:oauth:token-type:access_token`. Omission defaults to that type; other requested types return `invalid_request` on both exchange flows. The broker forwards the requested type to the host `Exchanger` and rejects a mismatched result with `500 server_error`, without returning its token or auditing a successful issuance.
+- `actor_token` and `actor_token_type`: supply both for delegation. A nonempty actor token without its type, or a nonempty actor type without an actor token, returns `invalid_request`. Empty optional values are treated as omitted.
+- `resource` (RFC 8707): an absolute URI with no fragment component or `#` delimiter, to bind the issued token's `aud`. The maximum length is 2,048 bytes. When omitted, `aud` defaults to the server's own `ResourceIdentifier`. Malformed values return `invalid_target` on either exchange flow.
 - `scope`: requested scope subset; intersected with the issuer's `AllowedScopes` and with the subject token's `scope` claim when it has one; an empty intersection is refused with `invalid_scope`.
 - `DPoP` header: if present, the issued token is DPoP-bound (see [DPoP guide](./dpop.md)).
+
+Singleton parameters (`grant_type`, `subject_token`, `subject_token_type`, `actor_token`, `actor_token_type`, `requested_token_type` and `scope`) must not be repeated; duplicates return `invalid_request`. This endpoint supports one `resource` and one `audience`; multiple targets return `invalid_target`.
 
 Self-issued exchange policy:
 - **Resource allowlist**: `Config.TokenExchangeAllowedResources` caps the `resource` values that may be minted. Empty (the default) accepts any resource. When non-empty, a request whose `resource` is neither the server's own `ResourceIdentifier` nor a listed value is rejected with `invalid_target`. Values are compared ignoring scheme and host case, a default port and a trailing slash.
@@ -157,14 +163,14 @@ Self-issued exchange policy:
 
 ## Issued token
 
-The issued access token contains an `act` claim per RFC 8693 §4.1:
+When a distinct actor token is supplied, the issued access token contains an `act` claim per RFC 8693 §4.1:
 
 ```json
 {
   "sub": "user@example.com",
   "act": {
-    "iss": "https://dex.example.com",
-    "sub": "user@example.com"
+    "iss": "https://kubernetes.default.svc.cluster.local",
+    "sub": "system:serviceaccount:ai-platform:worker"
   },
   "scope": "openid email",
   "iss": "https://example.com",
@@ -172,7 +178,7 @@ The issued access token contains an `act` claim per RFC 8693 §4.1:
 }
 ```
 
-`act.iss` records the original issuer; `act.sub` records the original subject. The delegation chain is preserved if the issued token is exchanged again.
+`act.iss` and `act.sub` identify the acting party. Without a distinct actor, the exchange does not add an `act` claim. Any existing actor chain on the subject is preserved, and a new actor wraps that chain when another delegation hop is added.
 
 ## Injecting identity claims
 
@@ -237,6 +243,8 @@ srv, _ := server.New(provider, store, store, store,
 ```
 
 Return an error wrapping `server.ErrInvalidTarget` from `Exchange` to signal an audience the host cannot map; the client receives `invalid_target`. Return an error wrapping `server.ErrProviderUnavailable` when the downstream issuer did not answer; the client receives `503 Service Unavailable` with `Retry-After` and retries the same request.
+
+`ExchangerRequest.RequestedTokenType` carries the requested output type. HTTP requests always select `urn:ietf:params:oauth:token-type:access_token`, including when the parameter is omitted or empty. In-process callers can leave `BrokeredExchangeRequest.RequestedTokenType` empty to use the host's default, or provide a type that the host supports. A mismatched result returns `server.ErrIssuedTokenTypeMismatch` before a success audit event is emitted.
 
 ### Policy enforced by the broker path
 

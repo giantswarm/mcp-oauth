@@ -188,7 +188,7 @@ func (s *Server) SelfIssuedExchange(ctx context.Context, req SelfIssuedExchangeR
 	if audience == "" {
 		audience = s.Config.GetResourceIdentifier()
 	}
-	if err := s.checkAllowedResource(ctx, audience, sessionID); err != nil {
+	if err := s.checkAllowedResource(ctx, audience, req.ClientID, sessionID); err != nil {
 		return nil, err
 	}
 
@@ -375,9 +375,19 @@ func (s *Server) checkSubjectKeyBinding(ctx context.Context, identity *SubjectId
 // be minted for must be the server's own resource identifier or a listed value,
 // otherwise issuance is rejected with ErrInvalidTarget. Values are compared
 // after the same normalization as an authorization request's resource
-// (scheme and host case, default port, trailing slash). An empty list disables
-// the check. Returns nil when the exchange is allowed.
-func (s *Server) checkAllowedResource(ctx context.Context, audience, sessionID string) error {
+// (scheme and host case, default port, trailing slash). URI syntax is always
+// validated; an empty list imposes no target restriction.
+func (s *Server) checkAllowedResource(ctx context.Context, audience, clientID, sessionID string) error {
+	if _, err := parseResourceURI(audience); err != nil {
+		s.Auditor.LogEvent(ctx, security.Event{
+			Type: security.EventAuthFailure, ClientID: clientID,
+			Details: map[string]any{
+				logKeyReason: "token_exchange_resource_invalid", logKeySeverity: severityWarning,
+				paramGrantType: GrantTypeTokenExchange, logKeySessionID: sessionID,
+			},
+		})
+		return fmt.Errorf("%w: %v", ErrInvalidTarget, err)
+	}
 	allowed := s.Config.TokenExchangeAllowedResources
 	normalizedAudience := helpers.NormalizeURL(audience)
 	isAudience := func(resource string) bool { return helpers.NormalizeURL(resource) == normalizedAudience }
@@ -385,9 +395,10 @@ func (s *Server) checkAllowedResource(ctx context.Context, audience, sessionID s
 		return nil
 	}
 	s.Auditor.LogEvent(ctx, security.Event{
-		Type: security.EventAuthFailure,
+		Type: security.EventAuthFailure, ClientID: clientID,
 		Details: map[string]any{
 			logKeyReason:    "token_exchange_resource_not_allowed",
+			logKeySeverity:  severityWarning,
 			paramGrantType:  GrantTypeTokenExchange,
 			paramAudience:   audience,
 			logKeySessionID: sessionID,

@@ -94,6 +94,7 @@ func TestExchangeAuthorizationCode_ResourceTarget(t *testing.T) {
 		{name: "another server without a resource on the code", tokenResource: "https://other.example.com/mcp", wantErr: ErrInvalidTarget},
 		{name: "another server with a resource on the code", codeResource: servedResource, tokenResource: "https://other.example.com/mcp", wantErr: ErrInvalidTarget},
 		{name: "malformed resource", codeResource: servedResource, tokenResource: "https://mcp.example.com/mcp#fragment", wantErr: ErrInvalidTarget},
+		{name: "empty fragment", codeResource: servedResource, tokenResource: "https://mcp.example.com/mcp#", wantErr: ErrInvalidTarget},
 		{name: "served resource that differs from the code's", codeResource: servedResource, tokenResource: "https://mcp.example.com", wantErr: errInvalidGrant},
 	}
 	for _, tt := range tests {
