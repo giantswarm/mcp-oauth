@@ -189,8 +189,18 @@ const (
 
 // UserInfo represents user information from a provider
 type UserInfo struct {
-	// ID is the unique user identifier from the provider
+	// ID is the account's identifier at its issuer: the sub claim for an
+	// OpenID Provider or a trusted issuer (OpenID Connect Core 5.7, RFC 7519),
+	// the numeric user ID for GitHub. With Issuer it identifies one account
+	// and is never reassigned; key stored state on that pair.
 	ID string
+
+	// Username is the name this server knows the user by: the value of the
+	// claim a trusted issuer's SubjectClaim selects, such as a verified
+	// email, and ID otherwise. Tokens this server issues by token exchange
+	// carry it as sub (RFC 8693). An email can be reassigned, so it does not
+	// replace Issuer and ID as the key of stored state.
+	Username string
 
 	// Email is the user's email address
 	Email string

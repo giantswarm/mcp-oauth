@@ -351,6 +351,15 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 // (opaque, SSO, self-issued JWT). Use the returned error for logging,
 // not for setting the response body.
 func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
+	userInfo, err := s.validateBearer(ctx, accessToken)
+	if userInfo != nil && userInfo.Username == "" {
+		userInfo.Username = userInfo.ID
+	}
+	return userInfo, err
+}
+
+// validateBearer runs the ValidateToken pipeline.
+func (s *Server) validateBearer(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.Config.TokenValidationTimeout)
 	defer cancel()
 
@@ -649,11 +658,10 @@ func (s *Server) TokenMetadata(ctx context.Context, accessToken string) (*storag
 }
 
 // validateTokenAudience validates RFC 8707 audience binding for the token.
-// The token's audience must match this server's ResourceIdentifier.
+// The token's audience must name a resource from acceptedAudiences.
 func (s *Server) validateTokenAudience(ctx context.Context, accessToken string, metadata *storage.TokenMetadata) error {
-	expectedAudience := s.Config.GetResourceIdentifier()
-	// Check if audience matches this server's own resource identifier
-	if resourcesMatch(metadata.Audience, expectedAudience) {
+	accepted := s.acceptedAudiences(ctx)
+	if slices.ContainsFunc(accepted, func(resource string) bool { return resourcesMatch(metadata.Audience, resource) }) {
 		s.Logger.Debug("Token audience validation passed",
 			paramAudience, metadata.Audience,
 			"token_suffix", helpers.TokenSuffix(accessToken, 8))
@@ -661,7 +669,7 @@ func (s *Server) validateTokenAudience(ctx context.Context, accessToken string, 
 	}
 
 	// Audience mismatch - log and return error
-	s.logAudienceMismatch(ctx, accessToken, metadata, expectedAudience)
+	s.logAudienceMismatch(ctx, accessToken, metadata, accepted[len(accepted)-1])
 	return fmt.Errorf("token not intended for this resource server (RFC 8707 audience mismatch)")
 }
 
@@ -676,7 +684,7 @@ func (s *Server) validateTrustedIssuerJWT(ctx context.Context, accessToken strin
 	if s.trustedIssuerValidator == nil {
 		return nil, nil
 	}
-	identity, err := s.trustedIssuerValidator.Validate(ctx, accessToken, []string{s.Config.GetResourceIdentifier()})
+	identity, err := s.trustedIssuerValidator.Validate(ctx, accessToken, s.acceptedAudiences(ctx))
 	if errors.Is(err, ErrIssuerNotTrusted) {
 		return nil, nil
 	}
@@ -697,22 +705,11 @@ func (s *Server) validateTrustedIssuerJWT(ctx context.Context, accessToken strin
 		s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_typ_invalid")
 		return nil, fmt.Errorf("trusted issuer JWT: %w", err)
 	}
-	if identity.Claims == nil {
-		s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_audience_invalid")
-		return nil, errors.New("trusted issuer JWT is not intended for this resource server")
+	resourceAudience, err := s.checkTrustedIssuerAudience(ctx, identity)
+	if err != nil {
+		return nil, err
 	}
-	resourceAudience := s.namesResource(identity.Claims.Audience)
-	if s.Config.RequireResourceAccessTokens && !resourceAudience {
-		s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_audience_invalid")
-		return nil, errors.New("trusted issuer JWT is not intended for this resource server")
-	}
-	userInfo := s.idTokenClaimsToUserInfo(identity.Claims)
-	userInfo.ClientID = identity.Claims.ClientID
-	if userInfo.ClientID == "" {
-		userInfo.ClientID = identity.Claims.AuthorizedParty
-	}
-	userInfo.Issuer = identity.Issuer
-	userInfo.TokenSource = providers.TokenSourceTrustedIssuer
+	userInfo := s.trustedIssuerUserInfo(identity)
 	s.logTrustedIssuerJWTAccepted(ctx, accessToken, s.deriveForwardedSessionID(accessToken), identity.Issuer, userInfo)
 	s.Instrumentation.Metrics().RecordTrustedIssuerTokenAccepted(ctx, identity.Issuer, resourceAudience)
 	return userInfo, nil

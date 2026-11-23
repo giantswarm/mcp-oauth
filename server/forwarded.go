@@ -228,7 +228,8 @@ func (s *Server) AcceptForwardedIDToken(ctx context.Context, bearerToken string)
 //  1. WithTrustedIssuers must be configured; otherwise [ErrIssuerNotTrusted] is
 //     returned and the caller should fall through.
 //  2. The token's iss must match a configured [TrustedIssuer] entry.
-//  3. Audience and AllowedClaims checks for that entry pass.
+//  3. Audience and AllowedClaims checks for that entry pass, and under
+//     Config.RequireResourceAccessTokens the audience names the resource.
 //  4. The typ header matches [TrustedIssuer.AcceptedTypHeaders] (empty string ""
 //     is needed for Kubernetes ServiceAccount tokens, which carry no typ header).
 //
@@ -243,7 +244,7 @@ func (s *Server) AcceptTrustedIssuerToken(ctx context.Context, bearerToken strin
 		return nil, errors.New("trusted issuer token must not be empty")
 	}
 
-	identity, err := s.trustedIssuerValidator.Validate(ctx, bearerToken, []string{s.Config.GetResourceIdentifier()})
+	identity, err := s.trustedIssuerValidator.Validate(ctx, bearerToken, s.acceptedAudiences(ctx))
 	if errors.Is(err, ErrIssuerNotTrusted) {
 		return nil, ErrIssuerNotTrusted
 	}
@@ -260,14 +261,12 @@ func (s *Server) AcceptTrustedIssuerToken(ctx context.Context, bearerToken strin
 		s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_typ_invalid")
 		return nil, fmt.Errorf("trusted issuer token: %w", err)
 	}
-
-	userInfo := s.idTokenClaimsToUserInfo(identity.Claims)
-	userInfo.ClientID = identity.Claims.ClientID
-	if userInfo.ClientID == "" {
-		userInfo.ClientID = identity.Claims.AuthorizedParty
+	resourceAudience, err := s.checkTrustedIssuerAudience(ctx, identity)
+	if err != nil {
+		return nil, err
 	}
-	userInfo.Issuer = identity.Issuer
-	userInfo.TokenSource = providers.TokenSourceTrustedIssuer
+
+	userInfo := s.trustedIssuerUserInfo(identity)
 
 	var expiresAt time.Time
 	if identity.Claims != nil && identity.Claims.Expiry != nil {
@@ -285,8 +284,7 @@ func (s *Server) AcceptTrustedIssuerToken(ctx context.Context, bearerToken strin
 	}
 
 	s.logTrustedIssuerJWTAccepted(ctx, bearerToken, acceptance.SessionID, identity.Issuer, userInfo)
-	s.recordForwardedIDTokenAccepted(ctx, identity.Issuer, identity.Issuer, resourceID, instrumentation.ForwardedIDTokenResultOK)
-	s.Instrumentation.Metrics().RecordTrustedIssuerTokenAccepted(ctx, identity.Issuer, s.namesResource(identity.Claims.Audience))
+	s.Instrumentation.Metrics().RecordTrustedIssuerTokenAccepted(ctx, identity.Issuer, resourceAudience)
 
 	return acceptance, nil
 }

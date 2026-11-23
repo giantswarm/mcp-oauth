@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -9,6 +10,7 @@ import (
 	"slices"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
+	"github.com/giantswarm/mcp-oauth/providers"
 )
 
 // ErrAuthorizationServerDisabled is returned by the authorization server
@@ -109,4 +111,56 @@ func (s *Server) IsOpenIDProviderIssuer(issuer string) bool {
 // identifier.
 func (s *Server) namesResource(audience []string) bool {
 	return helpers.FindMatchingAudience(audience, []string{s.Config.GetResourceIdentifier()}) != ""
+}
+
+// requestedResourceKey carries, through one ValidateTokenForResource call,
+// the protected resource the request targets.
+type requestedResourceKey struct{}
+
+// ValidateTokenForResource validates accessToken as [Server.ValidateToken]
+// does, for a request to resource: the main resource identifier or the
+// identifier of a ResourceMetadataByPath entry. The token's audience must
+// name resource or the main resource; a token for another path resource is
+// refused. Empty resource is the main resource.
+func (s *Server) ValidateTokenForResource(ctx context.Context, accessToken, resource string) (*providers.UserInfo, error) {
+	if resource == "" || resourcesMatch(resource, s.Config.GetResourceIdentifier()) {
+		return s.ValidateToken(ctx, accessToken)
+	}
+	if !s.Config.servesResource(resource) {
+		return nil, fmt.Errorf("resource %q is not a protected resource of this server", resource)
+	}
+	return s.ValidateToken(context.WithValue(ctx, requestedResourceKey{}, resource), accessToken)
+}
+
+// acceptedAudiences returns the resource identifiers a bearer's audience may
+// name: the main resource, and the resource the request targets when
+// ValidateTokenForResource named another one.
+func (s *Server) acceptedAudiences(ctx context.Context) []string {
+	accepted := []string{s.Config.GetResourceIdentifier()}
+	if resource, ok := ctx.Value(requestedResourceKey{}).(string); ok {
+		accepted = append(accepted, resource)
+	}
+	return accepted
+}
+
+// namesAcceptedResource reports whether a token audience names a resource
+// identifier from acceptedAudiences.
+func (s *Server) namesAcceptedResource(ctx context.Context, audience []string) bool {
+	return helpers.FindMatchingAudience(audience, s.acceptedAudiences(ctx)) != ""
+}
+
+// checkTrustedIssuerAudience reports whether a trusted issuer token's audience
+// names an accepted resource, and refuses one that does not under
+// RequireResourceAccessTokens.
+func (s *Server) checkTrustedIssuerAudience(ctx context.Context, identity *SubjectIdentity) (bool, error) {
+	if identity.Claims == nil {
+		s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_audience_invalid")
+		return false, errors.New("trusted issuer JWT is not intended for this resource server")
+	}
+	resourceAudience := s.namesAcceptedResource(ctx, identity.Claims.Audience)
+	if s.Config.RequireResourceAccessTokens && !resourceAudience {
+		s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_audience_invalid")
+		return false, errors.New("trusted issuer JWT is not intended for this resource server")
+	}
+	return resourceAudience, nil
 }

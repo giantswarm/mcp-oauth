@@ -47,28 +47,111 @@ handler's routes. `SettingsFromEnvWithPrefix` supports a caller-supplied prefix.
 These environment variables and camelCase JSON objects are library configuration
 based on OAuth concepts; they are not a standardized metadata document format.
 
+The tables below list every variable `SettingsFromEnv` reads, with the default
+prefix `OAUTH_`. Unset variables keep the `server.Config` default. Each secret,
+marked "secret", also reads `<NAME>_FILE`, a path to a mounted file that wins over
+the variable; the file loses one trailing newline. A secret file readable by group
+or others logs a warning, or is refused with
+`OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS=true` (always read without a prefix).
+
+**Server**
+
 | Variable | Behavior |
 | --- | --- |
-| `OAUTH_RESOURCE` | Main protected resource identifier, normally the MCP endpoint URL; defaults to `OAUTH_ISSUER` |
-| `OAUTH_AUTHORIZATION_SERVERS` | Comma-separated authorization server issuer identifiers advertised by the main resource; defaults to `OAUTH_ISSUER`, or to none with the authorization server off |
+| `OAUTH_ISSUER` | Required. This server's issuer identifier (RFC 8414) and the base of its endpoints |
+| `OAUTH_ALLOW_INSECURE_HTTP` | Permit an `http://` issuer; loopback issuers never need it (RFC 8252 7.3); default `false` |
+| `OAUTH_TRUST_PROXY` | Read the client IP from `X-Forwarded-For` and `X-Real-IP`; only behind a trusted proxy; default `false` |
+| `OAUTH_ACCESS_TOKEN_TTL` | Go duration of issued access tokens; default `1h` |
+| `OAUTH_REFRESH_TOKEN_TTL` | Go duration of issued refresh tokens; default 90 days |
+| `OAUTH_FORWARDED_SESSION_IDENTITY` | Session identity of a forwarded token: `bearer` (default) or `principal` |
+| `OAUTH_SESSION_ID_HMAC_KEY` | Secret. Base64 32-byte key replacing the SHA-256 session ID derivation; every replica needs the same key |
+| `OAUTH_ENCRYPTION_KEY` | Secret. 32-byte AES-GCM key, base64 or hex, encrypting stored tokens; required with Valkey |
+
+**Protected resources and accepted tokens**
+
+| Variable | Behavior |
+| --- | --- |
+| `OAUTH_RESOURCE` | Main protected resource identifier (RFC 8707), normally the MCP endpoint URL; defaults to `OAUTH_ISSUER` |
+| `OAUTH_AUTHORIZATION_SERVERS` | Comma-separated authorization server issuer identifiers advertised by the main resource (RFC 9728); defaults to `OAUTH_ISSUER`, or to none with the authorization server off |
 | `OAUTH_ADDITIONAL_RESOURCES` | JSON array of `{resource, scopesSupported, authorizationServers}` on the main resource's origin; an omitted authorization server list inherits the main list |
-| `OAUTH_TRUSTED_ISSUERS` | JSON array of accepted external JWT issuers; unset, `[]` and `null` select no additional issuers |
+| `OAUTH_TRUSTED_ISSUERS` | JSON array of accepted external JWT issuers; unset, `[]` and `null` select none |
 | `OAUTH_REQUIRE_RESOURCE_ACCESS_TOKENS` | Require the resource audience when validating trusted-issuer bearers and disable forwarded ID-token acceptance; default `false` for 1.x compatibility |
+| `OAUTH_TRUSTED_AUDIENCES` | Comma-separated client IDs whose forwarded provider ID tokens are accepted as bearers; characters `[a-zA-Z0-9_-]` |
+| `OAUTH_ALLOW_PRIVATE_IP_JWKS_HOSTS` | Comma-separated hostnames whose JWKS endpoint may resolve to a private address |
+
+**Authorization server and endpoints**
+
+| Variable | Behavior |
+| --- | --- |
 | `OAUTH_ENABLE_AUTHORIZATION_SERVER` | `false` runs a resource server only: no provider, every bearer checked against `OAUTH_TRUSTED_ISSUERS`; default `true` |
 | `OAUTH_ENABLE_DYNAMIC_CLIENT_REGISTRATION` | `false` removes RFC 7591 `/oauth/register` and `registration_endpoint`; default `true` |
+| `OAUTH_ENABLE_CLIENT_ID_METADATA_DOCUMENTS` | Accept URL client IDs (Client ID Metadata Documents); default `false` |
 | `OAUTH_ENABLE_INTROSPECTION_ENDPOINT` | Enable RFC 7662 introspection; default `false` |
-| `OAUTH_ENABLE_USERINFO_ENDPOINT` | Enable the UserInfo endpoint; default `false` |
+| `OAUTH_ENABLE_USERINFO_ENDPOINT` | Enable the UserInfo endpoint (OpenID Connect Core 5.3); default `false` |
 | `OAUTH_ENABLE_CLIENT_CONFIGURATION_ENDPOINT` | Enable the RFC 7592 Client Configuration Endpoint; default `false`, refused with Dynamic Client Registration off |
-| `OAUTH_DEX_CA_FILE` | PEM bundle added to system trust; the combined loader shares the resolved pool between Dex and forwarded-token JWKS validation |
+
+**Clients**
+
+| Variable | Behavior |
+| --- | --- |
+| `OAUTH_REGISTRATION_ACCESS_TOKEN` | Secret. Bearer required at `/oauth/register` |
+| `OAUTH_ALLOW_PUBLIC_CLIENT_REGISTRATION` | Allow registration without the registration token and of public clients; default `false`, for development only |
+| `OAUTH_TRUSTED_REDIRECT_SCHEMES` | Comma-separated custom URI schemes (for example `cursor,vscode`) a client may register without the registration token |
+| `OAUTH_TRUSTED_REDIRECT_URIS` | Comma-separated HTTPS redirect URIs a client may register without the registration token |
+| `OAUTH_MAX_CLIENTS_PER_IP` | Registrations allowed per client IP; default `10` |
+| `OAUTH_TRUSTED_CLIENTS` | JSON array of `{client_id, redirect_uris}` clients that skip the consent page |
+| `OAUTH_CONSENT_COOKIE_KEY` | Secret. 32-byte AES-GCM key for consent cookies, base64 or hex; defaults to a key the store derives per issuer |
+| `OAUTH_PRE_REGISTERED_CLIENT_METADATA` | JSON array of Client ID Metadata Documents used without a fetch |
+| `OAUTH_RESTRICT_CLIENT_METADATA` | Accept only pre-registered client IDs and those on `OAUTH_CLIENT_METADATA_HOSTS`; default `false` |
+| `OAUTH_CLIENT_METADATA_HOSTS` | Comma-separated hostnames whose Client ID Metadata Documents may be fetched under `OAUTH_RESTRICT_CLIENT_METADATA` |
+| `OAUTH_ALLOW_PRIVATE_IP_REDIRECT_URI_HOSTS` | Comma-separated hostnames whose redirect URIs may resolve to a private address |
+| `OAUTH_ALLOW_PRIVATE_IP_CLIENT_METADATA_HOSTS` | Deprecated: pre-register the client in `OAUTH_PRE_REGISTERED_CLIENT_METADATA` |
+| `OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS` | Deprecated, no effect: loopback redirect URIs are always allowed |
+
+**Upstream provider** (refused with the authorization server off)
+
+| Variable | Behavior |
+| --- | --- |
+| `OAUTH_PROVIDER` | `dex`, `google` or `github`; required with the authorization server on |
+| `OAUTH_DEX_ISSUER_URL` | Required for Dex |
+| `OAUTH_DEX_CLIENT_ID` | Required for Dex |
+| `OAUTH_DEX_CLIENT_SECRET` | Secret, required for Dex |
+| `OAUTH_DEX_REDIRECT_URL` | Defaults to `OAUTH_ISSUER` + `/oauth/callback` |
+| `OAUTH_DEX_CONNECTOR_ID` | Dex connector to skip Dex's connector choice, for example `github` |
 | `OAUTH_DEX_SCOPES` | Comma-separated Dex scopes; an explicit list must contain `openid` |
 | `OAUTH_DEX_AUDIENCES` | Comma-separated Dex cross-client IDs, requested through Dex's `audience:server:client_id:<id>` scopes |
+| `OAUTH_DEX_CA_FILE` | PEM bundle added to system trust; the combined loader shares the resolved pool between Dex and JWKS validation |
+| `OAUTH_GOOGLE_CLIENT_ID`, `OAUTH_GOOGLE_REDIRECT_URL` | Required for Google |
+| `OAUTH_GOOGLE_CLIENT_SECRET` | Secret, required for Google |
+| `OAUTH_GOOGLE_FORCE_CONSENT` | Show Google's consent screen on every authorization; default `true` |
+| `OAUTH_GITHUB_CLIENT_ID`, `OAUTH_GITHUB_REDIRECT_URL` | Required for GitHub |
+| `OAUTH_GITHUB_CLIENT_SECRET` | Secret, required for GitHub |
+| `OAUTH_GITHUB_ALLOWED_ORGANIZATIONS` | Comma-separated organizations whose members may sign in |
+| `OAUTH_GITHUB_REQUIRE_VERIFIED_EMAIL` | Require a verified email; default `true` |
+
+**Storage**
+
+| Variable | Behavior |
+| --- | --- |
+| `OAUTH_STORAGE_BACKEND` | `memory` (default) or `valkey` |
+| `OAUTH_VALKEY_ADDR` | Required for Valkey, `host:port` |
+| `OAUTH_VALKEY_PASSWORD` | Secret |
+| `OAUTH_VALKEY_DB` | Database number; default `0` |
+| `OAUTH_VALKEY_TLS` | Connect with TLS; default `false` |
+| `OAUTH_VALKEY_TLS_INSECURE_SKIP_VERIFY` | Skip certificate verification; default `false`, for development only |
+| `OAUTH_VALKEY_KEY_PREFIX` | Key prefix; default `mcp:` |
+| `OAUTH_VALKEY_REFRESH_TOKEN_TTL` | Go duration a refresh token is kept; default 90 days |
+| `OAUTH_VALKEY_MAX_TOKEN_DATA_SIZE` | Largest stored token record in bytes; default 600 KiB |
+| `OAUTH_VALKEY_STARTUP_TIMEOUT` | Go duration to wait for Valkey at startup; default `60s` |
 
 Accepted token issuers and advertised authorization servers are separate policies.
 Each advertised issuer must be `OAUTH_ISSUER` or an entry in
 `OAUTH_TRUSTED_ISSUERS`; with the authorization server off, only an entry in
 `OAUTH_TRUSTED_ISSUERS`. Root discovery uses the main resource's configured metadata
 when no separate root resource is configured. Additional resources can advertise
-their own authorization server list.
+their own authorization server list. A request under an additional resource's path accepts a
+token whose audience names that resource or the main resource; a token for an
+additional resource is refused everywhere else.
 
 Each trusted issuer object requires `issuer`, `jwksURI` and a non-empty `audiences`
 array. Optional fields are `subjectClaim`, `acceptedTypHeaders`, `allowedClaims`,
@@ -115,9 +198,39 @@ See [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728.html#section-3) for discov
 Configuration Endpoint, and [Dex cross-client trust](https://dexidp.io/docs/configuration/custom-scopes-claims-clients/#cross-client-trust-and-authorized-party)
 for Dex audience scopes.
 
+## Values shape for charts
+
+A chart that deploys an MCP server built on this library takes one `oauth:` block in
+the two roles RFC 6749 defines and renders it into the variables above. Secrets are
+`secretKeyRef: {name, key}` and reach the container as `_FILE` paths.
+
+| Key | Holds | Variables |
+| --- | --- | --- |
+| `resourceServer.resource` | the main protected resource, by its full URL | `OAUTH_RESOURCE` |
+| `resourceServer.additionalResources[]` | extra protected resources, each by its full URL | `OAUTH_ADDITIONAL_RESOURCES` |
+| `resourceServer.authorizationServers[]` | issuer identifiers the main resource advertises; extras use it unless they set their own | `OAUTH_AUTHORIZATION_SERVERS` |
+| `resourceServer.trustedIssuers[]` | the issuers whose tokens are accepted: `issuer`, `audiences`, `jwksURI`, CA, subject claim | `OAUTH_TRUSTED_ISSUERS` |
+| `resourceServer.requireResourceAccessTokens` | accept only tokens for this resource | `OAUTH_REQUIRE_RESOURCE_ACCESS_TOKENS` |
+| `authorizationServer.enabled`, `issuer` | this server's own authorization server | `OAUTH_ENABLE_AUTHORIZATION_SERVER`, `OAUTH_ISSUER` |
+| `authorizationServer.upstream` | the OpenID Provider people sign in with: type, issuer, client, scopes, connector, CA | `OAUTH_PROVIDER`, `OAUTH_DEX_*`, `OAUTH_GOOGLE_*`, `OAUTH_GITHUB_*` |
+| `authorizationServer.dynamicClientRegistration` | `enabled`, `initialAccessToken` | `OAUTH_ENABLE_DYNAMIC_CLIENT_REGISTRATION`, `OAUTH_REGISTRATION_ACCESS_TOKEN` |
+| `authorizationServer.clientIDMetadataDocuments` | `enabled` | `OAUTH_ENABLE_CLIENT_ID_METADATA_DOCUMENTS` |
+| `authorizationServer.endpoints` | introspection, userinfo and client management; revocation is always served | `OAUTH_ENABLE_*_ENDPOINT` |
+| `authorizationServer.storage` | memory or Valkey; Valkey requires an encryption key | `OAUTH_STORAGE_BACKEND`, `OAUTH_VALKEY_*`, `OAUTH_ENCRYPTION_KEY` |
+
+The trusted issuer list and its CA are trust anchors: whoever can change them can get
+tokens accepted. Take them only from the release's own values or from a
+GitOps-managed ConfigMap in a namespace only installation administrators write, and
+the CA only from a Secret or ConfigMap the chart creates.
+
 ## Validated request identity
 
 `handler.UserInfoFromContext` exposes `providers.UserInfo` after `ValidateToken`.
+`ID` is the account's identifier at its issuer, the `sub` claim for OpenID
+Connect; with `Issuer` it identifies one account (OpenID Connect Core 5.7), so key
+stored state on that pair. `Username` is the name this server knows the user by:
+the claim a trusted issuer's `subjectClaim` selects, such as a verified email, and
+`ID` otherwise.
 `Issuer` identifies the validated bearer issuer, including forwarded ID tokens
 and locally issued tokens. `IsOBO` recognizes a validated actor for every token
 source, including self-issued access tokens. Applications must use these fields
@@ -514,7 +627,7 @@ The response carries no `WWW-Authenticate` challenge and no OAuth `error` code: 
 | Bearer validation, `handler.ValidateToken` middleware in front of the protected resource (MCP endpoints, `/userinfo`) | for a self-issued JWT the revocation list and family record; for an opaque token the provider token behind it and its audience metadata; for both the token's stored metadata (scopes, session). A forwarded ID token or a trusted-issuer JWT is validated by signature alone and does not read the store | `401 invalid_token` — the client keeps its access token and retries; a 401 would make it discard the token and start a new authorization |
 | Token introspection, `/introspect` | the same reads as bearer validation, plus the token's metadata for the requester gate | `200 {"active": false}` — which a resource server reads as a dead token |
 
-In-process callers see the same classification as `server.ErrStorageUnavailable` (match with `errors.Is`) from `RefreshAccessToken`, `ExchangeAuthorizationCode`, `SelfIssuedExchange`, `BrokeredExchange`, `GetClient`, `ValidateClientCredentials`, `ValidateToken`, `TokenMetadata` and `IntrospectToken`. Every other `ValidateToken` error is a rejection to answer as 401. The audit log records the failure as an authentication failure with reason `transient_storage_error` and the failed operation; the HTTP metric counts the 503 under the endpoint it hit (`token`, `validate_token`, `introspect`).
+In-process callers see the same classification as `server.ErrStorageUnavailable` (match with `errors.Is`) from `RefreshAccessToken`, `ExchangeAuthorizationCode`, `SelfIssuedExchange`, `BrokeredExchange`, `GetClient`, `ValidateClientCredentials`, `ValidateToken`, `ValidateTokenForResource`, `TokenMetadata` and `IntrospectToken`. Every other `ValidateToken` error is a rejection to answer as 401. The audit log records the failure as an authentication failure with reason `transient_storage_error` and the failed operation; the HTTP metric counts the 503 under the endpoint it hit (`token`, `validate_token`, `introspect`).
 
 ## Session & Token Lifecycle Callbacks
 
