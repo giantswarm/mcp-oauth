@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/giantswarm/mcp-oauth/internal/helpers"
 )
 
 func parseResourceURI(resource string) (*url.URL, error) {
@@ -62,26 +64,10 @@ func isURIHex(character byte) bool {
 }
 
 func normalizeResourceURI(resource string) (string, error) {
-	parsed, err := parseResourceURI(resource)
-	if err != nil {
+	if _, err := parseResourceURI(resource); err != nil {
 		return "", err
 	}
-	parsed.Scheme = strings.ToLower(parsed.Scheme)
-	if parsed.Opaque == "" {
-		parsed.Host = strings.ToLower(parsed.Host)
-		switch parsed.Scheme {
-		case "https":
-			parsed.Host = strings.TrimSuffix(parsed.Host, ":443")
-		case "http":
-			parsed.Host = strings.TrimSuffix(parsed.Host, ":80")
-		}
-		parsed.RawPath = strings.TrimRight(parsed.EscapedPath(), "/")
-		parsed.Path, err = url.PathUnescape(parsed.RawPath)
-		if err != nil {
-			return "", err
-		}
-	}
-	return parsed.String(), nil
+	return helpers.NormalizeURL(resource), nil
 }
 
 func resourcesMatch(left, right string) bool {
