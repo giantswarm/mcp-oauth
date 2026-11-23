@@ -34,6 +34,19 @@ revocation because some writes may already have completed. Unknown, invalid and
 other-client tokens retain the RFC 7009 success response for authenticated clients.
 Client deletion and rejected use of a deleted client's tokens emit audit reasons
 `client_deleted` and `client_revoked`.
+A successful `PUT` emits `client_updated` with `changed` listing the replaced
+fields by name (for example `jwks` or `registration_access_token`), never their values.
+
+After restoring the store from a snapshot or backup, keep traffic closed and
+re-apply every `client_deleted`, `refresh_token_family_revoked` and
+`refresh_token_reuse_detected` (`family_id`) event recorded after the snapshot
+time; for `authorization_code_reuse_detected`, revoke that user's tokens at that
+client. A `client_updated` event after the snapshot means the restore brought
+back that client's previous metadata and registration access token: delete the
+client or repeat the update before reopening traffic. Registrations created
+after the snapshot are gone and must register again. If the audit log does not
+cover the whole interval since the snapshot, restore into a new key prefix and
+have every client register and every user sign in again.
 
 ## Enabling
 

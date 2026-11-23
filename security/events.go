@@ -57,6 +57,10 @@ const (
 	// EventClientDeleted is logged after a client ID is permanently retired.
 	EventClientDeleted = "client_deleted"
 
+	// EventClientUpdated is logged after an RFC 7592 update replaces a client's
+	// registration. Its details name the changed fields, never their values.
+	EventClientUpdated = "client_updated"
+
 	// EventClientRegisteredViaTrustedScheme is logged when a client is registered without a token
 	// because it uses only trusted custom URI schemes (e.g., cursor://, vscode://).
 	// This enables compatibility with MCP clients that don't support registration tokens.
