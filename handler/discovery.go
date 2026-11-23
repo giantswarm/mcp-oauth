@@ -227,6 +227,11 @@ func (h *Handler) registerMetadataSubPath(mux *http.ServeMux, resourcePath strin
 
 	// Clean and normalize the path
 	cleanPath := path.Clean("/" + strings.TrimPrefix(resourcePath, "/"))
+	if cleanPath == "/" {
+		// The root document is registered without a trailing slash; "/"
+		// would register a subtree pattern answering every sub-path.
+		return
+	}
 	subPath := oauth.MetadataPathProtectedResource + cleanPath
 
 	// Skip if already registered
