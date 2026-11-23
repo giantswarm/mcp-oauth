@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	valkeygo "github.com/valkey-io/valkey-go"
+
 	"github.com/giantswarm/mcp-oauth/storage"
 )
 
@@ -336,17 +338,14 @@ func (s *Store) readIndexedFamilyMetadata(ctx context.Context, tokens []string, 
 	// Fail-closed is correct here: swallowing a storage error and returning
 	// "family not found" would allow a compromised token family to appear legitimate.
 	var live *storage.RefreshTokenFamilyMetadata
-	for _, refreshToken := range tokens {
-		if refreshToken == familyRevocationMarker {
-			continue
-		}
-		meta, err := s.readMemberFamilyMetadata(ctx, refreshToken)
-		if err != nil {
-			if !errors.Is(err, storage.ErrRefreshTokenFamilyNotFound) {
-				return nil, err
+	for _, member := range s.readFamilyMembersMetadata(ctx, tokens) {
+		if member.err != nil {
+			if !errors.Is(member.err, storage.ErrRefreshTokenFamilyNotFound) {
+				return nil, member.err
 			}
 			continue
 		}
+		meta := member.meta
 		if meta == nil {
 			continue
 		}
@@ -359,6 +358,63 @@ func (s *Store) readIndexedFamilyMetadata(ctx context.Context, tokens []string, 
 		}
 	}
 	return live, nil
+}
+
+// familyMemberMetadata is the metadata read for one family member: meta is
+// set when err is nil; err is ErrRefreshTokenFamilyNotFound when the member
+// has metadata under neither key layout.
+type familyMemberMetadata struct {
+	token string
+	meta  *storage.RefreshTokenFamilyMetadata
+	err   error
+}
+
+// readFamilyMembersMetadata reads the metadata of every family member (the
+// revocation marker excluded) in at most two pipelined batches, so the cost in
+// round trips does not grow with the family: one batch reads the current-layout
+// keys, and a second one reads the legacy keys of the members whose current key
+// is missing. It is the batched form of readMemberFamilyMetadata. The result
+// keeps the order of tokens.
+func (s *Store) readFamilyMembersMetadata(ctx context.Context, tokens []string) []familyMemberMetadata {
+	members := make([]familyMemberMetadata, 0, len(tokens))
+	for _, token := range tokens {
+		if token != familyRevocationMarker {
+			members = append(members, familyMemberMetadata{token: token})
+		}
+	}
+	missing := s.readMembersMetadataBatch(ctx, members, allMemberIndexes(len(members)), s.refreshTokenMetaKey)
+	s.readMembersMetadataBatch(ctx, members, missing, s.legacyRefreshTokenMetaKey)
+	return members
+}
+
+func allMemberIndexes(n int) []int {
+	indexes := make([]int, n)
+	for i := range indexes {
+		indexes[i] = i
+	}
+	return indexes
+}
+
+// readMembersMetadataBatch reads the metadata key that keyOf names for each
+// member at indexes, in one pipelined batch, and stores the outcome on the
+// member. It returns the indexes of the members whose key is missing.
+func (s *Store) readMembersMetadataBatch(ctx context.Context, members []familyMemberMetadata, indexes []int, keyOf func(string) string) []int {
+	if len(indexes) == 0 {
+		return nil
+	}
+	commands := make(valkeygo.Commands, len(indexes))
+	for i, index := range indexes {
+		commands[i] = s.client.B().Get().Key(keyOf(members[index].token)).Build()
+	}
+	var missing []int
+	for i, result := range s.client.DoMulti(ctx, commands...) {
+		member := &members[indexes[i]]
+		member.meta, member.err = decodeResult(result, storage.ErrRefreshTokenFamilyNotFound, fromRefreshTokenFamilyJSON)
+		if errors.Is(member.err, storage.ErrRefreshTokenFamilyNotFound) {
+			missing = append(missing, indexes[i])
+		}
+	}
+	return missing
 }
 
 // readMemberFamilyMetadata reads one family member's metadata, falling back to
@@ -423,12 +479,12 @@ func (s *Store) GetActiveRefreshTokenByFamily(ctx context.Context, familyID stri
 // walk did not reach.
 func (s *Store) pickActiveMember(ctx context.Context, tokens []string) (token, clientID string, anyRevoked bool) {
 	var bestGen int
-	for _, candidate := range tokens {
-		meta, err := s.readMemberFamilyMetadata(ctx, candidate)
-		if err != nil {
-			if !errors.Is(err, storage.ErrRefreshTokenFamilyNotFound) {
+	for _, member := range s.readFamilyMembersMetadata(ctx, tokens) {
+		candidate, meta := member.token, member.meta
+		if member.err != nil {
+			if !errors.Is(member.err, storage.ErrRefreshTokenFamilyNotFound) {
 				s.logger.Warn("pickActiveMember: storage error reading candidate metadata",
-					"token_prefix", safeTruncate(candidate, tokenIDLogLength), "error", err)
+					"token_prefix", safeTruncate(candidate, tokenIDLogLength), "error", member.err)
 			}
 			continue
 		}
