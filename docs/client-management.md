@@ -84,8 +84,10 @@ startup.
 For standalone Valkey with an unindexed namespace, once no binary built from a
 release older than v1.17.2 writes to the key prefix, set
 `MigrateFamilyRevocationIndex` in the Valkey `Config` of the OAuth servers.
-The setting rejects cluster connections; use the stopped-traffic command for
-Valkey Cluster with a stable topology.
+On Valkey Cluster, an unindexed namespace that holds family records fails
+startup with this setting; migrate it with the stopped-traffic command and a
+stable topology. Once a namespace is indexed, the setting has no effect on any
+topology.
 
 ```go
 store, err := valkey.New(valkey.Config{
@@ -100,8 +102,9 @@ the background. Replicas that share the prefix take turns through a lease,
 so one walks the namespace at a time. When the walk completes, every replica on
 this release switches to indexed lookups within 30 seconds, whether or not it
 sets `MigrateFamilyRevocationIndex`. Failed walks keep compatibility lookups
-and are retried. A walk must finish within the ten-minute lease. If it exceeds
-that deadline, the replica logs an error and stops automatic migration while
+and are retried after a delay that doubles from 30 seconds up to the
+ten-minute lease. A walk must finish within the lease. If it exceeds that
+deadline, the replica logs an error and stops automatic migration while
 continuing to poll for completion by another replica. Disable the setting and
 use the stopped-traffic command with a larger `-timeout` for such namespaces.
 

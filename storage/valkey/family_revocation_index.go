@@ -23,22 +23,22 @@ func (s *Store) familyRevocationIndexKey() string {
 }
 
 func (s *Store) initializeFamilyRevocationIndex(ctx context.Context, migrate bool) error {
-	if migrate && s.client.Mode() != valkeygo.ClientModeStandalone {
-		return errOnlineFamilyMigrationRequiresStandalone
-	}
 	indexed, err := s.loadFamilyRevocationIndexState(ctx)
 	if err != nil || indexed {
 		return err
 	}
 	err = s.walkFamilyKeys(ctx, func(string) error { return errFamilyRecordsExist })
 	if errors.Is(err, errFamilyRecordsExist) {
+		if migrate && s.client.Mode() != valkeygo.ClientModeStandalone {
+			return errOnlineFamilyMigrationRequiresStandalone
+		}
 		s.logger.Warn("Family revocation index requires migration; compatibility reads remain enabled")
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	return s.completeFamilyRevocationIndex(ctx)
+	return s.completeFamilyRevocationIndex(ctx, false)
 }
 
 // IsRefreshTokenFamilyRevoked checks the shared revocation marker.
@@ -67,17 +67,18 @@ func (s *Store) IsRefreshTokenFamilyRevoked(ctx context.Context, familyID string
 
 // MigrateFamilyRevocations preserves revoked members from both key layouts in the shared marker index.
 // All other OAuth server replicas and writers must be stopped until this operation succeeds.
-// Other Store instances must be reopened after migration to enable indexed reads.
+// Store instances that already use indexed lookups keep their previous index state until reopened.
 func (s *Store) MigrateFamilyRevocations(ctx context.Context) error {
 	s.stopFamilyRevocationIndexing()
 	s.familyRevocationsIndexed.Store(false)
 	if err := s.client.Do(ctx, s.client.B().Del().Key(s.familyRevocationIndexKey()).Build()).Error(); err != nil {
 		return fmt.Errorf("disable family revocation index: %w", err)
 	}
-	if err := s.walkFamilyKeys(ctx, func(key string) error { return s.migrateFamilyRevocation(ctx, key) }); err != nil {
+	checkLegacy, err := s.indexFamilyRevocations(ctx)
+	if err != nil {
 		return err
 	}
-	return s.completeFamilyRevocationIndex(ctx)
+	return s.completeFamilyRevocationIndex(ctx, checkLegacy)
 }
 
 func (s *Store) walkFamilyKeys(ctx context.Context, visit func(string) error) error {
@@ -115,12 +116,16 @@ func (s *Store) walkNodeFamilyKeys(ctx context.Context, node valkeygo.Client, vi
 	}
 }
 
-func (s *Store) migrateFamilyRevocation(ctx context.Context, key string) error {
-	marked, err := s.indexFamilyRevocation(ctx, key)
-	if marked {
-		s.checkLegacyFamilyMarkers.Store(true)
-	}
-	return err
+// indexFamilyRevocations indexes every family in the namespace and reports
+// whether lookups must also check legacy family keys.
+func (s *Store) indexFamilyRevocations(ctx context.Context) (bool, error) {
+	checkLegacy := false
+	err := s.walkFamilyKeys(ctx, func(key string) error {
+		needsLegacyChecks, err := s.indexFamilyRevocation(ctx, key)
+		checkLegacy = checkLegacy || needsLegacyChecks
+		return err
+	})
+	return checkLegacy, err
 }
 
 func (s *Store) indexRevokedFamily(ctx context.Context, family *storage.RefreshTokenFamilyMetadata, remaining int64) error {
@@ -148,8 +153,8 @@ return 1
 	return nil
 }
 
-func (s *Store) completeFamilyRevocationIndex(ctx context.Context) error {
-	if err := s.publishFamilyRevocationIndexState(ctx, s.checkLegacyFamilyMarkers.Load()); err != nil {
+func (s *Store) completeFamilyRevocationIndex(ctx context.Context, checkLegacy bool) error {
+	if err := s.publishFamilyRevocationIndexState(ctx, checkLegacy); err != nil {
 		return err
 	}
 	_, err := s.loadFamilyRevocationIndexState(ctx)

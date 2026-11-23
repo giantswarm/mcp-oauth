@@ -169,7 +169,8 @@ type Config struct {
 	StartupTimeout time.Duration
 
 	// MigrateFamilyRevocationIndex backfills an unindexed namespace on standalone
-	// Valkey while the store serves traffic. Cluster clients return an error.
+	// Valkey while the store serves traffic. [New] returns an error when a
+	// cluster namespace still needs migration; an indexed namespace needs none.
 	// Replicas sharing the key prefix take turns through a lease. Every replica
 	// adopts a completed index, whether this setting is enabled or not.
 	// Enable it only when no binary built from a release older than v1.17.2

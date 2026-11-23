@@ -139,7 +139,7 @@ func TestPublishFamilyRevocationIndexKeepsLegacyMarkers(t *testing.T) {
 	require.NoError(t, store.publishFamilyRevocationIndexState(t.Context(), true))
 	require.NoError(t, store.publishFamilyRevocationIndexState(t.Context(), false))
 	require.Equal(t, familyRevocationIndexWithLegacyChecks, indexVersion(t, store))
-	require.NoError(t, store.completeFamilyRevocationIndex(t.Context()))
+	require.NoError(t, store.completeFamilyRevocationIndex(t.Context(), false))
 	require.True(t, store.checkLegacyFamilyMarkers.Load())
 }
 
@@ -196,15 +196,40 @@ func TestOnlineFamilyRevocationMigrationRequiresStandalone(t *testing.T) {
 			})
 			require.ErrorIs(t, err, errOnlineFamilyMigrationRequiresStandalone)
 			require.Nil(t, store)
+
+			require.NoError(t, seed.client.Do(t.Context(), seed.client.B().Set().Key(seed.familyRevocationIndexKey()).Value("1").Build()).Error())
+			store, err = New(Config{Address: address, KeyPrefix: seed.prefix, MigrateFamilyRevocationIndex: true}, func(store *Store) {
+				store.client = &familyMigrationTestClient{Client: store.client, mode: mode}
+			})
+			require.NoError(t, err, "an indexed namespace needs no migration on any topology")
+			t.Cleanup(store.Close)
+			require.True(t, store.familyRevocationsIndexed.Load())
 		})
 	}
-	if address := os.Getenv("VALKEY_CLUSTER_TEST_ADDR"); address != "" {
-		t.Run("live-cluster", func(t *testing.T) {
-			store, err := New(Config{Address: address, MigrateFamilyRevocationIndex: true})
-			require.ErrorIs(t, err, errOnlineFamilyMigrationRequiresStandalone)
-			require.Nil(t, store)
-		})
-	}
+}
+
+func TestOnlineFamilyRevocationMigrationBacksOffAfterFailures(t *testing.T) {
+	seed := unindexedSeed(t)
+	require.NoError(t, seed.client.Do(t.Context(), seed.client.B().Sadd().Key(seed.familyKey("broken")).Member("broken-refresh").Build()).Error())
+	require.NoError(t, seed.client.Do(t.Context(), seed.client.B().Set().Key(seed.refreshTokenMetaKey("broken-refresh")).Value("not-json").Build()).Error())
+	seed.familyRevocationsIndexed.Store(false)
+	seed.familyIndexPollInterval = testFamilyIndexPoll
+	seed.familyMigrationLease = time.Minute
+	var walks atomic.Int64
+	seed.client = &familyMigrationTestClient{Client: seed.client, after: func(_ context.Context, arguments []string) {
+		if arguments[0] == "SET" && arguments[1] == seed.familyMigrationLeaseKey() {
+			walks.Add(1)
+		}
+	}}
+	seed.startFamilyRevocationIndexing(true)
+	t.Cleanup(seed.stopFamilyRevocationIndexing)
+
+	// Delays of 20, 40, 80 and 160 ms allow at most five walks in 400 ms;
+	// retrying at the poll interval would allow twenty.
+	time.Sleep(20 * testFamilyIndexPoll)
+	require.GreaterOrEqual(t, walks.Load(), int64(2))
+	require.LessOrEqual(t, walks.Load(), int64(6))
+	require.False(t, seed.familyRevocationsIndexed.Load())
 }
 
 func TestFamilyMigrationLeaseExpiryAndReplacement(t *testing.T) {
@@ -379,7 +404,7 @@ func TestStoppedFamilyMigrationCancelsBackgroundWorker(t *testing.T) {
 
 func TestFamilyRevocationRecoveryRebuildsCompletedIndex(t *testing.T) {
 	seed := testStore(t)
-	require.NoError(t, seed.completeFamilyRevocationIndex(t.Context()))
+	require.NoError(t, seed.completeFamilyRevocationIndex(t.Context(), false))
 	seedOldRevokedFamily(t, seed, "rollback-revoked", "rollback-refresh")
 	before := replica(t, seed, true)
 	revoked, err := before.IsRefreshTokenFamilyRevoked(t.Context(), "rollback-revoked")

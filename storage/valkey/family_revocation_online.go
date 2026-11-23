@@ -39,7 +39,7 @@ func (s *Store) startFamilyRevocationIndexing(migrate bool) {
 	}
 	go func() {
 		defer close(s.backgroundDone)
-		s.indexFamilyRevocations(ctx, migrate)
+		s.awaitFamilyRevocationIndex(ctx, migrate)
 	}()
 }
 
@@ -51,9 +51,14 @@ func (s *Store) stopFamilyRevocationIndexing() {
 	<-s.backgroundDone
 }
 
-func (s *Store) indexFamilyRevocations(ctx context.Context, migrate bool) {
+// awaitFamilyRevocationIndex polls for a completed index. Failed walks are
+// retried with a delay that doubles up to the lease, so a namespace that fails
+// on every walk is not rescanned at the poll interval.
+func (s *Store) awaitFamilyRevocationIndex(ctx context.Context, migrate bool) {
 	ticker := time.NewTicker(s.familyIndexPollInterval)
 	defer ticker.Stop()
+	retryDelay := s.familyIndexPollInterval
+	var retryAt time.Time
 	for {
 		indexed, err := s.loadFamilyRevocationIndexState(ctx)
 		switch {
@@ -64,17 +69,20 @@ func (s *Store) indexFamilyRevocations(ctx context.Context, migrate bool) {
 		case indexed:
 			s.logger.Info("Family revocation index complete; indexed lookups enabled")
 			return
-		case migrate:
+		case migrate && !time.Now().Before(retryAt):
 			published, err := s.migrateFamilyRevocationsUnderLease(ctx)
-			if err != nil && ctx.Err() == nil {
-				s.logger.Warn("Online family revocation migration failed; compatibility lookups remain enabled", "error", err)
-			}
-			if errors.Is(err, context.DeadlineExceeded) {
+			switch {
+			case published:
+				continue
+			case ctx.Err() != nil:
+				return
+			case errors.Is(err, context.DeadlineExceeded):
 				migrate = false
 				s.logger.Error("Online family revocation migration exceeded its lease; automatic migration disabled; run the stopped-traffic migration command with a larger -timeout", "lease", s.familyMigrationLease)
-			}
-			if published {
-				continue
+			case err != nil:
+				s.logger.Warn("Online family revocation migration failed; compatibility lookups remain enabled", "error", err, "retry_in", retryDelay)
+				retryAt = time.Now().Add(retryDelay)
+				retryDelay = min(2*retryDelay, s.familyMigrationLease)
 			}
 		}
 		select {
@@ -119,12 +127,8 @@ func (s *Store) migrateFamilyRevocationsUnderLease(ctx context.Context) (bool, e
 	}
 	defer s.releaseFamilyMigrationLease(holder)
 
-	checkLegacy := false
-	if err := s.walkFamilyKeys(ctx, func(key string) error {
-		needsLegacyChecks, err := s.indexFamilyRevocation(ctx, key)
-		checkLegacy = checkLegacy || needsLegacyChecks
-		return err
-	}); err != nil {
+	checkLegacy, err := s.indexFamilyRevocations(ctx)
+	if err != nil {
 		return false, err
 	}
 	if err := s.publishFamilyRevocationIndexState(ctx, checkLegacy); err != nil {
