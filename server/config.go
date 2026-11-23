@@ -336,19 +336,18 @@ type Config struct {
 	DefaultChallengeScopes []string
 
 	// DisableWWWAuthenticateMetadata disables resource_metadata and discovery parameters
-	// in WWW-Authenticate headers for backward compatibility with legacy OAuth clients.
-	// When false (default): Full MCP 2025-11-25 compliance with enhanced discovery support
+	// in 401 WWW-Authenticate headers for backward compatibility with legacy OAuth clients.
+	// When false (default): Includes protected-resource discovery parameters
 	//   - Includes resource_metadata URL for authorization server discovery
 	//   - Includes scope parameter (if DefaultChallengeScopes configured)
 	//   - Includes error and error_description parameters
 	// When true: Minimal WWW-Authenticate headers for backward compatibility
-	//   - Only includes "Bearer" scheme without parameters
-	//   - Compatible with older OAuth clients that may not expect parameters
-	// Default: false (metadata ENABLED for secure by default, MCP 2025-11-25 compliant)
+	//   - Includes Bearer realm="oauth" without discovery or error parameters
+	// Default: false (metadata enabled)
 	//
 	// WARNING: Only enable if you have legacy OAuth clients that cannot handle
-	// parameters in WWW-Authenticate headers. Modern clients will ignore unknown
-	// parameters per HTTP specifications.
+	// discovery parameters in WWW-Authenticate headers. Modern clients will ignore
+	// unknown parameters per HTTP specifications.
 	//
 	// Use case for enabling (disabling metadata):
 	//   - Testing with legacy OAuth clients

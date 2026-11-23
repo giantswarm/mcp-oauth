@@ -58,7 +58,7 @@ func TestProtectedResponsesKeepTheirBodyAndGainMissingChallenges(t *testing.T) {
 			case test.status != http.StatusUnauthorized:
 				require.Empty(t, challenge)
 			case test.minimal:
-				require.Equal(t, "Bearer", challenge)
+				require.Equal(t, `Bearer realm="oauth"`, challenge)
 			default:
 				require.Contains(t, challenge, `resource_metadata="https://api.example.com/.well-known/oauth-protected-resource/api"`)
 				require.NotContains(t, challenge, "invalid_token")

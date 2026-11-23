@@ -274,7 +274,7 @@ func (h *Handler) writeError(w http.ResponseWriter, code, description string, st
 			w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, code, description))
 		} else {
 			// Minimal header for backward compatibility with legacy clients (opt-in)
-			w.Header().Set("WWW-Authenticate", tokenTypeBearer)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="oauth"`)
 		}
 	}
 

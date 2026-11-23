@@ -245,7 +245,7 @@ func (h *Handler) extractBearerToken(w http.ResponseWriter, r *http.Request) (st
 //   - code: OAuth error code (e.g., "invalid_token")
 //   - description: Human-readable error description
 func (h *Handler) writeUnauthorizedError(w http.ResponseWriter, r *http.Request, code, description string) {
-	h.SetUnauthorizedChallenge(w, r, code, description)
+	h.setUnauthorizedChallenge(w, r, code, description)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	payload := map[string]string{}
@@ -258,14 +258,7 @@ func (h *Handler) writeUnauthorizedError(w http.ResponseWriter, r *http.Request,
 	h.writeJSON(w, payload)
 }
 
-// SetUnauthorizedChallenge sets the RFC 6750 §3 WWW-Authenticate challenge, with
-// the RFC 9728 resource_metadata URL for r's protected resource, and the
-// security headers this handler sends on its own 401 responses. A resource
-// server calls it before writing a 401 it produces after token validation, for
-// example when a downstream API rejects the forwarded token; the caller writes
-// the status and body. code is an RFC 6750 §3.1 error code such as
-// "invalid_token"; code and description may be empty.
-func (h *Handler) SetUnauthorizedChallenge(w http.ResponseWriter, r *http.Request, code, description string) {
+func (h *Handler) setUnauthorizedChallenge(w http.ResponseWriter, r *http.Request, code, description string) {
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 
 	// MCP 2025-11-25: Include WWW-Authenticate header with endpoint-specific scope guidance
@@ -275,7 +268,7 @@ func (h *Handler) SetUnauthorizedChallenge(w http.ResponseWriter, r *http.Reques
 		w.Header().Set("WWW-Authenticate", h.formatWWWAuthenticate(scope, code, description, r.URL.Path))
 	} else {
 		// Minimal header for backward compatibility with legacy clients (opt-in)
-		w.Header().Set("WWW-Authenticate", tokenTypeBearer)
+		w.Header().Set("WWW-Authenticate", `Bearer realm="oauth"`)
 	}
 }
 
@@ -317,11 +310,13 @@ func (h *Handler) writeInsufficientScopeError(w http.ResponseWriter, requiredSco
 // formatWWWAuthenticate formats the WWW-Authenticate header value per RFC 6750 and RFC 9728
 // It includes the resource_metadata URL for MCP 2025-11-25 compliance, along with optional
 // scope, error, and error_description parameters.
+// Invalid optional parameter values are omitted rather than rewritten, since
+// changing a scope name changes the permission the client requests.
 //
 // Parameters:
 //   - scope: Space-separated list of scopes required (e.g., "files:read user:profile")
-//   - error: OAuth error code (e.g., "invalid_token", "insufficient_scope")
-//   - errorDesc: Human-readable error description
+//   - errorCode: OAuth error code (e.g., "invalid_token", "insufficient_scope")
+//   - errorDescription: Human-readable error description
 //
 // Example output:
 //
@@ -329,7 +324,7 @@ func (h *Handler) writeInsufficientScopeError(w http.ResponseWriter, requiredSco
 //	       scope="files:read user:profile",
 //	       error="invalid_token",
 //	       error_description="Token has expired"
-func (h *Handler) formatWWWAuthenticate(scope, errCode, errorDesc string, resourcePaths ...string) string {
+func (h *Handler) formatWWWAuthenticate(scope, errorCode, errorDescription string, resourcePaths ...string) string {
 	scope = strings.Join(scopesWithoutOfflineAccess(strings.Split(scope, " ")), " ")
 
 	// Build the challenge parameters (excluding the Bearer scheme)
@@ -346,35 +341,27 @@ func (h *Handler) formatWWWAuthenticate(scope, errCode, errorDesc string, resour
 	}
 	params = append(params, fmt.Sprintf(`resource_metadata="%s"`, resourceMetadataURL))
 
-	// Optional: Include scope if configured
-	// SECURITY: Sanitize scope to prevent header injection (defense-in-depth)
-	// While RFC 6749 Section 3.3 restricts scope to a limited character set,
-	// we escape special characters as a defense-in-depth measure.
-	if scope != "" {
-		// Escape backslashes first, then quotes (order matters!)
-		// This follows RFC 2616/7230 quoted-string rules for HTTP headers
-		escapedScope := strings.ReplaceAll(scope, `\`, `\\`)
-		escapedScope = strings.ReplaceAll(escapedScope, `"`, `\"`)
-		params = append(params, fmt.Sprintf(`scope="%s"`, escapedScope))
+	if scope != "" && helpers.ValidateScopes(strings.Split(scope, " ")) == nil {
+		params = append(params, fmt.Sprintf(`scope="%s"`, scope))
 	}
 
-	// Optional: Include error code if provided
-	if errCode != "" {
-		params = append(params, fmt.Sprintf(`error="%s"`, errCode))
+	if errorCode != "" && validBearerErrorValue(errorCode) {
+		params = append(params, fmt.Sprintf(`error="%s"`, errorCode))
 	}
 
-	// Optional: Include error description if provided
-	if errorDesc != "" {
-		// Escape backslashes first, then quotes (order matters!)
-		// This follows RFC 2616/7230 quoted-string rules for HTTP headers
-		escapedDesc := strings.ReplaceAll(errorDesc, `\`, `\\`)
-		escapedDesc = strings.ReplaceAll(escapedDesc, `"`, `\"`)
-		params = append(params, fmt.Sprintf(`error_description="%s"`, escapedDesc))
+	if errorDescription != "" && validBearerErrorValue(errorDescription) {
+		params = append(params, fmt.Sprintf(`error_description="%s"`, errorDescription))
 	}
 
 	// Format: "Bearer param1="value1", param2="value2"" per RFC 6750 Section 3
 	// Note: Space after "Bearer", then comma-space between parameters
 	return "Bearer " + strings.Join(params, ", ")
+}
+
+func validBearerErrorValue(value string) bool {
+	return strings.IndexFunc(value, func(character rune) bool {
+		return character < 0x20 || character > 0x7e || character == '"' || character == '\\'
+	}) == -1
 }
 
 // Context key for user info

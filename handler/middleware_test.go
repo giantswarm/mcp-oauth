@@ -655,7 +655,7 @@ func TestHandler_FormatWWWAuthenticate(t *testing.T) {
 			},
 		},
 		{
-			name:      "error description with quotes (escaping test)",
+			name:      "error description with quotes is omitted",
 			scope:     "",
 			error:     "invalid_request",
 			errorDesc: `The "client_id" parameter is missing`,
@@ -663,11 +663,11 @@ func TestHandler_FormatWWWAuthenticate(t *testing.T) {
 				"Bearer",
 				testResourceMetadataURL,
 				`error="invalid_request"`,
-				`error_description="The \"client_id\" parameter is missing"`,
 			},
+			wantNotContain: []string{"error_description="},
 		},
 		{
-			name:      "error description with backslashes and quotes (enhanced escaping)",
+			name:      "error description with backslashes and quotes is omitted",
 			scope:     "",
 			error:     "invalid_request",
 			errorDesc: `The "client_id" contains \n invalid chars`,
@@ -675,11 +675,11 @@ func TestHandler_FormatWWWAuthenticate(t *testing.T) {
 				"Bearer",
 				testResourceMetadataURL,
 				`error="invalid_request"`,
-				`error_description="The \"client_id\" contains \\n invalid chars"`,
 			},
+			wantNotContain: []string{"error_description="},
 		},
 		{
-			name:      "error description with multiple backslashes",
+			name:      "error description with backslashes is omitted",
 			scope:     "",
 			error:     "invalid_token",
 			errorDesc: `Token path: C:\Users\Admin\token.txt`,
@@ -687,8 +687,8 @@ func TestHandler_FormatWWWAuthenticate(t *testing.T) {
 				"Bearer",
 				testResourceMetadataURL,
 				`error="invalid_token"`,
-				`error_description="Token path: C:\\Users\\Admin\\token.txt"`,
 			},
+			wantNotContain: []string{"error_description="},
 		},
 		{
 			name:      "very long scope list (edge case)",
@@ -703,40 +703,37 @@ func TestHandler_FormatWWWAuthenticate(t *testing.T) {
 			wantNotContain: []string{"error=", "error_description="},
 		},
 		{
-			name:      "scope with quotes (defense-in-depth escaping)",
+			name:      "scope with quotes is omitted",
 			scope:     `files:read "special" user:profile`,
 			error:     "",
 			errorDesc: "",
 			wantContain: []string{
 				"Bearer",
 				testResourceMetadataURL,
-				`scope="files:read \"special\" user:profile"`,
 			},
-			wantNotContain: []string{"error=", "error_description="},
+			wantNotContain: []string{"scope=", "error=", "error_description="},
 		},
 		{
-			name:      "scope with backslash (defense-in-depth escaping)",
+			name:      "scope with backslash is omitted",
 			scope:     `files:read scope\test user:profile`,
 			error:     "",
 			errorDesc: "",
 			wantContain: []string{
 				"Bearer",
 				testResourceMetadataURL,
-				`scope="files:read scope\\test user:profile"`,
 			},
-			wantNotContain: []string{"error=", "error_description="},
+			wantNotContain: []string{"scope=", "error=", "error_description="},
 		},
 		{
-			name:      "scope with both backslash and quotes (combined escaping)",
+			name:      "scope with backslash and quotes is omitted",
 			scope:     `test:\"quoted\value`,
 			error:     "",
 			errorDesc: "",
 			wantContain: []string{
 				"Bearer",
 				testResourceMetadataURL,
-				`scope="test:\\\"quoted\\value"`,
 			},
-			wantNotContain: []string{"error=", "error_description="},
+			wantNotContain: []string{"scope=", "error=", "error_description="},
 		},
 	}
 
@@ -1037,9 +1034,8 @@ func TestHandler_WriteError401BackwardCompatibilityMode(t *testing.T) {
 			}
 
 			if tt.wantMinimalHeader {
-				// Should only be "Bearer" without any parameters
-				if wwwAuth != "Bearer" {
-					t.Errorf("Expected minimal 'Bearer' header, got: %q", wwwAuth)
+				if wwwAuth != `Bearer realm="oauth"` {
+					t.Errorf("Expected Bearer challenge with realm, got: %q", wwwAuth)
 				}
 				// Should NOT contain resource_metadata
 				if strings.Contains(wwwAuth, "resource_metadata") {

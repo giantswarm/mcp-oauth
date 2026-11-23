@@ -59,6 +59,10 @@ handler returns 401 without one. It preserves the handler's response body, media
 type and existing challenge. A validated inbound token does not acquire an
 `invalid_token` error merely because the downstream resource rejects it.
 
+A rejected credential at a separate downstream API does not establish that the
+inbound MCP access token is invalid. Downstream APIs use credentials issued for
+their own audiences; the inbound MCP access token must not be passed through.
+
 ### Configuration
 
 The library automatically exposes this endpoint when you register routes:
@@ -354,6 +358,7 @@ When a client makes an unauthorized request, the server returns a 401 response w
 ```http
 GET /mcp HTTP/1.1
 Host: mcp.example.com
+Authorization: Bearer expired-access-token
 
 HTTP/1.1 401 Unauthorized
 WWW-Authenticate: Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource",
@@ -377,6 +382,16 @@ WWW-Authenticate: Bearer resource_metadata="https://mcp.example.com/.well-known/
 ```
 
 ### WWW-Authenticate Parameters
+
+Optional `scope`, `error`, and `error_description` values must follow RFC 6750
+Section 3's character restrictions. Invalid values are omitted from the header.
+Scopes are not rewritten into different permission names. The JSON error body
+retains its description independently of the optional header description.
+
+`DisableWWWAuthenticateMetadata` sends `Bearer realm="oauth"` on 401 responses,
+omitting discovery and error parameters. The realm preserves RFC 6750 challenge
+syntax; clients still need the registered well-known metadata routes for MCP
+discovery.
 
 | Parameter | Purpose | Required |
 |-----------|---------|----------|
