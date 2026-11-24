@@ -161,7 +161,8 @@ func runConsentHTTP(t *testing.T, stores []storage.Combined, prefix string) {
 		response, err = httpClient.Get(callback)
 		require.NoError(t, err)
 		require.NoError(t, response.Body.Close())
-		require.Equal(t, http.StatusBadRequest, response.StatusCode)
+		require.Equal(t, http.StatusFound, response.StatusCode)
+		require.Equal(t, "access_denied", mustParseURL(t, response.Header.Get("Location")).Query().Get("error"))
 		for _, cookie := range jar.Cookies(mustParseURL(t, issuer)) {
 			require.NotEqual(t, handlers[0].consent.flowName(upstream.Query().Get("state")), cookie.Name)
 		}
