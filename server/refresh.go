@@ -5,6 +5,8 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -423,7 +425,8 @@ func (s *Server) RefreshAccessToken(ctx context.Context, refreshToken, clientID 
 // usable. An empty resource behaves as RefreshAccessToken.
 // The caller authenticates the client and enforces request proof requirements.
 func (s *Server) RefreshAccessTokenForResource(ctx context.Context, refreshToken, clientID, resource string) (*oauth2.Token, error) {
-	return s.refreshAccessTokenForResource(ctx, refreshToken, clientID, resource, nil)
+	token, _, err := s.refreshAccessTokenForResource(ctx, refreshToken, clientID, resource, nil, nil)
+	return token, err
 }
 
 // RefreshAccessTokenWithDPoP refreshes a grant using a validated token-endpoint
@@ -432,10 +435,36 @@ func (s *Server) RefreshAccessTokenForResource(ctx context.Context, refreshToken
 // Public-client refresh bindings are enforced before provider calls or rotation;
 // confidential clients authenticate separately and can bind a new access key.
 func (s *Server) RefreshAccessTokenWithDPoP(ctx context.Context, refreshToken string, client *storage.Client, resource, thumbprint string) (*oauth2.Token, error) {
+	token, _, err := s.RefreshAccessTokenWithOptions(ctx, refreshToken, client, RefreshOptions{Resource: resource, Thumbprint: thumbprint})
+	return token, err
+}
+
+// RefreshOptions carries the optional parameters of a refresh request.
+type RefreshOptions struct {
+	// Resource is the RFC 8707 resource parameter, as for
+	// [Server.RefreshAccessTokenForResource].
+	Resource string
+	// Thumbprint is the validated DPoP proof thumbprint; empty for a request
+	// without a proof.
+	Thumbprint string
+	// Scope is the RFC 6749 §6 scope parameter. Empty means the grant's scope.
+	// A subset of the grant narrows the issued access token; the rotated
+	// refresh token keeps the grant's scope. A scope beyond the grant is
+	// logged as deprecated and the grant's scope is issued.
+	Scope []string
+}
+
+// RefreshAccessTokenWithOptions is [Server.RefreshAccessTokenWithDPoP] with
+// the refresh request's optional parameters. It returns the access token's
+// space-separated scope next to the token.
+// The caller authenticates the client and validates the proof.
+func (s *Server) RefreshAccessTokenWithOptions(ctx context.Context, refreshToken string, client *storage.Client, opts RefreshOptions) (*oauth2.Token, string, error) {
 	if client == nil {
-		return nil, errInvalidGrant
+		return nil, "", errInvalidGrant
 	}
-	return s.refreshAccessTokenForResource(ctx, refreshToken, client.ClientID, resource, &refreshDPoPBinding{thumbprint: thumbprint, confidential: client.IsConfidential()})
+	token, scopes, err := s.refreshAccessTokenForResource(ctx, refreshToken, client.ClientID, opts.Resource,
+		&refreshDPoPBinding{thumbprint: opts.Thumbprint, confidential: client.IsConfidential()}, opts.Scope)
+	return token, strings.Join(scopes, " "), err
 }
 
 type refreshDPoPBinding struct {
@@ -443,31 +472,31 @@ type refreshDPoPBinding struct {
 	confidential bool
 }
 
-func (s *Server) refreshAccessTokenForResource(ctx context.Context, refreshToken, clientID, resource string, proof *refreshDPoPBinding) (*oauth2.Token, error) {
+func (s *Server) refreshAccessTokenForResource(ctx context.Context, refreshToken, clientID, resource string, proof *refreshDPoPBinding, requestedScope []string) (*oauth2.Token, []string, error) {
 	if err := s.requireAuthorizationServer(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := refreshGrantError(s.checkClientRevocation(ctx, clientID)); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Check if storage supports token family tracking (OAuth 2.1 reuse detection)
 	familyStore, supportsFamilies := s.tokenStore.(storage.RefreshTokenFamilyStore)
 
 	metadata, err := s.TokenMetadata(ctx, refreshToken)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if metadata == nil {
 		metadata = &storage.TokenMetadata{}
 	}
 	metadata, err = s.refreshProofMetadata(ctx, clientID, metadata, proof)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	userID, providerToken, unified, err := s.resolveRefreshGrant(ctx, refreshToken, clientID, resource, metadata, familyStore, supportsFamilies)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Refresh the upstream provider token through the per-user single-flight
@@ -479,19 +508,43 @@ func (s *Server) refreshAccessTokenForResource(ctx context.Context, refreshToken
 		if !unified && storage.IsNotFoundError(err) {
 			_, _, _, grantErr := s.resolveRefreshGrant(ctx, refreshToken, clientID, resource, metadata, familyStore, supportsFamilies)
 			if grantErr != nil {
-				return nil, grantErr
+				return nil, nil, grantErr
 			}
 		}
 		if !errors.Is(err, ErrStorageUnavailable) && isTransientProviderError(err) {
-			return nil, s.providerUnavailable(ctx, "refresh", userID, clientID, err)
+			return nil, nil, s.providerUnavailable(ctx, "refresh", userID, clientID, err)
 		}
 		s.logAuthFailure(ctx, userID, clientID, fmt.Sprintf("provider_refresh_failed: %v", err))
-		return nil, fmt.Errorf("failed to refresh token with provider: %w", err)
+		return nil, nil, fmt.Errorf("failed to refresh token with provider: %w", err)
 	}
 
 	baseMetadata := *metadata
 	baseMetadata.UserID = userID
-	return s.issueRefreshedTokens(ctx, refreshToken, newProviderToken, baseMetadata)
+	accessScopes := s.refreshAccessScopes(metadata.Scopes, requestedScope, clientID)
+	token, err := s.issueRefreshedTokens(ctx, refreshToken, newProviderToken, baseMetadata, accessScopes)
+	return token, accessScopes, err
+}
+
+// refreshAccessScopes returns the scope of the access token a refresh issues
+// (RFC 6749 §6): the grant's scope when none is requested, the requested
+// subset otherwise, in the grant's order. A request naming a scope the grant
+// does not hold is logged and answered with the grant's scope.
+func (s *Server) refreshAccessScopes(granted, requested []string, clientID string) []string {
+	if len(requested) == 0 {
+		return granted
+	}
+	var beyond []string
+	for _, scope := range requested {
+		if !slices.Contains(granted, scope) {
+			beyond = append(beyond, scope)
+		}
+	}
+	if len(beyond) > 0 {
+		s.Logger.Warn("DEPRECATED: refresh request scope beyond the original grant is ignored; a later release refuses it with invalid_scope (RFC 6749 §6)",
+			paramClientID, clientID, "scope_not_granted", strings.Join(beyond, " "))
+		return granted
+	}
+	return intersectScopes(granted, requested)
 }
 
 func (s *Server) refreshProofMetadata(ctx context.Context, clientID string, metadata *storage.TokenMetadata, proof *refreshDPoPBinding) (*storage.TokenMetadata, error) {
@@ -552,7 +605,7 @@ func (s *Server) refuseRefreshResourceMismatch(ctx context.Context, resource, au
 	return fmt.Errorf("%w: resource %q is not the refresh grant's audience", ErrInvalidTarget, resource)
 }
 
-func (s *Server) issueRefreshedTokens(ctx context.Context, refreshToken string, newProviderToken *oauth2.Token, metadata storage.TokenMetadata) (*oauth2.Token, error) {
+func (s *Server) issueRefreshedTokens(ctx context.Context, refreshToken string, newProviderToken *oauth2.Token, metadata storage.TokenMetadata, accessScopes []string) (*oauth2.Token, error) {
 	userID, clientID := metadata.UserID, metadata.ClientID
 	familyStore, supportsFamilies := s.tokenStore.(storage.RefreshTokenFamilyStore)
 	now := time.Now()
@@ -588,7 +641,7 @@ func (s *Server) issueRefreshedTokens(ctx context.Context, refreshToken string, 
 		UserID:    userID,
 		ClientID:  clientID,
 		Audience:  metadata.Audience,
-		Scopes:    metadata.Scopes,
+		Scopes:    accessScopes,
 		ExpiresAt: expiry,
 		FamilyID:  familyID,
 		JKT:       metadata.JKT,
@@ -627,7 +680,7 @@ func (s *Server) issueRefreshedTokens(ctx context.Context, refreshToken string, 
 		Scopes:    metadata.Scopes,
 		JKT:       metadata.JKT,
 	}
-	if err := s.saveTokenPairMetadata(ctx, newAccessToken, newRefreshToken, baseMetadata, refreshExpiry); err != nil {
+	if err := s.saveTokenPairMetadata(ctx, newAccessToken, newRefreshToken, baseMetadata, accessScopes, refreshExpiry); err != nil {
 		return nil, err
 	}
 	if err := s.checkRefreshFamilyRevocation(ctx, familyID, clientID); err != nil {

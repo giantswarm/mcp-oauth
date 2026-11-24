@@ -486,11 +486,14 @@ func (s *Server) saveTokenMetadata(ctx context.Context, tokenID string, metadata
 
 // saveTokenPairMetadata saves metadata for an AT/RT pair. base.ExpiresAt is the access-token expiry;
 // refreshExpiresAt is used for the refresh token.
-func (s *Server) saveTokenPairMetadata(ctx context.Context, accessToken, refreshToken string, base storage.TokenMetadata, refreshExpiresAt time.Time) error {
+// saveTokenPairMetadata stores the pair's metadata. The refresh token keeps
+// base.Scopes, the grant's scope; the access token carries accessScopes.
+func (s *Server) saveTokenPairMetadata(ctx context.Context, accessToken, refreshToken string, base storage.TokenMetadata, accessScopes []string, refreshExpiresAt time.Time) error {
 	if base.Audience == "" {
 		base.Audience = s.Config.GetResourceIdentifier()
 	}
 	at := base
+	at.Scopes = accessScopes
 	at.TokenType = "access"
 	if err := s.saveTokenMetadata(ctx, accessToken, at); err != nil {
 		return err

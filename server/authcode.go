@@ -1441,7 +1441,7 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 		Scopes:    tokenScopes,
 		JKT:       dpopJKT,
 	}
-	if err := s.saveTokenPairMetadata(ctx, accessToken, refreshToken, baseMetadata, refreshExpiry); err != nil {
+	if err := s.saveTokenPairMetadata(ctx, accessToken, refreshToken, baseMetadata, baseMetadata.Scopes, refreshExpiry); err != nil {
 		return nil, err
 	}
 	if idToken != "" {
