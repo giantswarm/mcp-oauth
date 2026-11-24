@@ -129,6 +129,7 @@ func (s *Server) ValidateClientAssertion(ctx context.Context, client *storage.Cl
 	if parsed.Claims(selected.Key, &claims) != nil {
 		return fail("assertion_signature")
 	}
+	s.warnUnexpectedAssertionType(client.ClientID, parsed.Headers[0])
 	now := time.Now()
 	if err := s.validateAssertionClaims(client.ClientID, claims, now); err != nil {
 		return err
@@ -144,6 +145,23 @@ func (s *Server) ValidateClientAssertion(ctx context.Context, client *storage.Cl
 		return fail("assertion_replayed")
 	}
 	return nil
+}
+
+// clientAssertionTypHeader is the RFC 10070 §4 typ of a client assertion.
+const clientAssertionTypHeader = "client-authentication+jwt"
+
+// warnUnexpectedAssertionType logs an assertion whose explicit typ is neither
+// JWT nor client-authentication+jwt (RFC 10070 §4, RFC 8725 §3.11): a JWT
+// typed for another purpose, such as at+jwt or dpop+jwt, must not
+// authenticate a client. A missing typ stays accepted.
+func (s *Server) warnUnexpectedAssertionType(clientID string, header jose.Header) {
+	typ, _ := header.ExtraHeaders[jose.HeaderType].(string)
+	switch strings.TrimPrefix(strings.ToLower(typ), "application/") {
+	case "", "jwt", clientAssertionTypHeader:
+		return
+	}
+	s.Logger.Warn("DEPRECATED: client assertion with an explicit typ other than client-authentication+jwt is accepted; a later release refuses it (RFC 10070 section 4)",
+		paramClientID, clientID, "typ", typ)
 }
 
 func validateClientJWK(encoded json.RawMessage, algorithm string) (*jose.JSONWebKey, error) {

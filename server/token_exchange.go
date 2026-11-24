@@ -68,7 +68,9 @@ type TokenExchangeResult struct {
 // emitted only when Email is also non-empty (consistent with AccessTokenClaims
 // semantics). Extra is merged into the JWT body after the standard claims; RFC
 // 7519 §4.1 registered claim names (iss, sub, aud, exp, nbf, iat, jti) and
-// client_id are rejected: Issue returns an error if Extra contains any of them. OIDC profile
+// client_id are rejected: Issue returns an error if Extra contains any of them.
+// Overriding scope, cnf, act or family_id is deprecated and logged; a later
+// release rejects it. OIDC profile
 // claims set via struct fields (email, name, groups, email_verified) are not
 // guarded and can be overridden by Extra.
 type ExchangeOptions struct {

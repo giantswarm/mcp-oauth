@@ -274,6 +274,7 @@ func (s *Server) initializeAccessTokenIssuer() error {
 		if err != nil {
 			return fmt.Errorf("initialize JWT access token issuer: %w", err)
 		}
+		issuer.logger = s.Logger
 		s.accessTokenIssuer = issuer
 		s.Logger.Debug("Access token format: JWT (RFC 9068)",
 			"alg", s.Config.AccessTokenSigningAlgorithm,
