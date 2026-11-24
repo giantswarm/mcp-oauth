@@ -1,7 +1,6 @@
 package oauthconfig
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 	"github.com/giantswarm/mcp-oauth/providers/dex"
-	"github.com/giantswarm/mcp-oauth/requeststate"
 	"github.com/giantswarm/mcp-oauth/security"
 	"github.com/giantswarm/mcp-oauth/server"
 )
@@ -296,50 +294,6 @@ func NewEncryptorFromEnvWithPrefix(prefix string) (*security.Encryptor, error) {
 		return nil, fmt.Errorf("%sENCRYPTION_KEY: %w", prefix, err)
 	}
 	return security.NewEncryptor(key)
-}
-
-// NewRequestStateSealerFromEnv reads OAUTH_REQUEST_STATE_KEY and, during a
-// rotation, OAUTH_REQUEST_STATE_PREVIOUS_KEY (each also as _FILE), 32-byte
-// keys in base64 or hex, and returns a *requeststate.Sealer that seals with
-// the first and opens with both. Returns (nil, nil) when no key is
-// configured. Each server has its own key.
-func NewRequestStateSealerFromEnv() (*requeststate.Sealer, error) {
-	return NewRequestStateSealerFromEnvWithPrefix("OAUTH_")
-}
-
-// NewRequestStateSealerFromEnvWithPrefix is [NewRequestStateSealerFromEnv]
-// with a caller-supplied prefix. See [FromEnvWithPrefix] for the convention.
-func NewRequestStateSealerFromEnvWithPrefix(prefix string) (*requeststate.Sealer, error) {
-	active, err := requestStateKey(prefix + "REQUEST_STATE_KEY")
-	if err != nil || active == nil {
-		return nil, err
-	}
-	previous, err := requestStateKey(prefix + "REQUEST_STATE_PREVIOUS_KEY")
-	if err != nil {
-		return nil, err
-	}
-	if previous == nil {
-		return requeststate.New(*active)
-	}
-	if previous.ID == active.ID {
-		return nil, fmt.Errorf("%sREQUEST_STATE_PREVIOUS_KEY: derives the same key ID as %sREQUEST_STATE_KEY; generate a new key", prefix, prefix)
-	}
-	return requeststate.New(*active, *previous)
-}
-
-// requestStateKey reads one key. Its ID is derived from the key, so an
-// operator rotates by moving the current key to the previous variable.
-func requestStateKey(name string) (*requeststate.Key, error) {
-	raw, err := optionalSecret(name)
-	if err != nil || raw == "" {
-		return nil, err
-	}
-	secret, err := decodeSymmetricKey(raw)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", name, err)
-	}
-	digest := sha256.Sum256(secret)
-	return &requeststate.Key{ID: digest[0], Secret: secret}, nil
 }
 
 // decodeSymmetricKey decodes a 32-byte symmetric key from either base64 (the

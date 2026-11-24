@@ -1,7 +1,6 @@
 package security
 
 import (
-	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hkdf"
 	"crypto/rand"
@@ -65,16 +64,16 @@ const (
 
 // KeyRing resolves AES-256 keys keyed by a 1-byte `kid`. `ActiveKID` returns
 // the id stamped into every new ciphertext; `AEAD(kid)` resolves any
-// historical id present in stored rows. The built-in [NewEncryptor] wires a
-// [singleKeyRing] with kid = 0 because in-tree consumers need exactly one
-// key today.
+// historical id present in stored rows. [NewKeyRing] builds one from fixed
+// keys; [NewEncryptor] wires one with kid = 0 because in-tree consumers need
+// exactly one key today.
 //
-// Multi-key consumers (external KMS, scheduled rotation, dual-write windows)
+// Consumers whose keys change at runtime (external KMS, scheduled rotation)
 // supply their own implementation. Notes for those implementations:
 //
 //   - `ActiveKID` is invoked on every Encrypt; implementations that want
 //     to change the active id at runtime MUST make this call goroutine-safe.
-//     The built-in `singleKeyRing` returns a constant and is trivially safe.
+//     The ring [NewKeyRing] returns is fixed and trivially safe.
 //   - The Encryptor does not yet expose which kid authenticated a given
 //     decrypted row, so re-encrypt-on-read rotation is not implementable
 //     against today's [Encryptor.Decrypt]. Tracked in #335.
@@ -85,33 +84,6 @@ type KeyRing interface {
 	// AEAD returns the AEAD primitive bound to the given kid. The returned
 	// AEAD's NonceSize() and Overhead() must be stable across calls.
 	AEAD(kid byte) (cipher.AEAD, error)
-}
-
-// singleKeyRing implements [KeyRing] with one key, kid = 0. The built-in
-// behind [NewEncryptor]; consumers needing rotation provide their own.
-type singleKeyRing struct {
-	aead cipher.AEAD
-}
-
-func newSingleKeyRing(key []byte) (*singleKeyRing, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create cipher: %w", err)
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create GCM: %w", err)
-	}
-	return &singleKeyRing{aead: aead}, nil
-}
-
-func (r *singleKeyRing) ActiveKID() byte { return 0 }
-
-func (r *singleKeyRing) AEAD(kid byte) (cipher.AEAD, error) {
-	if kid != 0 {
-		return nil, fmt.Errorf("unknown key id %d", kid)
-	}
-	return r.aead, nil
 }
 
 // Encryptor handles token encryption at rest using AES-256-GCM. Emits v1
@@ -139,7 +111,7 @@ func NewEncryptor(key []byte) (*Encryptor, error) {
 		return nil, err
 	}
 
-	ring, err := newSingleKeyRing(key)
+	ring, err := NewKeyRing(Key{ID: 0, Secret: key})
 	if err != nil {
 		return nil, err
 	}

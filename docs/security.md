@@ -101,8 +101,9 @@ srv, err := server.New(provider, store, store, store, cfg, logger)
 
 The ciphertext envelope is versioned (`0x01 || kid || nonce || ct`); legacy
 `nonce || ct` payloads produced by previous releases remain readable on
-decrypt. Operators wanting external KMS or multi-key rotation supply their
-own [`security.KeyRing`](../security/encryption.go).
+decrypt. `security.NewKeyRing` builds a [`security.KeyRing`](../security/encryption.go)
+over fixed keys, an active one and previous ones for a rotation; operators
+wanting an external KMS supply their own.
 
 **Key Management:**
 - Generate keys using `security.GenerateKey()` (32 bytes, cryptographically random)

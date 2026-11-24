@@ -1,21 +1,31 @@
-// Package requeststate seals the state an MCP server hands a client to echo
-// back: the requestState of an InputRequiredResult (MCP 2026-07-28) and the
-// elicitationId of a URL mode elicitation (MCP 2025-11-25).
+// Package requeststate seals the requestState an MCP server returns in an
+// InputRequiredResult and the client echoes back on its retry (MCP
+// 2026-07-28, multi round-trip requests).
 //
-// The client controls what it echoes, and MCP requires a server to bind an
-// elicitation to the user who started it. A sealed value is encrypted and
-// authenticated with AES-256-GCM. The user's issuer and subject, the call it
-// was issued for and the key ID are authenticated with it, and it carries an
-// expiry. Open refuses a value that was changed, issued for another user or
-// another call, expired, or sealed with a key the [Sealer] does not hold.
+// MCP treats an echoed requestState as attacker-controlled input: the server
+// must protect its integrity and should bind it to the authenticated
+// principal, a short expiry and the originating request. A server must also
+// bind an elicitation to the client and user identity. A sealed value is
+// encrypted and authenticated with AES-256-GCM under a [security.KeyRing],
+// and bound to:
 //
-// Each server seals with its own key. A value is only ever opened by the
-// server that sealed it.
+//   - the user and OAuth client of the validated token: the Issuer, ID and
+//     ClientID of its [providers.UserInfo], and its current actor
+//     (ActorIssuer, ActorSubject) when the token is delegated;
+//   - the originating request, such as the method, the tool name and a
+//     digest of its arguments;
+//   - an expiry.
+//
+// Open refuses a value that was changed, sealed for another user, client,
+// actor or request, expired, or sealed with a key the ring does not hold.
+// A value can be opened more than once until it expires; a server whose
+// state must be consumed at most once records that itself.
+//
+// Each server seals with its own key ring, and a value is only ever opened
+// by the server that sealed it.
 package requeststate
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
@@ -23,6 +33,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 )
 
@@ -30,7 +41,6 @@ const formatVersion byte = 1
 
 const (
 	headerSize = 2 // format version, key ID
-	nonceSize  = 12
 
 	// MaxSealedLength bounds what Open decodes, so a client cannot make the
 	// server decode an arbitrarily large value.
@@ -39,74 +49,54 @@ const (
 
 var (
 	// ErrInvalid is a value that is malformed, was changed, or was sealed
-	// for another user or call or with a key this Sealer does not hold.
+	// for another user, client, actor or request or with a key the ring
+	// does not hold.
 	ErrInvalid = errors.New("requeststate: invalid state")
 	// ErrExpired is an authentic value past its expiry.
 	ErrExpired = errors.New("requeststate: expired state")
 )
 
-// Key is one AES-256 key and the ID stamped into the values it seals.
-type Key struct {
-	ID     byte
-	Secret []byte
-}
-
-// Sealer seals with its active key and opens with any key it holds.
+// Sealer seals with its ring's active key and opens with any key the ring
+// resolves.
 type Sealer struct {
-	active byte
-	keys   map[byte]cipher.AEAD
-	now    func() time.Time
+	ring security.KeyRing
 }
 
-// New returns a Sealer that seals with active and opens values sealed with
-// active or any of previous, so a key can be rotated without refusing values
-// already handed out. Every secret must be 32 bytes and pass
-// [security.ValidateKeyEntropy]; key IDs must be distinct.
-func New(active Key, previous ...Key) (*Sealer, error) {
-	s := &Sealer{active: active.ID, keys: map[byte]cipher.AEAD{}, now: time.Now}
-	for _, k := range append([]Key{active}, previous...) {
-		if _, dup := s.keys[k.ID]; dup {
-			return nil, fmt.Errorf("requeststate: key ID %d given twice", k.ID)
-		}
-		if len(k.Secret) != 32 {
-			return nil, fmt.Errorf("requeststate: key %d must be 32 bytes, got %d", k.ID, len(k.Secret))
-		}
-		if err := security.ValidateKeyEntropy(k.Secret); err != nil {
-			return nil, fmt.Errorf("requeststate: key %d: %w", k.ID, err)
-		}
-		block, err := aes.NewCipher(k.Secret)
-		if err != nil {
-			return nil, fmt.Errorf("requeststate: key %d: %w", k.ID, err)
-		}
-		aead, err := cipher.NewGCM(block)
-		if err != nil {
-			return nil, fmt.Errorf("requeststate: key %d: %w", k.ID, err)
-		}
-		s.keys[k.ID] = aead
+// New returns a Sealer over ring. ring must resolve its active key.
+func New(ring security.KeyRing) (*Sealer, error) {
+	if ring == nil {
+		return nil, errors.New("requeststate: a key ring is required")
 	}
-	return s, nil
+	if _, err := ring.AEAD(ring.ActiveKID()); err != nil {
+		return nil, fmt.Errorf("requeststate: active key: %w", err)
+	}
+	return &Sealer{ring: ring}, nil
 }
 
-// Seal returns payload sealed for the user and call, valid for ttl. issuer and
-// subject identify the validated caller (for a [github.com/giantswarm/mcp-oauth/providers.UserInfo], its
-// Issuer and ID). call names what the value may be echoed to, such as the tool
-// name and a digest of its arguments. Open must be given the same three.
-func (s *Sealer) Seal(issuer, subject, call string, payload []byte, ttl time.Duration) (string, error) {
-	if err := checkUser(issuer, subject); err != nil {
+// Seal returns payload sealed for user and request, valid for ttl. user is
+// the validated caller; request identifies the originating request. Open
+// must be given the same user and request.
+func (s *Sealer) Seal(user *providers.UserInfo, request string, payload []byte, ttl time.Duration) (string, error) {
+	if err := checkBinding(user, request); err != nil {
 		return "", err
 	}
 	if ttl <= 0 {
 		return "", errors.New("requeststate: ttl must be positive")
 	}
-	header := []byte{formatVersion, s.active}
-	nonce := make([]byte, nonceSize)
+	kid := s.ring.ActiveKID()
+	aead, err := s.ring.AEAD(kid)
+	if err != nil {
+		return "", fmt.Errorf("requeststate: active key: %w", err)
+	}
+	header := []byte{formatVersion, kid}
+	nonce := make([]byte, aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
 		return "", fmt.Errorf("requeststate: nonce: %w", err)
 	}
-	plaintext := binary.AppendVarint(nil, s.now().Add(ttl).Unix())
+	plaintext := binary.AppendVarint(nil, time.Now().Add(ttl).Unix())
 	plaintext = append(plaintext, payload...)
 	out := append(header, nonce...)
-	out = s.keys[s.active].Seal(out, nonce, plaintext, additionalData(header, issuer, subject, call))
+	out = aead.Seal(out, nonce, plaintext, additionalData(header, user, request))
 	sealed := base64.RawURLEncoding.EncodeToString(out)
 	if len(sealed) > MaxSealedLength {
 		return "", fmt.Errorf("requeststate: sealed state is %d bytes, over %d", len(sealed), MaxSealedLength)
@@ -114,25 +104,29 @@ func (s *Sealer) Seal(issuer, subject, call string, payload []byte, ttl time.Dur
 	return sealed, nil
 }
 
-// Open returns the payload of a value Seal returned for the same issuer,
-// subject and call. It answers ErrInvalid or ErrExpired otherwise.
-func (s *Sealer) Open(issuer, subject, call, sealed string) ([]byte, error) {
-	if err := checkUser(issuer, subject); err != nil {
+// Open returns the payload of a value Seal returned for the same user and
+// request. It answers ErrInvalid or ErrExpired otherwise.
+func (s *Sealer) Open(user *providers.UserInfo, request, sealed string) ([]byte, error) {
+	if err := checkBinding(user, request); err != nil {
 		return nil, err
 	}
 	if len(sealed) > MaxSealedLength {
 		return nil, ErrInvalid
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(sealed)
-	if err != nil || len(raw) < headerSize+nonceSize || raw[0] != formatVersion {
+	if err != nil || len(raw) < headerSize || raw[0] != formatVersion {
 		return nil, ErrInvalid
 	}
-	aead, ok := s.keys[raw[1]]
-	if !ok {
+	aead, err := s.ring.AEAD(raw[1])
+	if err != nil {
 		return nil, ErrInvalid
 	}
-	header, nonce, ciphertext := raw[:headerSize], raw[headerSize:headerSize+nonceSize], raw[headerSize+nonceSize:]
-	plaintext, err := aead.Open(nil, nonce, ciphertext, additionalData(header, issuer, subject, call))
+	nonceEnd := headerSize + aead.NonceSize()
+	if len(raw) < nonceEnd {
+		return nil, ErrInvalid
+	}
+	header, nonce, ciphertext := raw[:headerSize], raw[headerSize:nonceEnd], raw[nonceEnd:]
+	plaintext, err := aead.Open(nil, nonce, ciphertext, additionalData(header, user, request))
 	if err != nil {
 		return nil, ErrInvalid
 	}
@@ -140,24 +134,28 @@ func (s *Sealer) Open(issuer, subject, call, sealed string) ([]byte, error) {
 	if n <= 0 {
 		return nil, ErrInvalid
 	}
-	if !s.now().Before(time.Unix(expiry, 0)) {
+	if !time.Now().Before(time.Unix(expiry, 0)) {
 		return nil, ErrExpired
 	}
 	return plaintext[n:], nil
 }
 
-func checkUser(issuer, subject string) error {
-	if issuer == "" || subject == "" {
-		return errors.New("requeststate: a validated user with issuer and subject is required")
+func checkBinding(user *providers.UserInfo, request string) error {
+	if user == nil || user.Issuer == "" || user.ID == "" {
+		return errors.New("requeststate: a validated user with Issuer and ID is required")
+	}
+	if request == "" {
+		return errors.New("requeststate: the originating request is required")
 	}
 	return nil
 }
 
-// additionalData authenticates the header, the user and the call with the
-// ciphertext. Each field is length-prefixed so no two inputs encode alike.
-func additionalData(header []byte, issuer, subject, call string) []byte {
+// additionalData authenticates the header, the user, client and actor, and
+// the request with the ciphertext. Each field is length-prefixed so no two
+// bindings encode alike.
+func additionalData(header []byte, user *providers.UserInfo, request string) []byte {
 	ad := append([]byte{}, header...)
-	for _, field := range []string{issuer, subject, call} {
+	for _, field := range []string{user.Issuer, user.ID, user.ClientID, user.ActorIssuer, user.ActorSubject, request} {
 		ad = binary.AppendUvarint(ad, uint64(len(field)))
 		ad = append(ad, field...)
 	}

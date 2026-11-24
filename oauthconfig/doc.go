@@ -24,7 +24,7 @@
 //
 //   - OAUTH_ENCRYPTION_KEY                    — 32-byte AES-GCM key, base64 (preferred) or hex
 //
-//   - OAUTH_REQUEST_STATE_KEY                 — 32-byte key sealing requestState and elicitation IDs
+//   - OAUTH_REQUEST_STATE_KEY                 — 32-byte key sealing requestState
 //     (NewRequestStateSealerFromEnv); OAUTH_REQUEST_STATE_PREVIOUS_KEY during a rotation
 //
 //   - OAUTH_SESSION_ID_HMAC_KEY               — base64 32-byte HMAC key
