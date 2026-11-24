@@ -19,14 +19,14 @@ func TestClientDeletionInvalidatesIssuedAccess(t *testing.T) {
 	seedProviderToken(t, store, "other-client-access", "first-user", &oauth2.Token{AccessToken: "upstream", Expiry: time.Now().Add(time.Hour)})
 	require.NoError(t, store.SaveClient(t.Context(), &storage.Client{ClientID: "test-client"}))
 	require.NoError(t, store.SaveTokenMetadata(t.Context(), "other-client-access", storage.TokenMetadata{ClientID: "other-client", UserID: "first-user", TokenType: "access", Audience: server.Config.GetResourceIdentifier(), ExpiresAt: time.Now().Add(time.Hour)}))
-	_, err := server.validateStoredToken(t.Context(), "old-access")
+	_, _, err := server.validateStoredToken(t.Context(), "old-access")
 	require.NoError(t, err)
 	require.NoError(t, server.DeleteClient(t.Context(), "test-client"))
 	for _, access := range []string{"old-access", "second-user-access"} {
-		_, err := server.validateStoredToken(t.Context(), access)
+		_, _, err := server.validateStoredToken(t.Context(), access)
 		require.ErrorIs(t, err, errInvalidAccessToken)
 	}
-	_, err = server.validateStoredToken(t.Context(), "other-client-access")
+	_, _, err = server.validateStoredToken(t.Context(), "other-client-access")
 	require.NoError(t, err)
 }
 
