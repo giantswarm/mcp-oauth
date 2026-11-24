@@ -72,10 +72,10 @@ func (h *Handler) checkClientRegistrationRateLimit(ctx context.Context, w http.R
 	return false
 }
 
-// validateRegistrationToken validates the registration access token
-// Returns true if valid token was provided
+// validateRegistrationToken reports whether authHeader carries the configured
+// initial access token (RFC 7591 §1.2).
 func (h *Handler) validateRegistrationToken(authHeader string) bool {
-	if authHeader == "" || h.server.Config.RegistrationAccessToken == "" {
+	if authHeader == "" || h.server.Config.InitialAccessToken == "" {
 		return false
 	}
 
@@ -84,7 +84,7 @@ func (h *Handler) validateRegistrationToken(authHeader string) bool {
 		return false
 	}
 
-	return subtle.ConstantTimeCompare([]byte(parts[1]), []byte(h.server.Config.RegistrationAccessToken)) == 1
+	return subtle.ConstantTimeCompare([]byte(parts[1]), []byte(h.server.Config.InitialAccessToken)) == 1
 }
 
 // registrationAuthResult identifies which gate authorized a DCR request.

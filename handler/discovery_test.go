@@ -907,7 +907,7 @@ func TestHandler_ServeAuthorizationServerMetadata(t *testing.T) {
 	defer store.Stop()
 
 	// Enable client registration by setting a registration access token
-	handler.server.Config.RegistrationAccessToken = "test-token"
+	handler.server.Config.InitialAccessToken = "test-token"
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
 	w := httptest.NewRecorder()
@@ -993,7 +993,7 @@ func TestHandler_ServeAuthorizationServerMetadata_NoRegistration(t *testing.T) {
 
 	// Ensure client registration is disabled (neither token, public registration, nor trusted schemes)
 	handler.server.Config.AllowPublicClientRegistration = false
-	handler.server.Config.RegistrationAccessToken = ""
+	handler.server.Config.InitialAccessToken = ""
 	handler.server.Config.TrustedPublicRegistrationSchemes = nil
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
@@ -1033,7 +1033,7 @@ func TestHandler_ServeAuthorizationServerMetadata_PublicRegistration(t *testing.
 
 	// Enable public client registration (no token required)
 	handler.server.Config.AllowPublicClientRegistration = true
-	handler.server.Config.RegistrationAccessToken = ""
+	handler.server.Config.InitialAccessToken = ""
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
 	w := httptest.NewRecorder()
@@ -1064,7 +1064,7 @@ func TestHandler_ServeAuthorizationServerMetadata_TrustedSchemes(t *testing.T) {
 
 	// Configure trusted schemes for Cursor/VSCode (without token or public registration)
 	handler.server.Config.AllowPublicClientRegistration = false
-	handler.server.Config.RegistrationAccessToken = ""
+	handler.server.Config.InitialAccessToken = ""
 	handler.server.Config.TrustedPublicRegistrationSchemes = []string{"cursor", "vscode"}
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)

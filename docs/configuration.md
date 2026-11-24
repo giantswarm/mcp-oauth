@@ -96,7 +96,7 @@ or others logs a warning, or is refused with
 
 | Variable | Behavior |
 | --- | --- |
-| `OAUTH_REGISTRATION_ACCESS_TOKEN` | Secret. Bearer required at `/oauth/register` |
+| `OAUTH_INITIAL_ACCESS_TOKEN` | Secret. The RFC 7591 initial access token required at `/oauth/register`. `OAUTH_REGISTRATION_ACCESS_TOKEN` is its deprecated name and logs a warning. |
 | `OAUTH_ALLOW_PUBLIC_CLIENT_REGISTRATION` | Allow registration without the registration token and of public clients; default `false`, for development only |
 | `OAUTH_TRUSTED_REDIRECT_SCHEMES` | Comma-separated custom URI schemes (for example `cursor,vscode`) a client may register without the registration token |
 | `OAUTH_TRUSTED_REDIRECT_URIS` | Comma-separated HTTPS redirect URIs a client may register without the registration token |
@@ -217,7 +217,7 @@ the two roles RFC 6749 defines and renders it into the variables above. Secrets 
 | `resourceServer.requireResourceAccessTokens` | accept only tokens for this resource | `OAUTH_REQUIRE_RESOURCE_ACCESS_TOKENS` |
 | `authorizationServer.enabled`, `issuer` | this server's own authorization server | `OAUTH_ENABLE_AUTHORIZATION_SERVER`, `OAUTH_ISSUER` |
 | `authorizationServer.upstream` | the OpenID Provider people sign in with: type, issuer, client, scopes, connector, CA | `OAUTH_PROVIDER`, `OAUTH_DEX_*`, `OAUTH_GOOGLE_*`, `OAUTH_GITHUB_*` |
-| `authorizationServer.dynamicClientRegistration` | `enabled`, `initialAccessToken` | `OAUTH_ENABLE_DYNAMIC_CLIENT_REGISTRATION`, `OAUTH_REGISTRATION_ACCESS_TOKEN` |
+| `authorizationServer.dynamicClientRegistration` | `enabled`, `initialAccessToken` | `OAUTH_ENABLE_DYNAMIC_CLIENT_REGISTRATION`, `OAUTH_INITIAL_ACCESS_TOKEN` |
 | `authorizationServer.clientIDMetadataDocuments` | `enabled` | `OAUTH_ENABLE_CLIENT_ID_METADATA_DOCUMENTS` |
 | `authorizationServer.endpoints` | introspection, userinfo and client management; revocation is always served | `OAUTH_ENABLE_*_ENDPOINT` |
 | `authorizationServer.storage` | memory or Valkey; Valkey requires an encryption key | `OAUTH_STORAGE_BACKEND`, `OAUTH_VALKEY_*`, `OAUTH_ENCRYPTION_KEY` |
@@ -719,8 +719,8 @@ config := &server.Config{
     // Require authentication for /oauth/register
     AllowPublicClientRegistration: false,
 
-    // Registration access token (share only with trusted developers)
-    RegistrationAccessToken: os.Getenv("REGISTRATION_TOKEN"),
+    // Initial access token (share only with trusted developers)
+    InitialAccessToken: os.Getenv("INITIAL_ACCESS_TOKEN"),
 
     // Limit registrations per IP
     MaxClientsPerIP: 10,

@@ -399,7 +399,7 @@ func (s *Server) CanRegisterWithTrustedScheme(redirectURIs []string) (allowed bo
 }
 
 // CanRegisterWithTrustedRedirectURI reports whether a registration request can
-// proceed without a RegistrationAccessToken because every redirect URI in the
+// proceed without an InitialAccessToken because every redirect URI in the
 // request matches an entry in TrustedPublicRegistrationRedirectURIs after RFC 3986
 // normalization. Strict matching is the only mode: a permissive variant (matching
 // any URI when at least one matches) would allow an attacker to attach arbitrary

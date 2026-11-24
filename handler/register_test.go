@@ -325,7 +325,7 @@ func TestHandler_ServeClientRegistration_PublicClientPolicy(t *testing.T) {
 
 			// Set registration token when authentication is required
 			if !tt.allowPublicClientRegistration {
-				handler.server.Config.RegistrationAccessToken = testRegistrationToken
+				handler.server.Config.InitialAccessToken = testRegistrationToken
 			}
 
 			regReq := oauth.ClientRegistrationRequest{
@@ -536,7 +536,7 @@ func TestHandler_ServeClientRegistration_TrustedSchemes(t *testing.T) {
 			// Configure server with trusted schemes and pre-computed map
 			handler.server.Config.TrustedPublicRegistrationSchemes = tt.trustedSchemes
 			handler.server.Config.DisableStrictSchemeMatching = tt.disableStrictSchemeMatching
-			handler.server.Config.RegistrationAccessToken = tt.registrationAccessToken
+			handler.server.Config.InitialAccessToken = tt.registrationAccessToken
 			handler.server.Config.AllowPublicClientRegistration = tt.allowPublicClientRegistration
 			// Disable production mode for tests to allow custom schemes without full validation
 			handler.server.Config.ProductionMode = false
@@ -752,7 +752,7 @@ func TestHandler_authorizeClientRegistration_InvalidTokenLogs(t *testing.T) {
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
-	handler.server.Config.RegistrationAccessToken = "correct-token"
+	handler.server.Config.InitialAccessToken = "correct-token"
 
 	req := httptest.NewRequest(http.MethodPost, "/register", nil)
 	req.Header.Set("Authorization", "Bearer wrong-token")
@@ -772,7 +772,7 @@ func TestHandler_authorizeClientRegistration_TrustedSchemeInvalidURI(t *testing.
 
 	handler.server.Config.TrustedPublicRegistrationSchemes = []string{"myapp"}
 	handler.server.Config.SetTrustedSchemesMap([]string{"myapp"})
-	handler.server.Config.RegistrationAccessToken = "secret"
+	handler.server.Config.InitialAccessToken = "secret"
 
 	// A URI with no scheme triggers the error path in CanRegisterWithTrustedScheme.
 	req := httptest.NewRequest(http.MethodPost, "/register", nil)

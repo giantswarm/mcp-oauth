@@ -461,7 +461,7 @@ type Config struct {
 	// 2. Whether public clients (native apps, CLIs with token_endpoint_auth_method="none") can be registered
 	//
 	// When false (SECURE DEFAULT):
-	//   - DCR endpoint REQUIRES a valid RegistrationAccessToken in Authorization header
+	//   - DCR endpoint REQUIRES a valid InitialAccessToken in Authorization header
 	//   - Public client registration is DENIED (only confidential clients can be registered)
 	//   - This prevents both DoS attacks and unauthorized public client creation
 	//
@@ -470,15 +470,18 @@ type Config struct {
 	//   - Public clients CAN be registered by any requester
 	//   - Should only be used in trusted development environments
 	//
-	// SECURITY RECOMMENDATION: Keep this false in production. Use RegistrationAccessToken
+	// SECURITY RECOMMENDATION: Keep this false in production. Use InitialAccessToken
 	// to authenticate trusted client developers, and only enable public clients if your
 	// use case requires native/mobile apps.
 	//
 	// Default: false (authentication REQUIRED, public clients DENIED)
 	AllowPublicClientRegistration bool // default: false
 
-	// RegistrationAccessToken is the Bearer token required for client registration
-	// when AllowPublicClientRegistration is false (recommended for production).
+	// InitialAccessToken is the RFC 7591 §1.2 initial access token: the Bearer
+	// token a client registration request must present when
+	// AllowPublicClientRegistration is false (recommended for production). It
+	// is not the RFC 7592 registration access token, which the registration
+	// response issues to each client for its client configuration endpoint.
 	//
 	// Generate a cryptographically secure random token and share it ONLY with
 	// trusted developers who need to register OAuth clients.
@@ -491,11 +494,15 @@ type Config struct {
 	// is configured and the client uses trusted redirect URI schemes.
 	//
 	// Default: "" (no token configured)
+	InitialAccessToken string
+
+	// Deprecated: set InitialAccessToken. New uses this value when
+	// InitialAccessToken is empty and logs a deprecation warning.
 	RegistrationAccessToken string
 
 	// TrustedPublicRegistrationSchemes lists URI schemes that are allowed for
 	// unauthenticated client registration. Clients registering with redirect URIs
-	// using ONLY these schemes do NOT need a RegistrationAccessToken.
+	// using ONLY these schemes do NOT need an InitialAccessToken.
 	//
 	// Native clients without registration-token support can use this exemption
 	// when registering custom-scheme callbacks. It does not authenticate the
@@ -517,7 +524,7 @@ type Config struct {
 	trustedSchemesMap map[string]bool
 
 	// TrustedPublicRegistrationRedirectURIs lists fully-qualified HTTPS redirect URIs
-	// allowed to register without a RegistrationAccessToken. Matching is exact after
+	// allowed to register without an InitialAccessToken. Matching is exact after
 	// RFC 3986 normalization: scheme and host are lowercased, the HTTPS default port
 	// (:443) is stripped, and trailing slashes are stripped from the path. Path and
 	// query are then compared case-sensitively. All redirect URIs in a registration

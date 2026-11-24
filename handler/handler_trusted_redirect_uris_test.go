@@ -103,7 +103,7 @@ func TestHandler_ServeClientRegistration_TrustedRedirectURIs(t *testing.T) {
 			handler, store := setupTestHandler(t)
 			defer store.Stop()
 
-			handler.server.Config.RegistrationAccessToken = tt.registrationAccessToken
+			handler.server.Config.InitialAccessToken = tt.registrationAccessToken
 			handler.server.Config.AllowPublicClientRegistration = tt.allowPublicClientRegistration
 			handler.server.Config.TrustedPublicRegistrationRedirectURIs = tt.trustedURIs
 			handler.server.Config.SetTrustedRedirectURIsSet(tt.trustedURIs)
@@ -159,7 +159,7 @@ func TestHandler_ServeClientRegistration_TrustedSchemesAndRedirectURIs_Combined(
 	handler, store := setupTestHandler(t)
 	defer store.Stop()
 
-	handler.server.Config.RegistrationAccessToken = trustedRedirectURITestToken
+	handler.server.Config.InitialAccessToken = trustedRedirectURITestToken
 	handler.server.Config.AllowPublicClientRegistration = false
 	handler.server.Config.TrustedPublicRegistrationSchemes = []string{"cursor"}
 	handler.server.Config.SetTrustedSchemesMap([]string{"cursor"})

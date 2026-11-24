@@ -10,6 +10,20 @@ import (
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
 )
 
+// applyInitialAccessTokenAlias uses the deprecated RegistrationAccessToken as
+// the InitialAccessToken when only it is set, and warns whenever it is set.
+func applyInitialAccessTokenAlias(config *Config, logger *slog.Logger) {
+	if config.RegistrationAccessToken == "" { //nolint:staticcheck // the deprecated field keeps working until v2
+		return
+	}
+	if config.InitialAccessToken == "" {
+		config.InitialAccessToken = config.RegistrationAccessToken //nolint:staticcheck // the deprecated field keeps working until v2
+		logger.Warn("DEPRECATED: Config.RegistrationAccessToken is set; set InitialAccessToken (RFC 7591 initial access token) instead")
+		return
+	}
+	logger.Warn("DEPRECATED: Config.RegistrationAccessToken is ignored because InitialAccessToken is set; remove it")
+}
+
 // applySecureDefaults applies secure-by-default configuration values.
 // This follows the principle: secure by default, opt-in for less secure options.
 //
@@ -17,6 +31,7 @@ import (
 // It delegates to specialized validation functions for different configuration areas.
 func applySecureDefaults(config *Config, logger *slog.Logger) *Config {
 	logPrivateIPHostDeprecations(config, logger)
+	applyInitialAccessTokenAlias(config, logger)
 
 	// Validate provider revocation config BEFORE applying defaults (to detect invalid values)
 	validateProviderRevocationConfig(config, logger)

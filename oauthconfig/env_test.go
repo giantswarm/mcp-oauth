@@ -52,6 +52,8 @@ func setRequired(t *testing.T, issuer string) {
 		"OAUTH_ACCESS_TOKEN_TTL",
 		"OAUTH_REFRESH_TOKEN_TTL",
 		"OAUTH_MAX_CLIENTS_PER_IP",
+		"OAUTH_INITIAL_ACCESS_TOKEN",
+		"OAUTH_INITIAL_ACCESS_TOKEN_FILE",
 		"OAUTH_REGISTRATION_ACCESS_TOKEN",
 		"OAUTH_REGISTRATION_ACCESS_TOKEN_FILE",
 		"OAUTH_ENCRYPTION_KEY",
@@ -126,7 +128,7 @@ func TestFromEnv_HappyPath(t *testing.T) {
 	t.Setenv("OAUTH_ACCESS_TOKEN_TTL", "1h")
 	t.Setenv("OAUTH_REFRESH_TOKEN_TTL", "24h")
 	t.Setenv("OAUTH_MAX_CLIENTS_PER_IP", "5")
-	t.Setenv("OAUTH_REGISTRATION_ACCESS_TOKEN", "reg-token")
+	t.Setenv("OAUTH_INITIAL_ACCESS_TOKEN", "reg-token")
 	t.Setenv("OAUTH_ENCRYPTION_KEY", validKeyB64)
 	t.Setenv("OAUTH_SESSION_ID_HMAC_KEY", validKeyB64)
 	t.Setenv("OAUTH_TRUSTED_AUDIENCES", "muster-client, second-aud ,")
@@ -155,8 +157,8 @@ func TestFromEnv_HappyPath(t *testing.T) {
 	if cfg.MaxClientsPerIP != 5 {
 		t.Errorf("MaxClientsPerIP = %d, want 5", cfg.MaxClientsPerIP)
 	}
-	if cfg.RegistrationAccessToken != "reg-token" {
-		t.Errorf("RegistrationAccessToken = %q", cfg.RegistrationAccessToken)
+	if cfg.InitialAccessToken != "reg-token" {
+		t.Errorf("InitialAccessToken = %q", cfg.InitialAccessToken)
 	}
 	if len(cfg.SessionIDHMACKey) != 32 {
 		t.Errorf("SessionIDHMACKey length = %d, want 32", len(cfg.SessionIDHMACKey))
@@ -276,15 +278,15 @@ func TestFromEnv_LoopbackIssuerException(t *testing.T) {
 
 func TestFromEnv_FilePrecedence(t *testing.T) {
 	setRequired(t, "https://auth.example")
-	t.Setenv("OAUTH_REGISTRATION_ACCESS_TOKEN", "from-env")
-	t.Setenv("OAUTH_REGISTRATION_ACCESS_TOKEN_FILE", writeSecretFile(t, "from-file"))
+	t.Setenv("OAUTH_INITIAL_ACCESS_TOKEN", "from-env")
+	t.Setenv("OAUTH_INITIAL_ACCESS_TOKEN_FILE", writeSecretFile(t, "from-file"))
 
 	cfg, err := oauthconfig.FromEnv()
 	if err != nil {
 		t.Fatalf("FromEnv: %v", err)
 	}
-	if cfg.RegistrationAccessToken != "from-file" {
-		t.Errorf("RegistrationAccessToken = %q, want from-file (FILE precedence)", cfg.RegistrationAccessToken)
+	if cfg.InitialAccessToken != "from-file" {
+		t.Errorf("InitialAccessToken = %q, want from-file (FILE precedence)", cfg.InitialAccessToken)
 	}
 }
 
@@ -293,23 +295,23 @@ func TestFromEnv_FileTrimsTrailingNewline(t *testing.T) {
 
 	// One trailing newline: trimmed. Multiple: preserve all but the last.
 	p := writeSecretFile(t, "secret-token\n\n")
-	t.Setenv("OAUTH_REGISTRATION_ACCESS_TOKEN_FILE", p)
+	t.Setenv("OAUTH_INITIAL_ACCESS_TOKEN_FILE", p)
 
 	cfg, err := oauthconfig.FromEnv()
 	if err != nil {
 		t.Fatalf("FromEnv: %v", err)
 	}
-	if cfg.RegistrationAccessToken != "secret-token\n" {
-		t.Errorf("RegistrationAccessToken = %q, want exactly one trailing newline trimmed", cfg.RegistrationAccessToken)
+	if cfg.InitialAccessToken != "secret-token\n" {
+		t.Errorf("InitialAccessToken = %q, want exactly one trailing newline trimmed", cfg.InitialAccessToken)
 	}
 }
 
 func TestFromEnv_FileNotFound(t *testing.T) {
 	setRequired(t, "https://auth.example")
-	t.Setenv("OAUTH_REGISTRATION_ACCESS_TOKEN_FILE", "/nonexistent/mcp-oauth/secret")
+	t.Setenv("OAUTH_INITIAL_ACCESS_TOKEN_FILE", "/nonexistent/mcp-oauth/secret")
 	_, err := oauthconfig.FromEnv()
-	if err == nil || !strings.Contains(err.Error(), "REGISTRATION_ACCESS_TOKEN_FILE") {
-		t.Fatalf("expected file-not-found error for REGISTRATION_ACCESS_TOKEN_FILE, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "INITIAL_ACCESS_TOKEN_FILE") {
+		t.Fatalf("expected file-not-found error for INITIAL_ACCESS_TOKEN_FILE, got %v", err)
 	}
 }
 
@@ -676,4 +678,32 @@ func TestFromEnv_AllowPrivateIPHosts(t *testing.T) {
 	require.Equal(t, []string{"gateway.internal", "agents.internal"}, cfg.AllowPrivateIPClientMetadataHosts) //nolint:staticcheck // the deprecated variable keeps working until v2
 	require.Equal(t, []string{"portal.internal"}, cfg.AllowPrivateIPRedirectURIHosts)
 	require.Equal(t, []string{"dex.internal"}, cfg.AllowPrivateIPJWKSHosts)
+}
+
+// TestFromEnv_DeprecatedRegistrationAccessToken pins the overlap of the
+// renamed variable: REGISTRATION_ACCESS_TOKEN (and its _FILE) still sets the
+// initial access token, and INITIAL_ACCESS_TOKEN wins when both are set.
+func TestFromEnv_DeprecatedRegistrationAccessToken(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  func(t *testing.T)
+		want string
+	}{
+		{"deprecated name", func(t *testing.T) { t.Setenv("OAUTH_REGISTRATION_ACCESS_TOKEN", "old") }, "old"},
+		{"deprecated file", func(t *testing.T) {
+			t.Setenv("OAUTH_REGISTRATION_ACCESS_TOKEN_FILE", writeSecretFile(t, "old-file"))
+		}, "old-file"},
+		{"new name wins", func(t *testing.T) {
+			t.Setenv("OAUTH_REGISTRATION_ACCESS_TOKEN", "old")
+			t.Setenv("OAUTH_INITIAL_ACCESS_TOKEN", "new")
+		}, "new"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setRequired(t, "https://issuer.example.com")
+			tc.env(t)
+			cfg, err := oauthconfig.FromEnv()
+			require.NoError(t, err)
+			require.Equal(t, tc.want, cfg.InitialAccessToken)
+		})
+	}
 }

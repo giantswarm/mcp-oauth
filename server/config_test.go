@@ -248,10 +248,10 @@ func TestLogSecurityWarnings(t *testing.T) {
 			config: &Config{
 				RequirePKCE:                   true,
 				AllowPublicClientRegistration: false,
-				RegistrationAccessToken:       "",
+				InitialAccessToken:            "",
 			},
 			expectedWarnings: []string{
-				"CONFIGURATION WARNING: RegistrationAccessToken not configured",
+				"CONFIGURATION WARNING: InitialAccessToken not configured",
 			},
 		},
 		{
@@ -285,7 +285,7 @@ func TestLogSecurityWarnings(t *testing.T) {
 				AllowPKCEPlain:                false,
 				TrustProxy:                    false,
 				AllowPublicClientRegistration: false,
-				RegistrationAccessToken:       "secure-token",
+				InitialAccessToken:            "secure-token",
 				ProductionMode:                true, // Secure default: production mode enabled
 			},
 			notExpectedWarnings: []string{
@@ -309,9 +309,9 @@ func TestLogSecurityWarnings(t *testing.T) {
 		{
 			name: "AllowInsecureHTTP warning",
 			config: &Config{
-				RequirePKCE:             true,
-				RegistrationAccessToken: "token",
-				AllowInsecureHTTP:       true,
+				RequirePKCE:        true,
+				InitialAccessToken: "token",
+				AllowInsecureHTTP:  true,
 			},
 			expectedWarnings: []string{
 				"SECURITY WARNING: AllowInsecureHTTP is enabled",
@@ -321,7 +321,7 @@ func TestLogSecurityWarnings(t *testing.T) {
 			name: "AllowPrivateIPClientMetadata warning",
 			config: &Config{
 				RequirePKCE:                  true,
-				RegistrationAccessToken:      "token",
+				InitialAccessToken:           "token",
 				AllowPrivateIPClientMetadata: true,
 			},
 			expectedWarnings: []string{
@@ -332,7 +332,7 @@ func TestLogSecurityWarnings(t *testing.T) {
 			name: "AllowPrivateIPClientMetadataHosts deprecation",
 			config: &Config{
 				RequirePKCE:                       true,
-				RegistrationAccessToken:           "token",
+				InitialAccessToken:                "token",
 				AllowPrivateIPClientMetadataHosts: []string{"client.internal.example"},
 			},
 			expectedWarnings: []string{
@@ -347,9 +347,9 @@ func TestLogSecurityWarnings(t *testing.T) {
 		{
 			name: "AllowPrivateIPJWKS warning",
 			config: &Config{
-				RequirePKCE:             true,
-				RegistrationAccessToken: "token",
-				AllowPrivateIPJWKS:      true,
+				RequirePKCE:        true,
+				InitialAccessToken: "token",
+				AllowPrivateIPJWKS: true,
 			},
 			expectedWarnings: []string{
 				"SECURITY WARNING: AllowPrivateIPJWKS is enabled",
@@ -764,7 +764,7 @@ func TestConfig_Fields(t *testing.T) {
 		AllowPKCEPlain:                false,
 		RequirePKCE:                   true,
 		AllowPublicClientRegistration: false,
-		RegistrationAccessToken:       "test-token",
+		InitialAccessToken:            "test-token",
 		AllowedCustomSchemes:          []string{"myapp://"},
 	}
 
@@ -808,8 +808,8 @@ func TestConfig_Fields(t *testing.T) {
 	if config.AllowPublicClientRegistration {
 		t.Error("AllowPublicClientRegistration should be false")
 	}
-	if config.RegistrationAccessToken != "test-token" {
-		t.Errorf("RegistrationAccessToken = %q, want %q", config.RegistrationAccessToken, "test-token")
+	if config.InitialAccessToken != "test-token" {
+		t.Errorf("InitialAccessToken = %q, want %q", config.InitialAccessToken, "test-token")
 	}
 	if len(config.AllowedCustomSchemes) != 1 {
 		t.Errorf("len(AllowedCustomSchemes) = %d, want 1", len(config.AllowedCustomSchemes))
@@ -2021,4 +2021,17 @@ func TestIsValidSchemeChar(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNew_DeprecatedRegistrationAccessToken pins the overlap of the renamed
+// field: RegistrationAccessToken still sets the initial access token, and
+// InitialAccessToken wins when both are set.
+func TestNew_DeprecatedRegistrationAccessToken(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	config := applySecureDefaults(&Config{Issuer: "https://oauth.example.com", RegistrationAccessToken: "old"}, logger)
+	require.Equal(t, "old", config.InitialAccessToken)
+
+	config = applySecureDefaults(&Config{Issuer: "https://oauth.example.com", RegistrationAccessToken: "old", InitialAccessToken: "new"}, logger)
+	require.Equal(t, "new", config.InitialAccessToken)
 }
