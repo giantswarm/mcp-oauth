@@ -54,8 +54,9 @@ func (s *Server) looksLikeSelfIssuedJWT(tokenString string) bool {
 //  2. typ header == "at+jwt" (RFC 9068 §2.1; rejects id_token confusion)
 //  3. iss claim == Config.Issuer
 //  4. exp claim within ClockSkewGracePeriod
-//  5. aud claim matches Config.GetResourceIdentifier or any TrustedAudience
-//     (RFC 8707 audience binding, parity with the opaque branch)
+//  5. aud claim names the main resource or the resource passed to
+//     ValidateTokenForResource (RFC 8707 audience binding, parity with the
+//     opaque branch)
 //  6. jti not in RevokedTokenStore (RFC 7009 revocation)
 //  7. family_id, when present, refers to a non-revoked token family
 //     (defense in depth — invalidates in-flight access tokens when the
@@ -175,14 +176,15 @@ func (s *Server) checkJWTExpiration(ctx context.Context, claims map[string]any, 
 	return nil
 }
 
-// checkJWTAudience requires the resource identifier in the token's aud claim.
+// checkJWTAudience requires a resource from acceptedAudiences in the token's
+// aud claim.
 func (s *Server) checkJWTAudience(ctx context.Context, claims map[string]any, tokenString string) error {
 	audiences := audiencesFromClaim(claims["aud"])
 	if len(audiences) == 0 {
 		s.logSelfIssuedJWTAuthFailure(ctx, "missing_aud", tokenString)
 		return fmt.Errorf("token missing audience claim")
 	}
-	if helpers.FindMatchingAudience(audiences, []string{s.Config.GetResourceIdentifier()}) != "" {
+	if s.namesAcceptedResource(ctx, audiences) {
 		return nil
 	}
 	s.logSelfIssuedJWTAuthFailure(ctx, "audience_mismatch", tokenString)
@@ -272,6 +274,7 @@ func userInfoFromJWTClaims(claims map[string]any) (*providers.UserInfo, error) {
 	if info.ID == "" {
 		return nil, fmt.Errorf("access token has no subject")
 	}
+	info.Username = info.ID
 	if raw, present := claims["act"]; present {
 		actor, err := actorFromJWTClaim(raw)
 		if err != nil {

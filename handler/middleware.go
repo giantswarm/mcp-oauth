@@ -83,7 +83,7 @@ func (h *Handler) ValidateToken(next http.Handler) http.Handler {
 // rejected bearer, and a 401 would make the client discard its token and
 // start a new authorization.
 func (h *Handler) authenticateBearer(w http.ResponseWriter, r *http.Request, accessToken, clientIP string, startTime time.Time) (*providers.UserInfo, *storage.TokenMetadata, bool) {
-	userInfo, err := h.server.ValidateToken(r.Context(), accessToken)
+	userInfo, err := h.server.ValidateTokenForResource(r.Context(), accessToken, h.requestedResource(r))
 	if err != nil {
 		if errors.Is(err, server.ErrStorageUnavailable) {
 			h.writeStorageUnavailable(w, r, endpointValidateToken, r.Method, nil, startTime, err)
@@ -111,6 +111,15 @@ func (h *Handler) authenticateBearer(w http.ResponseWriter, r *http.Request, acc
 		return nil, nil, false
 	}
 	return userInfo, metadata, true
+}
+
+// requestedResource returns the identifier of the ResourceMetadataByPath
+// entry the request path falls under, or empty for the main resource.
+func (h *Handler) requestedResource(r *http.Request) string {
+	if configuration := h.findPathConfig(r.URL.EscapedPath()); configuration != nil {
+		return configuration.ResourceIdentifier
+	}
+	return ""
 }
 
 // sessionIDForToken is the single source of session identity for a validated

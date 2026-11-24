@@ -30,8 +30,29 @@ const (
 // offIssuer is a trusted issuer served by a TLS JWKS endpoint, signing ID
 // tokens with typ JWT.
 type offIssuer struct {
-	entry server.TrustedIssuer
-	sign  func(t *testing.T) string
+	entry      server.TrustedIssuer
+	signClaims func(t *testing.T, claims oidc.IDTokenClaims) string
+}
+
+// claims returns valid ID token claims for this issuer.
+func (offIssuer) claims() oidc.IDTokenClaims {
+	now := time.Now()
+	return oidc.IDTokenClaims{
+		Claims: josejwt.Claims{
+			Subject:  "user-subject-123",
+			Issuer:   offDexIssuer,
+			Audience: josejwt.Audience{offAudience},
+			IssuedAt: josejwt.NewNumericDate(now),
+			Expiry:   josejwt.NewNumericDate(now.Add(time.Hour)),
+		},
+		Email: "user@test.example",
+	}
+}
+
+// sign returns a valid ID token for this issuer.
+func (i offIssuer) sign(t *testing.T) string {
+	t.Helper()
+	return i.signClaims(t, i.claims())
 }
 
 func newOffIssuer(t *testing.T) offIssuer {
@@ -62,19 +83,9 @@ func newOffIssuer(t *testing.T) offIssuer {
 			RootCAs:            rootCAs,
 			OpenIDProvider:     true,
 		},
-		sign: func(t *testing.T) string {
+		signClaims: func(t *testing.T, claims oidc.IDTokenClaims) string {
 			t.Helper()
-			now := time.Now()
-			token, err := josejwt.Signed(signer).Claims(oidc.IDTokenClaims{
-				Claims: josejwt.Claims{
-					Subject:  "user-subject-123",
-					Issuer:   offDexIssuer,
-					Audience: josejwt.Audience{offAudience},
-					IssuedAt: josejwt.NewNumericDate(now),
-					Expiry:   josejwt.NewNumericDate(now.Add(time.Hour)),
-				},
-				Email: "user@test.example",
-			}).Serialize()
+			token, err := josejwt.Signed(signer).Claims(claims).Serialize()
 			require.NoError(t, err)
 			return token
 		},

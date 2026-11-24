@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -9,6 +10,7 @@ import (
 	"slices"
 
 	"github.com/giantswarm/mcp-oauth/internal/helpers"
+	"github.com/giantswarm/mcp-oauth/providers"
 )
 
 // ErrAuthorizationServerDisabled is returned by the authorization server
@@ -39,9 +41,10 @@ func (s *Server) validateOptions() error {
 // resource server that could accept no token, and warns about a resource
 // that advertises no authorization server. With the authorization server
 // off and RequireResourceAccessTokens set, it also refuses an issuer whose
-// tokens could never name this server's resource: the issuer list then only
-// admits bearers. With the authorization server on the same list also
-// validates RFC 8693 subject tokens, whose audience is not this resource.
+// tokens could name none of this server's resources, the main one or a
+// ResourceMetadataByPath entry: the issuer list then only admits bearers.
+// With the authorization server on the same list also validates RFC 8693
+// subject tokens, whose audience is not this resource.
 func (s *Server) validateResourceServer() error {
 	if !s.Config.DisableAuthorizationServer {
 		return nil
@@ -50,11 +53,11 @@ func (s *Server) validateResourceServer() error {
 		return fmt.Errorf("DisableAuthorizationServer requires WithTrustedIssuers: no token could be accepted")
 	}
 	if s.Config.RequireResourceAccessTokens {
-		resource := []string{s.Config.GetResourceIdentifier()}
+		resources := s.Config.resourceIdentifiers()
 		for _, issuer := range slices.Sorted(maps.Keys(s.trustedIssuerValidator.issuers)) {
 			audiences := s.trustedIssuerValidator.issuers[issuer].AllowedAudiences
-			if len(audiences) > 0 && !s.namesResource(audiences) {
-				return fmt.Errorf("trusted issuer %q: RequireResourceAccessTokens needs AllowedAudiences to name the resource %q", issuer, resource[0])
+			if len(audiences) > 0 && helpers.FindMatchingAudience(audiences, resources) == "" {
+				return fmt.Errorf("trusted issuer %q: RequireResourceAccessTokens needs AllowedAudiences to name a resource of this server %q", issuer, resources)
 			}
 		}
 	}
@@ -105,8 +108,56 @@ func (s *Server) IsOpenIDProviderIssuer(issuer string) bool {
 	return ok && entry.OpenIDProvider
 }
 
-// namesResource reports whether a token audience names this server's resource
-// identifier.
-func (s *Server) namesResource(audience []string) bool {
-	return helpers.FindMatchingAudience(audience, []string{s.Config.GetResourceIdentifier()}) != ""
+// acceptedResourcesKey carries, through one validation, the resource
+// identifiers besides the main resource that a token's audience may name.
+type acceptedResourcesKey struct{}
+
+// ValidateTokenForResource validates accessToken as [Server.ValidateToken]
+// does, for a request to resource: the main resource identifier or the
+// identifier of a ResourceMetadataByPath entry. Empty resource is the main
+// resource. A token this server issued, and a trusted issuer token under
+// Config.RequireResourceAccessTokens, must name resource or the main
+// resource in its audience. Without that switch a trusted issuer token is
+// also accepted when its audience names only an entry's AllowedAudiences.
+func (s *Server) ValidateTokenForResource(ctx context.Context, accessToken, resource string) (*providers.UserInfo, error) {
+	if resource == "" || resourcesMatch(resource, s.Config.GetResourceIdentifier()) {
+		return s.ValidateToken(ctx, accessToken)
+	}
+	if !s.Config.servesResource(resource) {
+		return nil, fmt.Errorf("resource %q is not a protected resource of this server", resource)
+	}
+	return s.ValidateToken(context.WithValue(ctx, acceptedResourcesKey{}, []string{resource}), accessToken)
+}
+
+// acceptedAudiences returns the resource identifiers a bearer's audience may
+// name: the main resource, plus the resource ValidateTokenForResource named
+// or, for introspection, every ResourceMetadataByPath resource.
+func (s *Server) acceptedAudiences(ctx context.Context) []string {
+	accepted := []string{s.Config.GetResourceIdentifier()}
+	if resources, ok := ctx.Value(acceptedResourcesKey{}).([]string); ok {
+		accepted = append(accepted, resources...)
+	}
+	return accepted
+}
+
+// namesAcceptedResource reports whether a token audience names a resource
+// identifier from acceptedAudiences.
+func (s *Server) namesAcceptedResource(ctx context.Context, audience []string) bool {
+	return helpers.FindMatchingAudience(audience, s.acceptedAudiences(ctx)) != ""
+}
+
+// checkTrustedIssuerAudience reports whether a trusted issuer token's audience
+// names an accepted resource, and refuses one that does not under
+// RequireResourceAccessTokens.
+func (s *Server) checkTrustedIssuerAudience(ctx context.Context, identity *SubjectIdentity) (bool, error) {
+	if identity.Claims == nil {
+		s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_audience_invalid")
+		return false, errors.New("trusted issuer JWT is not intended for this resource server")
+	}
+	resourceAudience := s.namesAcceptedResource(ctx, identity.Claims.Audience)
+	if s.Config.RequireResourceAccessTokens && !resourceAudience {
+		s.Auditor.LogAuthFailure(ctx, identity.Subject, "", "", "trusted_issuer_audience_invalid")
+		return false, errors.New("trusted issuer JWT is not intended for this resource server")
+	}
+	return resourceAudience, nil
 }

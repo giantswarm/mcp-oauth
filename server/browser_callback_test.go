@@ -57,6 +57,7 @@ func TestBrowserCallback_ConsumptionFailurePreservesFlow(t *testing.T) {
 				result, err := authorizationServer.CompleteBrowserAuthorization(t.Context(), state.ProviderState, "provider-code", "browser-binding")
 				require.NoError(t, err)
 				require.Equal(t, state, result.State)
+				require.Equal(t, result.User.ID, result.User.Username)
 				require.Equal(t, 1, provider.CallCounts["ExchangeCode"])
 			}
 			_, err = store.GetAuthorizationStateByProviderState(t.Context(), state.ProviderState)

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -657,7 +658,9 @@ func (s *Server) completeProviderCallback(ctx context.Context, providerState, co
 		issuer = s.provider.Name()
 	}
 	subject := hashBrowserBinding(issuer + "\x00" + userInfo.ID)
-	result.User = userInfo
+	user := *userInfo
+	user.Username = cmp.Or(user.Username, user.ID)
+	result.User = &user
 	result.Token = providerToken
 	result.TokenExtra = storage.ExtractTokenExtra(providerToken)
 	result.Subject = subject

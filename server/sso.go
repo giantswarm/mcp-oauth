@@ -185,6 +185,21 @@ func providerJWKSPrivateIPHosts(provider providers.Provider, listed []string) []
 	return append(slices.Clone(listed), issuer.Hostname())
 }
 
+// trustedIssuerUserInfo converts an identity a trusted issuer vouched for to
+// UserInfo. Its Username is the identity's subject, which the entry's
+// SubjectClaim maps; its ID stays the token's sub.
+func (s *Server) trustedIssuerUserInfo(identity *SubjectIdentity) *providers.UserInfo {
+	userInfo := s.idTokenClaimsToUserInfo(identity.Claims)
+	userInfo.Username = identity.Subject
+	userInfo.ClientID = identity.Claims.ClientID
+	if userInfo.ClientID == "" {
+		userInfo.ClientID = identity.Claims.AuthorizedParty
+	}
+	userInfo.Issuer = identity.Issuer
+	userInfo.TokenSource = providers.TokenSourceTrustedIssuer
+	return userInfo
+}
+
 // idTokenClaimsToUserInfo converts validated ID token claims to UserInfo.
 // Sets TokenSource to TokenSourceSSO since this is called for SSO-forwarded tokens.
 // ActorIssuer, ActorSubject and ActorChain are populated from claims.Act when
@@ -197,6 +212,7 @@ func (s *Server) idTokenClaimsToUserInfo(claims *oidc.IDTokenClaims) *providers.
 	info := &providers.UserInfo{
 		ClientID:      clientID,
 		ID:            claims.Subject,
+		Username:      claims.Subject,
 		Issuer:        claims.Issuer,
 		Email:         claims.Email,
 		EmailVerified: claims.EmailVerified,
