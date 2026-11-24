@@ -108,9 +108,9 @@ func (s *Server) IsOpenIDProviderIssuer(issuer string) bool {
 	return ok && entry.OpenIDProvider
 }
 
-// requestedResourceKey carries, through one ValidateTokenForResource call,
-// the protected resource the request targets.
-type requestedResourceKey struct{}
+// acceptedResourcesKey carries, through one validation, the resource
+// identifiers besides the main resource that a token's audience may name.
+type acceptedResourcesKey struct{}
 
 // ValidateTokenForResource validates accessToken as [Server.ValidateToken]
 // does, for a request to resource: the main resource identifier or the
@@ -126,16 +126,16 @@ func (s *Server) ValidateTokenForResource(ctx context.Context, accessToken, reso
 	if !s.Config.servesResource(resource) {
 		return nil, fmt.Errorf("resource %q is not a protected resource of this server", resource)
 	}
-	return s.ValidateToken(context.WithValue(ctx, requestedResourceKey{}, resource), accessToken)
+	return s.ValidateToken(context.WithValue(ctx, acceptedResourcesKey{}, []string{resource}), accessToken)
 }
 
 // acceptedAudiences returns the resource identifiers a bearer's audience may
-// name: the main resource, and the resource the request targets when
-// ValidateTokenForResource named another one.
+// name: the main resource, plus the resource ValidateTokenForResource named
+// or, for introspection, every ResourceMetadataByPath resource.
 func (s *Server) acceptedAudiences(ctx context.Context) []string {
 	accepted := []string{s.Config.GetResourceIdentifier()}
-	if resource, ok := ctx.Value(requestedResourceKey{}).(string); ok {
-		accepted = append(accepted, resource)
+	if resources, ok := ctx.Value(acceptedResourcesKey{}).([]string); ok {
+		accepted = append(accepted, resources...)
 	}
 	return accepted
 }

@@ -662,7 +662,7 @@ func (s *Server) validateTokenAudience(ctx context.Context, accessToken string, 
 	}
 
 	// Audience mismatch - log and return error
-	s.logAudienceMismatch(ctx, accessToken, metadata, accepted[len(accepted)-1])
+	s.logAudienceMismatch(ctx, accessToken, metadata, strings.Join(accepted, " "))
 	return fmt.Errorf("token not intended for this resource server (RFC 8707 audience mismatch)")
 }
 

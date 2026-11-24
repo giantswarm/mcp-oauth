@@ -38,6 +38,9 @@ func (s *Server) validateIntrospectionAllowlistRegistered(ctx context.Context) e
 // Denied probes return no other fields so the endpoint is not an oracle for
 // token or user enumeration.
 //
+// A token issued for the main resource or a ResourceMetadataByPath resource
+// can be active.
+//
 // Callers MUST authenticate requestingClient before invoking this method.
 // The cross-client gate trusts that identifier as-is; passing an attacker-
 // supplied or unauthenticated value defeats the gate entirely.
@@ -49,6 +52,7 @@ func (s *Server) validateIntrospectionAllowlistRegistered(ctx context.Context) e
 // {"active": false}, which a resource server reads as a dead token. No other
 // error is returned.
 func (s *Server) IntrospectToken(ctx context.Context, accessToken, requestingClient string) (map[string]any, error) {
+	ctx = context.WithValue(ctx, acceptedResourcesKey{}, s.Config.resourceIdentifiers()[1:])
 	if s.Config.IsJWTAccessTokenFormat() && s.looksLikeSelfIssuedJWT(accessToken) {
 		return s.introspectSelfIssuedJWT(ctx, accessToken, requestingClient)
 	}

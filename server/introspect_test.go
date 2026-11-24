@@ -436,3 +436,26 @@ func TestServer_IntrospectToken_JWTPath_AppClaimsForwarded(t *testing.T) {
 	require.Equal(t, "sess-xyz", response["muster_sid"])
 	require.Equal(t, []any{"backend-x"}, response["allowed_backends"])
 }
+
+func TestServer_IntrospectToken_JWTPath_AdditionalResource(t *testing.T) {
+	srv, _, owner, _, _ := newJWTIntrospectionServer(t)
+	srv.Config.ResourceMetadataByPath = map[string]ProtectedResourceConfig{"/other": {ScopesSupported: []string{"openid"}}}
+	now := time.Now().UTC()
+	for audience, active := range map[string]bool{
+		"https://auth.example.com/other": true,
+		"https://elsewhere.example.com":  false,
+	} {
+		t.Run(audience, func(t *testing.T) {
+			token, err := srv.accessTokenIssuer.Issue(t.Context(), AccessTokenClaims{
+				Subject: "user-42", ClientID: owner, Audience: audience,
+				IssuedAt: now, ExpiresAt: now.Add(15 * time.Minute),
+			})
+			require.NoError(t, err)
+
+			response, err := srv.IntrospectToken(t.Context(), token, owner)
+
+			require.NoError(t, err)
+			require.Equal(t, active, response["active"])
+		})
+	}
+}
