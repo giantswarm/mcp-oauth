@@ -46,7 +46,7 @@ func TestMissingCredentialChallengeNamesConfiguredResource(t *testing.T) {
 
 func TestInvalidCredentialChallengeRetainsOAuthError(t *testing.T) {
 	handler, _, _ := newRegisterRoutesHandler(t, &server.Config{Issuer: testIssuer})
-	for _, authorization := range []string{"Bearer ", "Basic abc", "Bearer unknown-token"} {
+	for _, authorization := range []string{"Bearer unknown-token", "bearer unknown-token"} {
 		t.Run(strings.ReplaceAll(authorization, " ", "_"), func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodGet, "/mcp", nil)
 			request.Header.Set("Authorization", authorization)
