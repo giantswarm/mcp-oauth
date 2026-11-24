@@ -66,6 +66,8 @@ or others logs a warning, or is refused with
 | `OAUTH_FORWARDED_SESSION_IDENTITY` | Session identity of a forwarded token: `bearer` (default) or `principal` |
 | `OAUTH_SESSION_ID_HMAC_KEY` | Secret. Base64 32-byte key replacing the SHA-256 session ID derivation; every replica needs the same key |
 | `OAUTH_ENCRYPTION_KEY` | Secret. 32-byte AES-GCM key, base64 or hex, encrypting stored tokens; required with Valkey |
+| `OAUTH_REQUEST_STATE_KEY` | Secret. 32-byte key, base64 or hex, sealing the `requestState` and elicitation IDs a server hands clients ([`requeststate`](../requeststate)); one per server. Read by `NewRequestStateSealerFromEnv` |
+| `OAUTH_REQUEST_STATE_PREVIOUS_KEY` | Secret. The key before the current one, during a rotation: values it sealed still open |
 
 **Protected resources and accepted tokens**
 
