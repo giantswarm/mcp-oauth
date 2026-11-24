@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/giantswarm/mcp-oauth/providers"
 	"github.com/giantswarm/mcp-oauth/security"
 )
 
@@ -88,12 +87,12 @@ func New(active Key, previous ...Key) (*Sealer, error) {
 	return s, nil
 }
 
-// Seal returns payload sealed for user and call, valid for ttl. call names
-// what the value may be echoed to, such as the tool name and a digest of its
-// arguments; Open must be given the same. user must be the validated caller,
-// with Issuer and ID set.
-func (s *Sealer) Seal(user *providers.UserInfo, call string, payload []byte, ttl time.Duration) (string, error) {
-	if err := checkUser(user); err != nil {
+// Seal returns payload sealed for the user and call, valid for ttl. issuer and
+// subject identify the validated caller (for a [providers.UserInfo], its
+// Issuer and ID). call names what the value may be echoed to, such as the tool
+// name and a digest of its arguments. Open must be given the same three.
+func (s *Sealer) Seal(issuer, subject, call string, payload []byte, ttl time.Duration) (string, error) {
+	if err := checkUser(issuer, subject); err != nil {
 		return "", err
 	}
 	if ttl <= 0 {
@@ -107,7 +106,7 @@ func (s *Sealer) Seal(user *providers.UserInfo, call string, payload []byte, ttl
 	plaintext := binary.AppendVarint(nil, s.now().Add(ttl).Unix())
 	plaintext = append(plaintext, payload...)
 	out := append(header, nonce...)
-	out = s.keys[s.active].Seal(out, nonce, plaintext, additionalData(header, user, call))
+	out = s.keys[s.active].Seal(out, nonce, plaintext, additionalData(header, issuer, subject, call))
 	sealed := base64.RawURLEncoding.EncodeToString(out)
 	if len(sealed) > MaxSealedLength {
 		return "", fmt.Errorf("requeststate: sealed state is %d bytes, over %d", len(sealed), MaxSealedLength)
@@ -115,10 +114,10 @@ func (s *Sealer) Seal(user *providers.UserInfo, call string, payload []byte, ttl
 	return sealed, nil
 }
 
-// Open returns the payload of a value Seal returned for the same user and
-// call. It answers ErrInvalid or ErrExpired otherwise.
-func (s *Sealer) Open(user *providers.UserInfo, call, sealed string) ([]byte, error) {
-	if err := checkUser(user); err != nil {
+// Open returns the payload of a value Seal returned for the same issuer,
+// subject and call. It answers ErrInvalid or ErrExpired otherwise.
+func (s *Sealer) Open(issuer, subject, call, sealed string) ([]byte, error) {
+	if err := checkUser(issuer, subject); err != nil {
 		return nil, err
 	}
 	if len(sealed) > MaxSealedLength {
@@ -133,7 +132,7 @@ func (s *Sealer) Open(user *providers.UserInfo, call, sealed string) ([]byte, er
 		return nil, ErrInvalid
 	}
 	header, nonce, ciphertext := raw[:headerSize], raw[headerSize:headerSize+nonceSize], raw[headerSize+nonceSize:]
-	plaintext, err := aead.Open(nil, nonce, ciphertext, additionalData(header, user, call))
+	plaintext, err := aead.Open(nil, nonce, ciphertext, additionalData(header, issuer, subject, call))
 	if err != nil {
 		return nil, ErrInvalid
 	}
@@ -147,8 +146,8 @@ func (s *Sealer) Open(user *providers.UserInfo, call, sealed string) ([]byte, er
 	return plaintext[n:], nil
 }
 
-func checkUser(user *providers.UserInfo) error {
-	if user == nil || user.Issuer == "" || user.ID == "" {
+func checkUser(issuer, subject string) error {
+	if issuer == "" || subject == "" {
 		return errors.New("requeststate: a validated user with issuer and subject is required")
 	}
 	return nil
@@ -156,9 +155,9 @@ func checkUser(user *providers.UserInfo) error {
 
 // additionalData authenticates the header, the user and the call with the
 // ciphertext. Each field is length-prefixed so no two inputs encode alike.
-func additionalData(header []byte, user *providers.UserInfo, call string) []byte {
+func additionalData(header []byte, issuer, subject, call string) []byte {
 	ad := append([]byte{}, header...)
-	for _, field := range []string{user.Issuer, user.ID, call} {
+	for _, field := range []string{issuer, subject, call} {
 		ad = binary.AppendUvarint(ad, uint64(len(field)))
 		ad = append(ad, field...)
 	}
