@@ -24,6 +24,9 @@
 //
 //   - OAUTH_ENCRYPTION_KEY                    — 32-byte AES-GCM key, base64 (preferred) or hex
 //
+//   - OAUTH_REQUEST_STATE_KEY                 — 32-byte key sealing requestState
+//     (NewRequestStateSealerFromEnv); OAUTH_REQUEST_STATE_PREVIOUS_KEY during a rotation
+//
 //   - OAUTH_SESSION_ID_HMAC_KEY               — base64 32-byte HMAC key
 //     (see server.Config.SessionIDHMACKey for the operator caveat)
 //
@@ -124,6 +127,8 @@
 //
 //   - OAUTH_REGISTRATION_ACCESS_TOKEN_FILE
 //   - OAUTH_ENCRYPTION_KEY_FILE
+//   - OAUTH_REQUEST_STATE_KEY_FILE
+//   - OAUTH_REQUEST_STATE_PREVIOUS_KEY_FILE
 //   - OAUTH_SESSION_ID_HMAC_KEY_FILE
 //   - OAUTH_CONSENT_COOKIE_KEY_FILE
 //
