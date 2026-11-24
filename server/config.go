@@ -7,9 +7,11 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -1455,15 +1457,19 @@ func (c *Config) PathResourceIdentifier(resourcePath string, pathConfig Protecte
 // (scheme and host case, default port, trailing slash), as ValidateToken
 // compares a token's audience.
 func (c *Config) servesResource(resource string) bool {
-	if resourcesMatch(resource, c.GetResourceIdentifier()) {
-		return true
+	return slices.ContainsFunc(c.resourceIdentifiers(), func(identifier string) bool {
+		return resourcesMatch(resource, identifier)
+	})
+}
+
+// resourceIdentifiers returns GetResourceIdentifier followed by the
+// identifier of every ResourceMetadataByPath entry, in path order.
+func (c *Config) resourceIdentifiers() []string {
+	identifiers := []string{c.GetResourceIdentifier()}
+	for _, resourcePath := range slices.Sorted(maps.Keys(c.ResourceMetadataByPath)) {
+		identifiers = append(identifiers, c.PathResourceIdentifier(resourcePath, c.ResourceMetadataByPath[resourcePath]))
 	}
-	for resourcePath, pathConfig := range c.ResourceMetadataByPath {
-		if resourcesMatch(resource, c.PathResourceIdentifier(resourcePath, pathConfig)) {
-			return true
-		}
-	}
-	return false
+	return identifiers
 }
 
 // SetTrustedSchemesMap builds the pre-computed trusted schemes map from the given schemes.

@@ -274,6 +274,7 @@ func userInfoFromJWTClaims(claims map[string]any) (*providers.UserInfo, error) {
 	if info.ID == "" {
 		return nil, fmt.Errorf("access token has no subject")
 	}
+	info.Username = info.ID
 	if raw, present := claims["act"]; present {
 		actor, err := actorFromJWTClaim(raw)
 		if err != nil {

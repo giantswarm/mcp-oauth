@@ -119,7 +119,19 @@ func TestNew_RequireResourceAccessTokensRefusesIssuerWithoutResourceAudience(t *
 
 	_, err := newResourceServer(t, configuration, nil, WithTrustedIssuers([]TrustedIssuer{dexTrustedIssuer("platform")}))
 
-	require.ErrorContains(t, err, `trusted issuer "https://dex.test.example": RequireResourceAccessTokens needs AllowedAudiences to name the resource "https://mcp.test.example/mcp"`)
+	require.ErrorContains(t, err, `trusted issuer "https://dex.test.example": RequireResourceAccessTokens needs AllowedAudiences to name a resource of this server ["https://mcp.test.example/mcp"]`)
+}
+
+func TestNew_RequireResourceAccessTokensAcceptsIssuerNamingAdditionalResource(t *testing.T) {
+	configuration := resourceServerConfig()
+	configuration.RequireResourceAccessTokens = true
+	configuration.ResourceMetadataByPath = map[string]ProtectedResourceConfig{
+		"/other": {ResourceIdentifier: "https://mcp.test.example/other", AuthorizationServers: []string{resourceServerTestIssuer}},
+	}
+
+	_, err := newResourceServer(t, configuration, nil, WithTrustedIssuers([]TrustedIssuer{dexTrustedIssuer("https://mcp.test.example/other")}))
+
+	require.NoError(t, err)
 }
 
 func TestNew_RequireResourceAccessTokensAcceptsIssuerNamingResource(t *testing.T) {

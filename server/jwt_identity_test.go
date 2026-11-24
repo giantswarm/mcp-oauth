@@ -15,6 +15,7 @@ func TestSelfIssuedJWTIdentityIncludesValidatedDelegation(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "https://auth.example.test", identity.Issuer)
 	require.Equal(t, "person", identity.ID)
+	require.Equal(t, "person", identity.Username)
 	require.Equal(t, "https://agents.example.test", identity.ActorIssuer)
 	require.Equal(t, "agent", identity.ActorSubject)
 	require.Len(t, identity.ActorChain, 2)

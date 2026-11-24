@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -351,15 +352,6 @@ func (s *Server) attemptProactiveRefresh(ctx context.Context, accessToken string
 // (opaque, SSO, self-issued JWT). Use the returned error for logging,
 // not for setting the response body.
 func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
-	userInfo, err := s.validateBearer(ctx, accessToken)
-	if userInfo != nil && userInfo.Username == "" {
-		userInfo.Username = userInfo.ID
-	}
-	return userInfo, err
-}
-
-// validateBearer runs the ValidateToken pipeline.
-func (s *Server) validateBearer(ctx context.Context, accessToken string) (*providers.UserInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.Config.TokenValidationTimeout)
 	defer cancel()
 
@@ -428,6 +420,7 @@ func (s *Server) validateProviderAccessToken(ctx context.Context, storedToken *o
 	}
 	validatedUserInfo := *userInfo
 	userInfo = &validatedUserInfo
+	userInfo.Username = cmp.Or(userInfo.Username, userInfo.ID)
 	userInfo.Issuer = s.Config.Issuer
 	userInfo.ClientID = ""
 	userInfo.TokenSource = providers.TokenSourceOAuth

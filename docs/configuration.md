@@ -150,8 +150,10 @@ Each advertised issuer must be `OAUTH_ISSUER` or an entry in
 `OAUTH_TRUSTED_ISSUERS`. Root discovery uses the main resource's configured metadata
 when no separate root resource is configured. Additional resources can advertise
 their own authorization server list. A request under an additional resource's path accepts a
-token whose audience names that resource or the main resource; a token for an
-additional resource is refused everywhere else.
+token whose audience names that resource or the main resource. Elsewhere, a token this
+server issued for an additional resource is refused, and so is a trusted issuer token
+under `OAUTH_REQUIRE_RESOURCE_ACCESS_TOKENS`; without it, a trusted issuer token is
+accepted on every path when its audience is in the entry's `audiences`.
 
 Each trusted issuer object requires `issuer`, `jwksURI` and a non-empty `audiences`
 array. Optional fields are `subjectClaim`, `acceptedTypHeaders`, `allowedClaims`,

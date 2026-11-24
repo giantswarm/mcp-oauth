@@ -41,9 +41,10 @@ func (s *Server) validateOptions() error {
 // resource server that could accept no token, and warns about a resource
 // that advertises no authorization server. With the authorization server
 // off and RequireResourceAccessTokens set, it also refuses an issuer whose
-// tokens could never name this server's resource: the issuer list then only
-// admits bearers. With the authorization server on the same list also
-// validates RFC 8693 subject tokens, whose audience is not this resource.
+// tokens could name none of this server's resources, the main one or a
+// ResourceMetadataByPath entry: the issuer list then only admits bearers.
+// With the authorization server on the same list also validates RFC 8693
+// subject tokens, whose audience is not this resource.
 func (s *Server) validateResourceServer() error {
 	if !s.Config.DisableAuthorizationServer {
 		return nil
@@ -52,11 +53,11 @@ func (s *Server) validateResourceServer() error {
 		return fmt.Errorf("DisableAuthorizationServer requires WithTrustedIssuers: no token could be accepted")
 	}
 	if s.Config.RequireResourceAccessTokens {
-		resource := []string{s.Config.GetResourceIdentifier()}
+		resources := s.Config.resourceIdentifiers()
 		for _, issuer := range slices.Sorted(maps.Keys(s.trustedIssuerValidator.issuers)) {
 			audiences := s.trustedIssuerValidator.issuers[issuer].AllowedAudiences
-			if len(audiences) > 0 && !s.namesResource(audiences) {
-				return fmt.Errorf("trusted issuer %q: RequireResourceAccessTokens needs AllowedAudiences to name the resource %q", issuer, resource[0])
+			if len(audiences) > 0 && helpers.FindMatchingAudience(audiences, resources) == "" {
+				return fmt.Errorf("trusted issuer %q: RequireResourceAccessTokens needs AllowedAudiences to name a resource of this server %q", issuer, resources)
 			}
 		}
 	}
@@ -107,21 +108,17 @@ func (s *Server) IsOpenIDProviderIssuer(issuer string) bool {
 	return ok && entry.OpenIDProvider
 }
 
-// namesResource reports whether a token audience names this server's resource
-// identifier.
-func (s *Server) namesResource(audience []string) bool {
-	return helpers.FindMatchingAudience(audience, []string{s.Config.GetResourceIdentifier()}) != ""
-}
-
 // requestedResourceKey carries, through one ValidateTokenForResource call,
 // the protected resource the request targets.
 type requestedResourceKey struct{}
 
 // ValidateTokenForResource validates accessToken as [Server.ValidateToken]
 // does, for a request to resource: the main resource identifier or the
-// identifier of a ResourceMetadataByPath entry. The token's audience must
-// name resource or the main resource; a token for another path resource is
-// refused. Empty resource is the main resource.
+// identifier of a ResourceMetadataByPath entry. Empty resource is the main
+// resource. A token this server issued, and a trusted issuer token under
+// Config.RequireResourceAccessTokens, must name resource or the main
+// resource in its audience. Without that switch a trusted issuer token is
+// also accepted when its audience names only an entry's AllowedAudiences.
 func (s *Server) ValidateTokenForResource(ctx context.Context, accessToken, resource string) (*providers.UserInfo, error) {
 	if resource == "" || resourcesMatch(resource, s.Config.GetResourceIdentifier()) {
 		return s.ValidateToken(ctx, accessToken)

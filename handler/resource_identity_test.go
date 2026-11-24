@@ -105,8 +105,11 @@ func TestValidateToken_PathResourceIssuedToken(t *testing.T) {
 		"main resource at extra path": {bearer: "main-token", target: "/other", status: http.StatusNoContent},
 	} {
 		t.Run(name, func(t *testing.T) {
-			status, _ := serveBearerAt(t, h, tc.target, tc.bearer)
+			status, username := serveBearerAt(t, h, tc.target, tc.bearer)
 			require.Equal(t, tc.status, status)
+			if status == http.StatusNoContent {
+				require.Equal(t, "mock-user-123", username)
+			}
 		})
 	}
 }
