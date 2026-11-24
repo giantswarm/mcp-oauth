@@ -88,7 +88,7 @@ func New(active Key, previous ...Key) (*Sealer, error) {
 }
 
 // Seal returns payload sealed for the user and call, valid for ttl. issuer and
-// subject identify the validated caller (for a [providers.UserInfo], its
+// subject identify the validated caller (for a [github.com/giantswarm/mcp-oauth/providers.UserInfo], its
 // Issuer and ID). call names what the value may be echoed to, such as the tool
 // name and a digest of its arguments. Open must be given the same three.
 func (s *Sealer) Seal(issuer, subject, call string, payload []byte, ttl time.Duration) (string, error) {
