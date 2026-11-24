@@ -1919,3 +1919,68 @@ func TestValidateToken_UnboundToken_NoProof(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	require.True(t, called)
 }
+
+func TestHandler_ValidateToken_RFC6750StatusCodes(t *testing.T) {
+	handler, store := setupTestHandler(t)
+	defer store.Stop()
+
+	tests := []struct {
+		name        string
+		headers     []string
+		wantStatus  int
+		wantErrCode string
+	}{
+		{
+			name:        "multiple Authorization headers are a malformed request",
+			headers:     []string{"Bearer a", "Bearer b"},
+			wantStatus:  http.StatusBadRequest,
+			wantErrCode: constants.ErrorCodeInvalidRequest,
+		},
+		{
+			name:        "Bearer scheme without a token is a malformed request",
+			headers:     []string{"Bearer  "},
+			wantStatus:  http.StatusBadRequest,
+			wantErrCode: constants.ErrorCodeInvalidRequest,
+		},
+		{
+			name:       "unsupported scheme gets a challenge without an error code",
+			headers:    []string{"Basic dXNlcjpwYXNz"},
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "value without a scheme gets a challenge without an error code",
+			headers:    []string{"InvalidFormat"},
+			wantStatus: http.StatusUnauthorized,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/test", nil)
+			for _, value := range tt.headers {
+				req.Header.Add("Authorization", value)
+			}
+			w := httptest.NewRecorder()
+
+			next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("next handler must not run")
+			})
+			handler.ValidateToken(next).ServeHTTP(w, req)
+
+			require.Equal(t, tt.wantStatus, w.Code)
+			challenge := w.Header().Get("WWW-Authenticate")
+			require.True(t, strings.HasPrefix(challenge, "Bearer "), "challenge %q", challenge)
+			require.Contains(t, challenge, "resource_metadata=")
+
+			var body map[string]string
+			require.NoError(t, json.NewDecoder(w.Body).Decode(&body))
+			if tt.wantErrCode == "" {
+				require.NotContains(t, challenge, "error=")
+				require.NotContains(t, body, "error")
+				return
+			}
+			require.Contains(t, challenge, `error="`+tt.wantErrCode+`"`)
+			require.Equal(t, tt.wantErrCode, body["error"])
+		})
+	}
+}

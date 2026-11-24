@@ -214,7 +214,7 @@ func (h *Handler) recordUserRateLimitExceeded(ctx context.Context, clientIP, use
 // Returns the token and true if successful, or writes an error and returns false.
 func (h *Handler) extractBearerToken(w http.ResponseWriter, r *http.Request) (string, bool) {
 	if len(r.Header.Values("Authorization")) > 1 {
-		h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidRequest, "Multiple Authorization credentials")
+		h.writeInvalidRequestError(w, r, "Multiple Authorization credentials")
 		return "", false
 	}
 	authHeader := r.Header.Get("Authorization")
@@ -223,13 +223,32 @@ func (h *Handler) extractBearerToken(w http.ResponseWriter, r *http.Request) (st
 		return "", false
 	}
 
-	parts := strings.SplitN(authHeader, " ", 2)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") || strings.TrimSpace(parts[1]) == "" {
-		h.writeUnauthorizedError(w, r, constants.ErrorCodeInvalidToken, "Invalid Authorization header format")
+	// RFC 6750 §3: a request without Bearer credentials gets a challenge with
+	// no error code; §3.1: a malformed Bearer request is invalid_request (400).
+	scheme, credentials, _ := strings.Cut(authHeader, " ")
+	if !strings.EqualFold(scheme, "bearer") {
+		h.writeUnauthorizedError(w, r, "", "")
+		return "", false
+	}
+	token := strings.TrimSpace(credentials)
+	if token == "" {
+		h.writeInvalidRequestError(w, r, "Missing Bearer token")
 		return "", false
 	}
 
-	return strings.TrimSpace(parts[1]), true
+	return token, true
+}
+
+// writeInvalidRequestError writes the RFC 6750 §3.1 invalid_request response:
+// status 400 with the Bearer challenge.
+func (h *Handler) writeInvalidRequestError(w http.ResponseWriter, r *http.Request, description string) {
+	h.setUnauthorizedChallenge(w, r, constants.ErrorCodeInvalidRequest, description)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	h.writeJSON(w, map[string]string{
+		paramError:            constants.ErrorCodeInvalidRequest,
+		paramErrorDescription: description,
+	})
 }
 
 // writeUnauthorizedError writes a 401 Unauthorized response with endpoint-specific scope guidance.
