@@ -150,6 +150,7 @@ func TestSealRefuses(t *testing.T) {
 		"no user":    {nil, request, nil, time.Minute},
 		"no issuer":  {&providers.UserInfo{ID: "alice"}, request, nil, time.Minute},
 		"no subject": {&providers.UserInfo{Issuer: "https://dex.example"}, request, nil, time.Minute},
+		"no client":  {&providers.UserInfo{Issuer: "https://dex.example", ID: "alice"}, request, nil, time.Minute},
 		"no request": {alice(), "", nil, time.Minute},
 		"no ttl":     {alice(), request, nil, 0},
 		"oversized":  {alice(), request, make([]byte, MaxSealedLength), time.Minute},
@@ -159,4 +160,12 @@ func TestSealRefuses(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+func TestOpenRefusesUserWithoutClient(t *testing.T) {
+	s := testSealer(t, testKey(1))
+	sealed, err := s.Seal(alice(), request, nil, time.Minute)
+	require.NoError(t, err)
+	_, err = s.Open(&providers.UserInfo{Issuer: "https://dex.example", ID: "alice"}, request, sealed)
+	require.Error(t, err)
 }

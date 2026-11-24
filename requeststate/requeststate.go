@@ -16,6 +16,10 @@
 //     digest of its arguments;
 //   - an expiry.
 //
+// Seal and Open refuse a user without a ClientID: a token that does not name
+// one client, such as a forwarded ID token with several audiences and no
+// azp, cannot be given state.
+//
 // Open refuses a value that was changed, sealed for another user, client,
 // actor or request, expired, or sealed with a key the ring does not hold.
 // A value can be opened more than once until it expires; a server whose
@@ -141,8 +145,8 @@ func (s *Sealer) Open(user *providers.UserInfo, request, sealed string) ([]byte,
 }
 
 func checkBinding(user *providers.UserInfo, request string) error {
-	if user == nil || user.Issuer == "" || user.ID == "" {
-		return errors.New("requeststate: a validated user with Issuer and ID is required")
+	if user == nil || user.Issuer == "" || user.ID == "" || user.ClientID == "" {
+		return errors.New("requeststate: a validated user with Issuer, ID and ClientID is required")
 	}
 	if request == "" {
 		return errors.New("requeststate: the originating request is required")

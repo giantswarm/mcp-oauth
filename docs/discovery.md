@@ -1,6 +1,6 @@
 # OAuth Discovery Mechanisms
 
-After `ValidateToken`, `handler.UserInfoFromContext` exposes `ClientID` from
+`Server.ValidateToken` and `handler.UserInfoFromContext` expose `ClientID` from
 the issued token's stored client binding or validated access-token `client_id`.
 Forwarded OIDC ID tokens use the signed `azp`, or their sole audience when `azp`
 is absent. Ambiguous client identity remains empty. Applications requiring
