@@ -16,9 +16,10 @@
 //     digest of its arguments;
 //   - an expiry.
 //
-// Seal and Open refuse a user without a ClientID: a token that does not name
-// one client, such as a forwarded ID token with several audiences and no
-// azp, cannot be given state.
+// Seal and Open refuse a user without a ClientID with [ErrUnbound]: a token
+// that does not name one client, such as a forwarded ID token with several
+// audiences and no azp, cannot be given state. A server answers such a
+// caller without state.
 //
 // Open refuses a value that was changed, sealed for another user, client,
 // actor or request, expired, or sealed with a key the ring does not hold.
@@ -58,6 +59,9 @@ var (
 	ErrInvalid = errors.New("requeststate: invalid state")
 	// ErrExpired is an authentic value past its expiry.
 	ErrExpired = errors.New("requeststate: expired state")
+	// ErrUnbound is a caller state cannot be bound to: no validated user, or
+	// a user without an Issuer, ID or ClientID.
+	ErrUnbound = errors.New("requeststate: a validated user with Issuer, ID and ClientID is required")
 )
 
 // Sealer seals with its ring's active key and opens with any key the ring
@@ -146,7 +150,7 @@ func (s *Sealer) Open(user *providers.UserInfo, request, sealed string) ([]byte,
 
 func checkBinding(user *providers.UserInfo, request string) error {
 	if user == nil || user.Issuer == "" || user.ID == "" || user.ClientID == "" {
-		return errors.New("requeststate: a validated user with Issuer, ID and ClientID is required")
+		return ErrUnbound
 	}
 	if request == "" {
 		return errors.New("requeststate: the originating request is required")

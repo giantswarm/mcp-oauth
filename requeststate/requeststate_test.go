@@ -162,10 +162,27 @@ func TestSealRefuses(t *testing.T) {
 	}
 }
 
+func TestSealUnbound(t *testing.T) {
+	s := testSealer(t, testKey(1))
+	for name, user := range map[string]*providers.UserInfo{
+		"no user":    nil,
+		"no issuer":  {ID: "alice", ClientID: "cursor"},
+		"no subject": {Issuer: "https://dex.example", ClientID: "cursor"},
+		"no client":  {Issuer: "https://dex.example", ID: "alice"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := s.Seal(user, request, nil, time.Minute)
+			require.ErrorIs(t, err, ErrUnbound)
+		})
+	}
+	_, err := s.Seal(alice(), "", nil, time.Minute)
+	require.NotErrorIs(t, err, ErrUnbound)
+}
+
 func TestOpenRefusesUserWithoutClient(t *testing.T) {
 	s := testSealer(t, testKey(1))
 	sealed, err := s.Seal(alice(), request, nil, time.Minute)
 	require.NoError(t, err)
 	_, err = s.Open(&providers.UserInfo{Issuer: "https://dex.example", ID: "alice"}, request, sealed)
-	require.Error(t, err)
+	require.ErrorIs(t, err, ErrUnbound)
 }
