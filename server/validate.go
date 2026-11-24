@@ -393,17 +393,20 @@ func (s *Server) ValidateToken(ctx context.Context, accessToken string) (*provid
 	}
 
 	// Provider credentials are usable only through a local access-token mapping.
-	storedToken, err := s.validateStoredToken(ctx, accessToken)
+	storedToken, metadata, err := s.validateStoredToken(ctx, accessToken)
 	if err != nil {
 		return nil, err
 	}
 	if storedToken == nil {
 		return nil, s.rejectUnknownBearer(ctx, accessToken)
 	}
-	return s.validateProviderAccessToken(ctx, storedToken)
+	return s.validateProviderAccessToken(ctx, storedToken, metadata.ClientID)
 }
 
-func (s *Server) validateProviderAccessToken(ctx context.Context, storedToken *oauth2.Token) (*providers.UserInfo, error) {
+// validateProviderAccessToken answers the provider's account for an access
+// token this server issued to clientID. The provider's own idea of the
+// client is dropped: the client is the one the token was issued to.
+func (s *Server) validateProviderAccessToken(ctx context.Context, storedToken *oauth2.Token, clientID string) (*providers.UserInfo, error) {
 	userInfo, err := s.provider.ValidateToken(ctx, storedToken.AccessToken)
 	if err != nil {
 		if isTransientProviderError(err) {
@@ -422,7 +425,7 @@ func (s *Server) validateProviderAccessToken(ctx context.Context, storedToken *o
 	userInfo = &validatedUserInfo
 	userInfo.Username = cmp.Or(userInfo.Username, userInfo.ID)
 	userInfo.Issuer = s.Config.Issuer
-	userInfo.ClientID = ""
+	userInfo.ClientID = clientID
 	userInfo.TokenSource = providers.TokenSourceOAuth
 
 	if err := s.tokenStore.SaveUserInfo(ctx, userInfo.ID, providerUserInfoToStorage(userInfo)); err != nil {
@@ -551,8 +554,9 @@ func (s *Server) refreshExpiredProviderToken(ctx context.Context, accessToken st
 }
 
 // validateStoredToken checks if a stored token exists and validates it locally.
-// Returns the stored token (may be nil if not found) or an error if validation fails.
-func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*oauth2.Token, error) {
+// It returns the stored token and the metadata it was issued with, both nil
+// when the token is unknown, or an error if validation fails.
+func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*oauth2.Token, *storage.TokenMetadata, error) {
 	storedToken, err := s.resolveProviderToken(ctx, accessToken)
 	if err != nil {
 		if storage.IsTransientError(err) {
@@ -561,20 +565,20 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 			// the issued token to the provider's userinfo endpoint, which
 			// rejects it — a storage outage read by the client as a dead
 			// token.
-			return nil, s.storageUnavailable(ctx, "read provider token", "", "", err)
+			return nil, nil, s.storageUnavailable(ctx, "read provider token", "", "", err)
 		}
-		return nil, nil
+		return nil, nil, nil
 	}
 	metadata, err := s.TokenMetadata(ctx, accessToken)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if storedToken == nil || storedToken.AccessToken == "" || metadata == nil || metadata.TokenType != "access" || metadata.Audience == "" {
 		s.Auditor.LogAuthFailure(ctx, "", "", "", "invalid_access_token_metadata")
-		return nil, errInvalidAccessToken
+		return nil, nil, errInvalidAccessToken
 	}
 	if err := s.validateIssuedTokenBinding(ctx, accessToken, metadata); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Token found - validate expiry with grace period for clock skew
@@ -587,12 +591,12 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 
 			s.Auditor.LogAuthFailure(ctx, "", "", "", "token_expired_locally")
 
-			return nil, fmt.Errorf("access token expired (local validation)")
+			return nil, nil, fmt.Errorf("access token expired (local validation)")
 		}
 
 		refreshed, err := s.refreshExpiredProviderToken(ctx, accessToken, storedToken)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		storedToken = refreshed
 	}
@@ -608,7 +612,7 @@ func (s *Server) validateStoredToken(ctx context.Context, accessToken string) (*
 		go s.attemptProactiveRefresh(context.WithoutCancel(ctx), accessToken, storedToken)
 	}
 
-	return storedToken, nil
+	return storedToken, metadata, nil
 }
 
 func (s *Server) validateIssuedTokenBinding(ctx context.Context, accessToken string, metadata *storage.TokenMetadata) error {
