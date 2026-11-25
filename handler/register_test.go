@@ -814,3 +814,44 @@ func TestHandler_auditTrustedAllowlistRegistration_UnknownGate(t *testing.T) {
 	}
 	handler.auditTrustedAllowlistRegistration(t.Context(), auth, client, "192.0.2.1")
 }
+
+func TestHandler_ServeClientRegistration_LoopbackOnly(t *testing.T) {
+	for _, testCase := range []struct {
+		name         string
+		restrict     bool
+		redirectURIs []string
+		wantStatus   int
+	}{
+		{name: "off accepts https", redirectURIs: []string{"https://example.com/callback"}, wantStatus: http.StatusCreated},
+		{name: "on accepts loopback", restrict: true, redirectURIs: []string{"http://127.0.0.1:43210/callback", "http://localhost/callback"}, wantStatus: http.StatusCreated},
+		{name: "on refuses https", restrict: true, redirectURIs: []string{"https://example.com/callback"}, wantStatus: http.StatusBadRequest},
+		{name: "on refuses a mix", restrict: true, redirectURIs: []string{"http://127.0.0.1/callback", "https://example.com/callback"}, wantStatus: http.StatusBadRequest},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			handler, store := setupTestHandler(t)
+			defer store.Stop()
+			handler.server.Config.AllowPublicClientRegistration = true
+			handler.server.Config.RestrictRegistrationToLoopbackRedirectURIs = testCase.restrict
+
+			body, err := json.Marshal(oauth.ClientRegistrationRequest{
+				RedirectURIs:            testCase.redirectURIs,
+				TokenEndpointAuthMethod: "none",
+				ClientName:              "Loopback Client",
+			})
+			require.NoError(t, err)
+
+			req := httptest.NewRequest(http.MethodPost, "/oauth/register", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.RemoteAddr = testClientRemoteAddr
+			w := httptest.NewRecorder()
+			handler.ServeClientRegistration(w, req)
+			require.Equal(t, testCase.wantStatus, w.Code, "body: %s", w.Body.String())
+
+			if testCase.wantStatus == http.StatusBadRequest {
+				var resp map[string]any
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+				require.Equal(t, "invalid_redirect_uri", resp["error"])
+			}
+		})
+	}
+}

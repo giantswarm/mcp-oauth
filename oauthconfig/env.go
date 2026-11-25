@@ -113,10 +113,15 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 	return cfg, nil
 }
 
-// loadClientControlsFromEnv loads OMIT_ID_TOKEN_IN_TOKEN_RESPONSE into cfg.
+// loadClientControlsFromEnv loads OMIT_ID_TOKEN_IN_TOKEN_RESPONSE and
+// RESTRICT_REGISTRATION_TO_LOOPBACK_REDIRECT_URIS into cfg.
 func loadClientControlsFromEnv(prefix string, cfg *server.Config) error {
 	var err error
 	cfg.OmitIDTokenInTokenResponse, err = optionalBool(prefix+"OMIT_ID_TOKEN_IN_TOKEN_RESPONSE", false)
+	if err != nil {
+		return err
+	}
+	cfg.RestrictRegistrationToLoopbackRedirectURIs, err = optionalBool(prefix+"RESTRICT_REGISTRATION_TO_LOOPBACK_REDIRECT_URIS", false)
 	return err
 }
 

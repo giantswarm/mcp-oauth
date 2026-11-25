@@ -167,6 +167,7 @@ The `oauth.redirect_uri.security_rejected` metric tracks security validation fai
 | `unspecified_address` | 0.0.0.0 or :: (always blocked) |
 | `fragment_not_allowed` | URI contains fragment (OAuth 2.0 BCP violation) |
 | `invalid_format` | Malformed URI |
+| `loopback_required` | Non-loopback URI at registration with `RestrictRegistrationToLoopbackRedirectURIs` |
 
 The `stage` label indicates when the rejection occurred:
 - `registration`: During client registration

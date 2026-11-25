@@ -101,6 +101,7 @@ or others logs a warning, or is refused with
 | `OAUTH_ALLOW_PUBLIC_CLIENT_REGISTRATION` | Allow registration without the registration token and of public clients; default `false`, for development only |
 | `OAUTH_TRUSTED_REDIRECT_SCHEMES` | Comma-separated custom URI schemes (for example `cursor,vscode`) a client may register without the registration token |
 | `OAUTH_TRUSTED_REDIRECT_URIS` | Comma-separated HTTPS redirect URIs a client may register without the registration token |
+| `OAUTH_RESTRICT_REGISTRATION_TO_LOOPBACK_REDIRECT_URIS` | Accept only loopback redirect URIs (`http://127.0.0.1`, `http://[::1]`, `http://localhost`) at `/oauth/register`; other redirect URIs get `invalid_redirect_uri`; default `false` |
 | `OAUTH_MAX_CLIENTS_PER_IP` | Registrations allowed per client IP; default `10` |
 | `OAUTH_TRUSTED_CLIENTS` | JSON array of `{client_id, redirect_uris}` clients that skip the consent page |
 | `OAUTH_CONSENT_COOKIE_KEY` | Secret. 32-byte AES-GCM key for consent cookies, base64 or hex; defaults to a key the store derives per issuer |
@@ -723,6 +724,9 @@ config := &server.Config{
 
     // Registration access token (share only with trusted developers)
     RegistrationAccessToken: os.Getenv("REGISTRATION_TOKEN"),
+
+    // Accept only loopback redirect URIs (RFC 8252 §7.3) at /oauth/register
+    RestrictRegistrationToLoopbackRedirectURIs: true,
 
     // Limit registrations per IP
     MaxClientsPerIP: 10,

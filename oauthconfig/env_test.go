@@ -50,6 +50,7 @@ func setRequired(t *testing.T, issuer string) {
 		"OAUTH_ENABLE_CLIENT_ID_METADATA_DOCUMENTS",
 		"OAUTH_TRUST_PROXY",
 		"OAUTH_OMIT_ID_TOKEN_IN_TOKEN_RESPONSE",
+		"OAUTH_RESTRICT_REGISTRATION_TO_LOOPBACK_REDIRECT_URIS",
 		"OAUTH_ACCESS_TOKEN_TTL",
 		"OAUTH_REFRESH_TOKEN_TTL",
 		"OAUTH_MAX_CLIENTS_PER_IP",
@@ -142,6 +143,32 @@ func TestFromEnv_OmitIDTokenInTokenResponse(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.Equal(t, testCase.want, cfg.OmitIDTokenInTokenResponse)
+		})
+	}
+}
+
+func TestFromEnv_RestrictRegistrationToLoopbackRedirectURIs(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		value   string
+		want    bool
+		invalid bool
+	}{
+		{name: "unset"},
+		{name: "enabled", value: "true", want: true},
+		{name: "disabled", value: "false"},
+		{name: "invalid", value: "maybe", invalid: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			setRequired(t, "https://auth.example")
+			t.Setenv("OAUTH_RESTRICT_REGISTRATION_TO_LOOPBACK_REDIRECT_URIS", testCase.value)
+			cfg, err := oauthconfig.FromEnv()
+			if testCase.invalid {
+				require.ErrorContains(t, err, "OAUTH_RESTRICT_REGISTRATION_TO_LOOPBACK_REDIRECT_URIS")
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, testCase.want, cfg.RestrictRegistrationToLoopbackRedirectURIs)
 		})
 	}
 }

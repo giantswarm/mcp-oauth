@@ -599,6 +599,17 @@ type Config struct {
 	// Deprecated: remove it; it is ignored whatever its value.
 	AllowLocalhostRedirectURIs bool
 
+	// RestrictRegistrationToLoopbackRedirectURIs accepts only http and https
+	// redirect URIs on a loopback host (localhost, 127.0.0.0/8, [::1]) in
+	// Dynamic Client Registration (RFC 7591) and client updates (RFC 7592).
+	// A registration with any other redirect URI is refused with
+	// invalid_redirect_uri. Clients that are not registered at /oauth/register
+	// (Client ID Metadata Documents, TrustedClients, seeded clients) are not
+	// affected.
+	//
+	// Default: false
+	RestrictRegistrationToLoopbackRedirectURIs bool
+
 	// AllowPrivateIPRedirectURIs accepts redirect URIs on every host that
 	// resolves to a private IPv4 (RFC 1918) or IPv6 unique-local (RFC 4193)
 	// address. This is browser-redirect policy, not SSRF protection: the server
