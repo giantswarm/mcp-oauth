@@ -41,6 +41,9 @@
 //
 //   - OAUTH_TRUST_PROXY                       (default false)
 //
+//   - OAUTH_OMIT_ID_TOKEN_IN_TOKEN_RESPONSE   (default false) — leave the upstream id_token out of
+//     token responses (server.Config.OmitIDTokenInTokenResponse)
+//
 //   - OAUTH_TRUSTED_AUDIENCES                 — comma-separated audience list
 //
 //   - OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS     deprecated, no effect: loopback redirect URIs are always allowed (RFC 8252 §7.3); false logs a warning

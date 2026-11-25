@@ -211,6 +211,16 @@ type Config struct {
 	// Default: true (secure by default)
 	AllowRefreshTokenRotation bool // default: true
 
+	// OmitIDTokenInTokenResponse leaves the upstream provider's id_token out of
+	// the token responses of the authorization_code and refresh_token grants.
+	// The server still stores the provider token with its id_token, so the
+	// host reads it server-side (ExtractIDToken, ProviderIDTokenFromContext).
+	// The client receives only the tokens this server issues. The token passed
+	// to the SessionCreationHandler is the client's token response, so it
+	// carries no id_token either.
+	// Default: false (the provider's id_token is returned to the client)
+	OmitIDTokenInTokenResponse bool
+
 	// TrustProxy enables trusting X-Forwarded-For and X-Real-IP headers
 	// WARNING: Only enable if behind a trusted reverse proxy (nginx, HAProxy, etc.)
 	// When false, uses direct connection IP (secure by default)

@@ -607,7 +607,7 @@ func (s *Server) issueRefreshedTokens(ctx context.Context, refreshToken string, 
 
 	// OIDC Core §12.2 binds nonce to the authentication request, not refresh.
 	idToken := ExtractIDToken(newProviderToken)
-	if idToken != "" {
+	if idToken != "" && !s.Config.OmitIDTokenInTokenResponse {
 		tokenResponse = tokenResponse.WithExtra(map[string]any{
 			"id_token": idToken,
 		})

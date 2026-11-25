@@ -61,6 +61,7 @@ or others logs a warning, or is refused with
 | `OAUTH_ISSUER` | Required. This server's issuer identifier (RFC 8414) and the base of its endpoints |
 | `OAUTH_ALLOW_INSECURE_HTTP` | Permit an `http://` issuer; loopback issuers never need it (RFC 8252 7.3); default `false` |
 | `OAUTH_TRUST_PROXY` | Read the client IP from `X-Forwarded-For` and `X-Real-IP`; only behind a trusted proxy; default `false` |
+| `OAUTH_OMIT_ID_TOKEN_IN_TOKEN_RESPONSE` | Leave the upstream provider's `id_token` out of token responses; the server still stores it; default `false` |
 | `OAUTH_ACCESS_TOKEN_TTL` | Go duration of issued access tokens; default `1h` |
 | `OAUTH_REFRESH_TOKEN_TTL` | Go duration of issued refresh tokens; default 90 days |
 | `OAUTH_FORWARDED_SESSION_IDENTITY` | Session identity of a forwarded token: `bearer` (default) or `principal` |
@@ -289,6 +290,7 @@ config := &server.Config{
 | `RequirePKCE` | `bool` | `true` | Require PKCE for all authorization requests |
 | `AllowPKCEPlain` | `bool` | `false` | Allow insecure 'plain' PKCE method |
 | `AllowRefreshTokenRotation` | `bool` | `true` | Enable refresh token rotation |
+| `OmitIDTokenInTokenResponse` | `bool` | `false` | Leave the upstream provider's `id_token` out of `authorization_code` and `refresh_token` token responses; the server still stores it for `ExtractIDToken` and `ProviderIDTokenFromContext` |
 | `MinStateLength` | `int` | `22` | Minimum length of the state sent to the provider and checked on its callback; the client's `state` has no minimum |
 
 ### Discovery Settings
