@@ -611,6 +611,8 @@ For maximum security, keep DNS validation enabled (`DNSValidation=true`, `DNSVal
 
 `TrustedAudiences` lists the client IDs whose upstream ID tokens this server accepts as forwarded identities: through `Server.AcceptForwardedIDToken`, and as a bearer in `Server.ValidateToken` unless `Config.RequireResourceAccessTokens` is set.
 
+ID-token bearer acceptance is deprecated and remains available during the migration to resource access tokens. At startup, `DEPRECATED:` warnings name `TrustedAudiences` when `RequireResourceAccessTokens` is false, `TrustedIssuer.OpenIDProvider` when enabled, and `TrustedIssuer.AcceptedTypHeaders` when it includes the empty string (a missing `typ`). Configuration supplied through functional options is included. The warnings do not change token acceptance. Before adopting mcp-oauth 2.0.0, migrate callers to access tokens issued for each resource, set `RequireResourceAccessTokens`, remove `TrustedAudiences` and `OpenIDProvider`, and restrict accepted bearer types to `at+jwt`. Do not enable enforcement while callers still forward ID tokens.
+
 ### Use Case: MCP Aggregator Architecture
 
 In architectures with an MCP aggregator (like muster) that proxies requests to downstream MCP servers:
