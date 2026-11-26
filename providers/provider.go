@@ -182,16 +182,12 @@ const (
 	// explicitly. Its audience is the broker/STS, not the downstream resource
 	// server, so it must be impersonated or exchanged rather than passed
 	// through. Use UserInfo.Issuer to identify the originating issuer. When the
-	// token carries an RFC 8693 §4.1 act claim it is a delegated human identity
+	// token carries an RFC 8693 §4.1 act claim it is a delegated identity
 	// (on-behalf-of); IsOBO() reports that case.
 	TokenSourceTrustedIssuer TokenSource = "trusted-issuer"
 )
 
 // UserInfo represents user information from a provider.
-//
-// On a UserInfo returned for a validated request, Issuer and ID are both
-// non-empty, and ActorIssuer and ActorSubject are either both set or both
-// empty.
 type UserInfo struct {
 	// ID is the account's identifier at its issuer: the sub claim for an
 	// OpenID Provider or a trusted issuer (OpenID Connect Core 5.7, RFC 7519),
@@ -255,14 +251,12 @@ type UserInfo struct {
 	// azp or their single audience; ambiguous client identity remains empty.
 	ClientID string
 
-	// ActorIssuer is the iss field of the current actor in the RFC 8693 §4.1
-	// act claim, empty for a token without act. It is set exactly when
-	// ActorSubject is. Use IsOBO() as a presence check.
+	// ActorIssuer is the optional iss field of the current actor in the
+	// RFC 8693 §4.1 act claim. It is not inferred from the token issuer.
 	ActorIssuer string
 
 	// ActorSubject is the sub field of the current actor in the RFC 8693 §4.1
-	// act claim, empty for a token without act. It is set exactly when
-	// ActorIssuer is. Use IsOBO() as a presence check.
+	// act claim, empty when absent. ActorIssuer may be empty independently.
 	ActorSubject string
 
 	// ActorChain is the full RFC 8693 §4.1 delegation chain decoded from the
@@ -340,7 +334,8 @@ func (u *UserInfo) IsExternalIssuer() bool {
 }
 
 // IsOBO reports whether the validated identity carries an RFC 8693 actor.
-// UserInfo.ID is the subject; ActorSubject identifies the acting party.
+// UserInfo.ID is the subject; ActorChain and the actor fields describe the
+// acting party independently of the token's authentication source.
 func (u *UserInfo) IsOBO() bool {
-	return u != nil && u.ActorSubject != ""
+	return u != nil && (len(u.ActorChain) != 0 || u.ActorIssuer != "" || u.ActorSubject != "")
 }

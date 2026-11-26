@@ -89,7 +89,7 @@ K8s SA and GHA tokens both use `subject_token_type=urn:ietf:params:oauth:token-t
 
 ### Restricting the acting party (Actors)
 
-A delegated token names its acting party in the `act` claim (RFC 8693 §4.1). Every actor in it, the outermost `act` and each nested one, must carry a non-empty `iss` and `sub`; a token with an incomplete `act` is refused whether or not `Actors` is set. `Actors` limits which issuers a trusted issuer may name as the current actor, the outermost `act`. Nested `act` entries are earlier actors, informational only, and are not matched against `Actors`. A token without `act` is unaffected.
+A delegated token names its acting party in the `act` claim ([RFC 8693 §4.1](https://www.rfc-editor.org/rfc/rfc8693.html#section-4.1)). Its identity fields depend on the issuer's token profile: `iss` is optional, including on prior actors. `Actors` is a local policy for the current actor, the outermost `act`: when configured it requires a non-empty `sub` and an `iss` from its allowlist. Nested actors are informational only and do not affect that policy. A token without `act` is unaffected. Accepted chains are limited to 10 actors, including when no policy is configured.
 
 ```go
 server.TrustedIssuer{
@@ -107,9 +107,15 @@ server.TrustedIssuer{
 
 `Subjects` maps a listed issuer to a pattern, in `AllowedClaims` syntax, that the current actor's `sub` must match. An issuer without an entry accepts any `sub`, so an issuer shared by many workloads, such as a cluster's ServiceAccount issuer, needs one. `NewOIDCValidator` refuses a pattern for an issuer not in `Issuers` and a malformed pattern.
 
-`Actors: &server.ActorPolicy{}` refuses every token from the issuer that carries `act`. With `Actors` unset, any complete `act` is accepted. A refusal wraps `server.ErrActorNotTrusted`; on a bearer it is audited with reason `trusted_issuer_actor_not_trusted`.
+`Actors: &server.ActorPolicy{}` refuses every token from the issuer that carries `act`. With `Actors` unset, the trusted issuer vouches for the actor identity without an additional issuer/subject restriction. An absent actor issuer is never inferred from the containing token's issuer. A refusal wraps `server.ErrActorNotTrusted`; on a bearer it is audited with reason `trusted_issuer_actor_not_trusted`.
 
-The policy also applies to forwarded ID tokens (`TrustedAudiences`) from the provider's issuer when that issuer has a `TrustedIssuer` entry; the `iss` and `sub` requirement applies to them in every case. The accepted token's `scope` claim is available as `UserInfo.Scopes`.
+The policy also applies to forwarded ID tokens (`TrustedAudiences`) from the provider's issuer when that issuer has a `TrustedIssuer` entry. The depth limit applies even without an entry. The accepted token's `scope` claim is available as `UserInfo.Scopes`.
+
+### Logging the subject and current actor
+
+`*providers.UserInfo` implements `slog.LogValuer`, so `logger.InfoContext(ctx, "operation", slog.Any("user", userInfo))` records `user.issuer` and `user.subject`, plus the current actor's supplied `user.actor.issuer` and `user.actor.subject` fields. Missing actor fields do not suppress the subject. Prior actors are not included in this log projection. A nil user or missing top-level issuer or subject produces an empty group, which the standard slog handlers omit; the formatter does not validate or authorize an identity.
+
+The formatter excludes profile fields such as `Email`, `Name` and `Groups`, but a subject value can itself be an email address or other personal identifier. Protect these audit records accordingly. The `user.*` keys are an application log schema, not an OAuth, MCP or A2A wire format. See the [authorization audit](mcp-2026-07-28.md) for the library's remaining conformance gaps.
 
 ### Custom validators
 

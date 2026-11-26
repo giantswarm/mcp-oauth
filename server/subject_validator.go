@@ -191,13 +191,12 @@ type TrustedIssuer struct {
 	// tokens.
 	OpenIDProvider bool
 	// Actors restricts which acting parties this issuer may name in the act
-	// claim (RFC 8693 §4.1). Whatever its value, a token whose act names an
-	// actor, at any level, without both iss and sub is refused. Nil accepts
-	// any such complete act. When set, a token carrying act is accepted only
-	// if the iss of its outermost act, the current actor, is listed in
-	// Actors.Issuers and its sub matches Actors.Subjects for that issuer, if
-	// any; an empty list refuses every token carrying act. Nested actors are
-	// informational (RFC 8693 §4.1) and not matched against the policy.
+	// claim (RFC 8693 §4.1). Nil imposes no actor identity restrictions.
+	// When set, the current actor must have a non-empty sub and an iss listed
+	// in Actors.Issuers; Actors.Subjects further restricts sub for that issuer.
+	// An empty policy refuses every token carrying act. Prior actors are
+	// informational and are not matched against this policy. All chains are
+	// bounded by maxActorChainDepth.
 	Actors *ActorPolicy
 }
 
@@ -410,9 +409,8 @@ func (v *OIDCValidator) actorPolicy(iss string) *ActorPolicy {
 	return v.issuers[iss].Actors
 }
 
-// checkActor refuses a verified act claim whose actors, at any level, do not
-// all carry iss and sub (checkActorChain), then applies a trusted issuer's
-// ActorPolicy, if any, to the current actor.
+// checkActor bounds the verified chain, then applies the configured policy
+// only to its current actor (RFC 8693 §4.1).
 func checkActor(policy *ActorPolicy, act *oidc.ActorClaim) error {
 	if act == nil {
 		return nil
@@ -425,6 +423,9 @@ func checkActor(policy *ActorPolicy, act *oidc.ActorClaim) error {
 	}
 	if act.Issuer == "" || !slices.Contains(policy.Issuers, act.Issuer) {
 		return fmt.Errorf("%w: issuer %q", ErrActorNotTrusted, act.Issuer)
+	}
+	if act.Subject == "" {
+		return fmt.Errorf("%w: missing current actor subject", ErrActorNotTrusted)
 	}
 	if pattern, ok := policy.Subjects[act.Issuer]; ok {
 		if err := matchClaimPattern(pattern, act.Subject); err != nil {

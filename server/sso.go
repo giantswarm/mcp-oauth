@@ -91,8 +91,7 @@ func (s *Server) validateAndParseForwardedIDToken(ctx context.Context, tokenStri
 		return nil, "", fmt.Errorf("ID token validation returned nil claims")
 	}
 
-	// Identity acceptance requires a complete act chain and enforces the
-	// matched issuer's actor policy.
+	// Actor policy applies only to the current actor; history is depth-bounded.
 	var actorPolicy *ActorPolicy
 	if s.trustedIssuerValidator != nil {
 		actorPolicy = s.trustedIssuerValidator.actorPolicy(idTokenClaims.Issuer)

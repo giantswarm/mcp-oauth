@@ -35,8 +35,21 @@ func TestUserInfo_LogValue(t *testing.T) {
 		{name: "nil"},
 		{name: "no issuer", user: withProfile(UserInfo{ID: subject})},
 		{name: "no subject", user: withProfile(UserInfo{Issuer: issuer})},
-		{name: "actor without issuer", user: withProfile(UserInfo{Issuer: issuer, ID: subject, ActorSubject: actorSubject})},
-		{name: "actor without subject", user: withProfile(UserInfo{Issuer: issuer, ID: subject, ActorIssuer: actorIssuer})},
+		{
+			name: "actor without issuer",
+			user: withProfile(UserInfo{Issuer: issuer, ID: subject, ActorSubject: actorSubject}),
+			want: map[string]any{"issuer": issuer, "subject": subject, "actor": map[string]any{"subject": actorSubject}},
+		},
+		{
+			name: "actor without subject",
+			user: withProfile(UserInfo{Issuer: issuer, ID: subject, ActorIssuer: actorIssuer}),
+			want: map[string]any{"issuer": issuer, "subject": subject, "actor": map[string]any{"issuer": actorIssuer}},
+		},
+		{
+			name: "email-shaped subjects remain identifiers",
+			user: withProfile(UserInfo{Issuer: issuer, ID: "subject@example.test", ActorSubject: "actor@example.test"}),
+			want: map[string]any{"issuer": issuer, "subject": "subject@example.test", "actor": map[string]any{"subject": "actor@example.test"}},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

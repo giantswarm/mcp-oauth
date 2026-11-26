@@ -40,14 +40,14 @@ const (
 // at the given level shared by the Server and the Handler. It returns the
 // handler, a valid forwarded ID token, and the log buffer.
 func newForwardedTokenHandler(t *testing.T, level slog.Level) (*Handler, string, *bytes.Buffer) {
-	return newExternalTokenHandler(t, level, false)
+	return newExternalTokenHandler(t, level, false, nil, nil)
 }
 
 func newTrustedIssuerTokenHandler(t *testing.T, level slog.Level) (*Handler, string, *bytes.Buffer) {
-	return newExternalTokenHandler(t, level, true)
+	return newExternalTokenHandler(t, level, true, nil, nil)
 }
 
-func newExternalTokenHandler(t *testing.T, level slog.Level, accessToken bool) (*Handler, string, *bytes.Buffer) {
+func newExternalTokenHandler(t *testing.T, level slog.Level, accessToken bool, actor *oidc.ActorClaim, policy *server.ActorPolicy) (*Handler, string, *bytes.Buffer) {
 	t.Helper()
 
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -92,7 +92,7 @@ func newExternalTokenHandler(t *testing.T, level slog.Level, accessToken bool) (
 		JWKSRootCAs:        rootCAs,
 	}, logger, server.WithTrustedIssuers([]server.TrustedIssuer{{
 		Issuer: issuer, JwksURL: jwksServer.URL, AllowPrivateIPJWKS: true, RootCAs: rootCAs,
-		AllowedAudiences: []string{resource, audience},
+		AllowedAudiences: []string{resource, audience}, Actors: policy,
 	}}))
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
@@ -119,6 +119,7 @@ func newExternalTokenHandler(t *testing.T, level slog.Level, accessToken bool) (
 			IssuedAt: josejwt.NewNumericDate(now),
 			Expiry:   josejwt.NewNumericDate(now.Add(time.Hour)),
 		},
+		Act:   actor,
 		Email: "user@test.example",
 		Name:  "Test User",
 	}).Serialize()
