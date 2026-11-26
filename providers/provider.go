@@ -187,7 +187,11 @@ const (
 	TokenSourceTrustedIssuer TokenSource = "trusted-issuer"
 )
 
-// UserInfo represents user information from a provider
+// UserInfo represents user information from a provider.
+//
+// On a UserInfo returned for a validated request, Issuer and ID are both
+// non-empty, and ActorIssuer and ActorSubject are either both set or both
+// empty.
 type UserInfo struct {
 	// ID is the account's identifier at its issuer: the sub claim for an
 	// OpenID Provider or a trusted issuer (OpenID Connect Core 5.7, RFC 7519),
@@ -251,14 +255,14 @@ type UserInfo struct {
 	// azp or their single audience; ambiguous client identity remains empty.
 	ClientID string
 
-	// ActorIssuer is the iss field from the RFC 8693 §4.1 act claim. Non-empty
-	// only when the token was minted via a delegated token exchange with a
-	// validated actor_token. Use IsOBO() as a presence check.
+	// ActorIssuer is the iss field of the current actor in the RFC 8693 §4.1
+	// act claim, empty for a token without act. It is set exactly when
+	// ActorSubject is. Use IsOBO() as a presence check.
 	ActorIssuer string
 
-	// ActorSubject is the sub field from the RFC 8693 §4.1 act claim. Non-empty
-	// only when the token was minted via a delegated token exchange with a
-	// validated actor_token. Use IsOBO() as a presence check.
+	// ActorSubject is the sub field of the current actor in the RFC 8693 §4.1
+	// act claim, empty for a token without act. It is set exactly when
+	// ActorIssuer is. Use IsOBO() as a presence check.
 	ActorSubject string
 
 	// ActorChain is the full RFC 8693 §4.1 delegation chain decoded from the

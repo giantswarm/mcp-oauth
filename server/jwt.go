@@ -330,12 +330,25 @@ func actorFromJWTClaim(raw any) (*oidc.ActorClaim, error) {
 	if err := json.Unmarshal(encoded, &actor); err != nil {
 		return nil, fmt.Errorf("actor claim: %w", err)
 	}
-	for current, depth := &actor, 0; current != nil; current, depth = current.Act, depth+1 {
-		if depth >= maxActorChainDepth || current.Issuer == "" || current.Subject == "" {
-			return nil, fmt.Errorf("invalid actor claim")
-		}
+	if err := checkActorChain(&actor); err != nil {
+		return nil, err
 	}
 	return &actor, nil
+}
+
+// errInvalidActorClaim is returned for an act claim naming an actor, at any
+// level, without both iss and sub, or nested deeper than maxActorChainDepth.
+var errInvalidActorClaim = errors.New("invalid actor claim")
+
+// checkActorChain requires a non-empty iss and sub on every actor of act and
+// bounds its depth by maxActorChainDepth. A nil act passes.
+func checkActorChain(act *oidc.ActorClaim) error {
+	for current, depth := act, 0; current != nil; current, depth = current.Act, depth+1 {
+		if depth >= maxActorChainDepth || current.Issuer == "" || current.Subject == "" {
+			return errInvalidActorClaim
+		}
+	}
+	return nil
 }
 
 // logSelfIssuedJWTAccepted records a success event for audit trails. The

@@ -89,7 +89,7 @@ K8s SA and GHA tokens both use `subject_token_type=urn:ietf:params:oauth:token-t
 
 ### Restricting the acting party (Actors)
 
-A delegated token names its acting party in the `act` claim (RFC 8693 §4.1). `Actors` limits which issuers a trusted issuer may name as the current actor, the outermost `act`. Nested `act` entries are earlier actors, informational only, and are not checked. A token without `act` is unaffected.
+A delegated token names its acting party in the `act` claim (RFC 8693 §4.1). Every actor in it, the outermost `act` and each nested one, must carry a non-empty `iss` and `sub`; a token with an incomplete `act` is refused whether or not `Actors` is set. `Actors` limits which issuers a trusted issuer may name as the current actor, the outermost `act`. Nested `act` entries are earlier actors, informational only, and are not matched against `Actors`. A token without `act` is unaffected.
 
 ```go
 server.TrustedIssuer{
@@ -107,9 +107,9 @@ server.TrustedIssuer{
 
 `Subjects` maps a listed issuer to a pattern, in `AllowedClaims` syntax, that the current actor's `sub` must match. An issuer without an entry accepts any `sub`, so an issuer shared by many workloads, such as a cluster's ServiceAccount issuer, needs one. `NewOIDCValidator` refuses a pattern for an issuer not in `Issuers` and a malformed pattern.
 
-`Actors: &server.ActorPolicy{}` refuses every token from the issuer that carries `act`. With `Actors` unset, `act` is accepted unchecked. A refusal wraps `server.ErrActorNotTrusted`; on a bearer it is audited with reason `trusted_issuer_actor_not_trusted`.
+`Actors: &server.ActorPolicy{}` refuses every token from the issuer that carries `act`. With `Actors` unset, any complete `act` is accepted. A refusal wraps `server.ErrActorNotTrusted`; on a bearer it is audited with reason `trusted_issuer_actor_not_trusted`.
 
-The policy also applies to forwarded ID tokens (`TrustedAudiences`) from the provider's issuer when that issuer has a `TrustedIssuer` entry. The accepted token's `scope` claim is available as `UserInfo.Scopes`.
+The policy also applies to forwarded ID tokens (`TrustedAudiences`) from the provider's issuer when that issuer has a `TrustedIssuer` entry; the `iss` and `sub` requirement applies to them in every case. The accepted token's `scope` claim is available as `UserInfo.Scopes`.
 
 ### Custom validators
 
