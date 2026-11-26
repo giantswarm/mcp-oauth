@@ -31,15 +31,14 @@ func processCredentials() credentials {
 	return process
 }
 
-// secretFileTooOpen reports whether a secret file with mode perm is readable
-// by other local accounts although a tighter mode would still let this process
-// read it. A world-readable file always is. A group-readable file is not when
-// another user owns it and its group is one of this process's groups: the
-// group bit is then the only way the process reads it, as for a Kubernetes
-// Secret volume, which the kubelet mounts root-owned with mode 0440 and the
-// pod's fsGroup. When the owner is unknown, any group or world bit counts.
+// secretFileTooOpen checks mode bits against the secret-file policy. Group or
+// other write access and other read access are refused. Group read access is
+// allowed only when another user owns the file and its group is one of this
+// process's effective or supplementary groups. All members of that group must
+// be trusted. ACLs and capabilities are not evaluated. When ownership is unknown,
+// group read access is refused.
 func secretFileTooOpen(perm fs.FileMode, owner fileOwner, process credentials) bool {
-	if perm&0o004 != 0 {
+	if perm&0o026 != 0 {
 		return true
 	}
 	if perm&0o040 == 0 {
