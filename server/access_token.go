@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -86,7 +88,9 @@ type AccessTokenClaims struct {
 	// Extra holds application-defined claims merged into the JWT body verbatim
 	// after the standard claims. Keys must not collide with RFC 7519 §4.1
 	// registered claim names (iss, sub, aud, exp, nbf, iat, jti) or the RFC 9068
-	// client_id claim. Issue returns an error if they do. OIDC-profile claims
+	// client_id claim. Issue returns an error if they do. Overriding scope, cnf,
+	// act or family_id is deprecated: Issue logs a warning, and a later release
+	// returns an error. OIDC-profile claims
 	// (email, name, groups, email_verified) set via struct fields can be overridden
 	// by Extra. Nil is a no-op.
 	Extra map[string]any
@@ -141,6 +145,7 @@ func (o opaqueIssuer) Issue(_ context.Context, _ AccessTokenClaims) (string, err
 type jwtIssuer struct {
 	signer jose.Signer
 	issuer string
+	logger *slog.Logger
 }
 
 // newJWTIssuer constructs a jwtIssuer from a validated configuration. The
@@ -183,6 +188,12 @@ var jwtReservedClaims = map[string]struct{}{
 	"exp": {}, "nbf": {}, "iat": {}, claimJTI: {},
 	paramClientID: {},
 }
+
+// jwtDeprecatedExtraClaims are claims mcp-oauth sets from AccessTokenClaims
+// fields (RFC 9068 §2.2 scope, RFC 9449 cnf, RFC 8693 act, the family). Extra
+// still overrides them, with a warning, until a later release rejects them as
+// it does jwtReservedClaims.
+var jwtDeprecatedExtraClaims = []string{"scope", "cnf", "act", "family_id"}
 
 // rfc9068Claims is the on-the-wire claim shape for an RFC 9068 access token.
 // Standard registered claims live on the embedded josejwt.Claims; the rest
@@ -246,6 +257,10 @@ func (j *jwtIssuer) Issue(_ context.Context, c AccessTokenClaims) (string, error
 		for k := range c.Extra {
 			if _, reserved := jwtReservedClaims[k]; reserved {
 				return "", fmt.Errorf("extra map contains reserved JWT claim %q", k)
+			}
+			if slices.Contains(jwtDeprecatedExtraClaims, k) && j.logger != nil {
+				j.logger.Warn("DEPRECATED: AccessTokenClaims.Extra overrides a claim mcp-oauth sets; a later release rejects it",
+					"claim", k)
 			}
 		}
 		builder = builder.Claims(c.Extra)
