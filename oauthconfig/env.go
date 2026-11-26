@@ -377,9 +377,9 @@ func optionalPositiveInt(name string) (int, error) {
 // are set, the _FILE variant wins. A single trailing newline is trimmed from
 // file contents (projected-volume files commonly carry one).
 //
-// File mode is checked: a `_FILE` whose group or world readable bits are set
-// emits a WARN on [slog.Default]. Set OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS=true
-// to upgrade the warning into an error.
+// File mode is checked against [secretFileTooOpen]. Unsafe permissions emit a
+// WARN on [slog.Default]. Set OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS=true to
+// upgrade the warning into an error.
 func optionalSecret(name string) (string, error) {
 	if raw := os.Getenv(name + "_FILE"); raw != "" {
 		path := filepath.Clean(raw)
@@ -396,22 +396,22 @@ func optionalSecret(name string) (string, error) {
 }
 
 // checkSecretFilePermissions warns (or errors, under OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS)
-// when a secret file is readable by anyone other than the owner. CWE-732.
+// when a secret file's mode violates [secretFileTooOpen]. CWE-732.
 func checkSecretFilePermissions(name, path string) error {
 	info, err := os.Stat(path) // #nosec G703 -- the operator's <NAME>_FILE mounted-secret path, checked by design
 	if err != nil {
-		// Read will surface the same error with full context; bail silently here.
+		// optionalSecret reports file access failures when reading the file.
 		return nil
 	}
 	perm := info.Mode().Perm()
-	if perm&0o044 == 0 {
+	if !secretFileTooOpen(perm, fileOwnerOf(info), processCredentials()) {
 		return nil
 	}
 	mustFail := strings.EqualFold(os.Getenv("OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS"), "true")
 	if mustFail {
-		return fmt.Errorf("%s_FILE %q is group/world readable (mode %#o); restrict to 0600 or set OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS=false", name, path, perm)
+		return fmt.Errorf("%s_FILE %q has unsafe permissions (mode %#o); restrict to owner-only access or trusted group read access without group/other write permissions", name, path, perm)
 	}
-	slog.Default().Warn("Secret file is group/world readable — restrict to 0600 to prevent local-account exfiltration",
+	slog.Default().Warn("Secret file has unsafe permissions; restrict to owner-only access or trusted group read access without group/other write permissions",
 		"env_var", name+"_FILE",
 		"path", path,
 		"mode", fmt.Sprintf("%#o", perm),

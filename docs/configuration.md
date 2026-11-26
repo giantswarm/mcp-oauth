@@ -50,9 +50,22 @@ based on OAuth concepts; they are not a standardized metadata document format.
 The tables below list every variable `SettingsFromEnv` reads, with the default
 prefix `OAUTH_`. Unset variables keep the `server.Config` default. Each secret,
 marked "secret", also reads `<NAME>_FILE`, a path to a mounted file that wins over
-the variable; the file loses one trailing newline. A secret file readable by group
-or others logs a warning, or is refused with
+the variable; the file loses one trailing newline. Group/other write access and
+world read access log a warning, or are refused with
 `OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS=true` (always read without a prefix).
+Group read access passes only when another user owns the file and its group is
+one of the server process's effective or supplementary groups. Unknown ownership
+does not qualify for this exemption.
+
+Every member of an exempted group must be trusted to read the secret. The check
+uses process group membership, including groups inherited from the container
+image; it does not identify a pod's `fsGroup` or evaluate ACLs and capabilities.
+
+Kubernetes Secret volumes [default to mode `0644`](https://kubernetes.io/docs/tasks/inject-data-application/distribute-credentials-secure/#set-posix-permissions-for-secret-keys).
+For a root-owned Secret volume, `defaultMode: 0400` together with the pod's
+`fsGroup` produces group-readable `0440` files that a non-root server in that
+group can read. The kubelet adds group access without removing existing world
+access, so the `0644` default still warns or fails strict mode.
 
 **Server**
 
