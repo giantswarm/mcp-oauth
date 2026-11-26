@@ -223,6 +223,7 @@ func New(
 	if err := srv.validateOptions(); err != nil {
 		return nil, err
 	}
+	srv.logIDTokenBearerDeprecations()
 	if err := srv.initializeConsentCookieKey(cleanupCtx); err != nil {
 		return nil, err
 	}
