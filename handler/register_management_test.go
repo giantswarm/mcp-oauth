@@ -51,7 +51,7 @@ func setupManagementHandler(t *testing.T) *Handler {
 	t.Helper()
 	h, _ := setupTestHandler(t)
 	h.server.Config.EnableClientManagementEndpoint = true
-	h.server.Config.RegistrationAccessToken = testRegistrationToken
+	h.server.Config.InitialAccessToken = testRegistrationToken
 	// Allow custom-scheme redirect URIs so tests don't require DNS resolution.
 	h.server.Config.TrustedPublicRegistrationSchemes = []string{"testapp"}
 	h.server.Config.SetTrustedSchemesMap([]string{"testapp"})
@@ -197,7 +197,7 @@ func TestServeClientManagement_DisabledByDefault(t *testing.T) {
 	// With EnableClientManagementEndpoint = false, the DCR response must NOT
 	// include registration_access_token or registration_client_uri.
 	h, _ := setupTestHandler(t)
-	h.server.Config.RegistrationAccessToken = testRegistrationToken
+	h.server.Config.InitialAccessToken = testRegistrationToken
 	// EnableClientManagementEndpoint defaults to false.
 
 	body := `{"client_name":"no-mgmt","redirect_uris":["testapp://oauth/callback"]}`

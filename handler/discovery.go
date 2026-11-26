@@ -507,7 +507,7 @@ func (h *Handler) isRegistrationAvailable() bool {
 		return false
 	}
 	return h.server.Config.AllowPublicClientRegistration ||
-		h.server.Config.RegistrationAccessToken != "" ||
+		h.server.Config.InitialAccessToken != "" ||
 		len(h.server.Config.TrustedPublicRegistrationSchemes) > 0 ||
 		len(h.server.Config.TrustedPublicRegistrationRedirectURIs) > 0
 }

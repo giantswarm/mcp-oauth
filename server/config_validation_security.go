@@ -174,10 +174,10 @@ func logSecurityWarnings(config *Config, logger *slog.Logger) {
 // logRegistrationWarnings warns about client registration settings that leave
 // clients unable to register.
 func logRegistrationWarnings(config *Config, logger *slog.Logger) {
-	if config.RegistrationEnabled() && !config.AllowPublicClientRegistration && config.RegistrationAccessToken == "" {
-		logger.Warn("CONFIGURATION WARNING: RegistrationAccessToken not configured",
+	if config.RegistrationEnabled() && !config.AllowPublicClientRegistration && config.InitialAccessToken == "" {
+		logger.Warn("CONFIGURATION WARNING: InitialAccessToken not configured",
 			"risk", "Client registration will fail",
-			"recommendation", "Set RegistrationAccessToken or enable AllowPublicClientRegistration")
+			"recommendation", "Set InitialAccessToken or enable AllowPublicClientRegistration")
 	}
 	if !config.DisableAuthorizationServer && config.DisableDynamicClientRegistration && !config.EnableClientIDMetadataDocuments {
 		logger.Warn("CONFIGURATION WARNING: Dynamic Client Registration and Client ID Metadata Documents are both off",
@@ -209,7 +209,7 @@ func logCoreSecurityWarnings(config *Config, logger *slog.Logger) {
 	if config.AllowPublicClientRegistration {
 		logger.Warn("SECURITY WARNING: Public client registration is ENABLED",
 			"risk", "DoS attacks via unlimited client registration",
-			"recommendation", "Set AllowPublicClientRegistration=false and use RegistrationAccessToken")
+			"recommendation", "Set AllowPublicClientRegistration=false and use InitialAccessToken")
 	}
 	if config.AllowNoStateParameter {
 		logger.Warn("AllowNoStateParameter is deprecated and has no effect: the client's state parameter is optional (OAuth 2.1 section 4.1.1)")

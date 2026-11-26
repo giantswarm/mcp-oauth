@@ -75,8 +75,7 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 		return nil, err
 	}
 
-	cfg.RegistrationAccessToken, err = optionalSecret(prefix + "REGISTRATION_ACCESS_TOKEN")
-	if err != nil {
+	if cfg.InitialAccessToken, err = initialAccessToken(prefix); err != nil {
 		return nil, err
 	}
 
@@ -431,4 +430,24 @@ func splitAndTrim(s, sep string) []string {
 		}
 	}
 	return out
+}
+
+// initialAccessToken reads INITIAL_ACCESS_TOKEN (or its _FILE), else the
+// deprecated REGISTRATION_ACCESS_TOKEN (or its _FILE). Setting the deprecated
+// variable logs a warning even when INITIAL_ACCESS_TOKEN wins.
+func initialAccessToken(prefix string) (string, error) {
+	name, deprecated := prefix+"INITIAL_ACCESS_TOKEN", prefix+"REGISTRATION_ACCESS_TOKEN"
+	token, err := optionalSecret(name)
+	if err != nil {
+		return "", err
+	}
+	if os.Getenv(deprecated) == "" && os.Getenv(deprecated+"_FILE") == "" {
+		return token, nil
+	}
+	if token != "" {
+		slog.Default().Warn("DEPRECATED: "+deprecated+" is ignored because "+name+" is set; remove it", "replacement", name)
+		return token, nil
+	}
+	slog.Default().Warn("DEPRECATED: "+deprecated+" is set; set "+name+" (RFC 7591 initial access token) instead", "replacement", name)
+	return optionalSecret(deprecated)
 }
