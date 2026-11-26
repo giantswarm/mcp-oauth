@@ -221,6 +221,20 @@ type Config struct {
 	// Default: false (the provider's id_token is returned to the client)
 	OmitIDTokenInTokenResponse bool
 
+	// RequiredUpstreamScopes lists scopes the server always requests from the
+	// upstream provider in the authorization code flow, whatever scope the
+	// client sends. The server adds each one that the provider's own scope
+	// resolution left out. A client that sends its own scope otherwise gets
+	// only the client's scopes plus the provider's mandatory ones (openid,
+	// email, profile, groups, offline_access and Dex cross-client audience
+	// scopes), so other configured provider scopes such as Dex's federated:id
+	// are dropped. The scopes go to the provider only: the client's granted
+	// scope does not change. Identity flows (StartIdentityFlow) are not
+	// affected. A refresh keeps the scopes of the original grant.
+	//
+	// Default: empty (the provider's scope resolution applies unchanged)
+	RequiredUpstreamScopes []string
+
 	// TrustProxy enables trusting X-Forwarded-For and X-Real-IP headers
 	// WARNING: Only enable if behind a trusted reverse proxy (nginx, HAProxy, etc.)
 	// When false, uses direct connection IP (secure by default)

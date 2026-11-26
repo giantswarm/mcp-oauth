@@ -122,7 +122,7 @@ or others logs a warning, or is refused with
 | `OAUTH_DEX_CLIENT_SECRET` | Secret, required for Dex |
 | `OAUTH_DEX_REDIRECT_URL` | Defaults to `OAUTH_ISSUER` + `/oauth/callback` |
 | `OAUTH_DEX_CONNECTOR_ID` | Dex connector to skip Dex's connector choice, for example `github` |
-| `OAUTH_DEX_SCOPES` | Comma-separated Dex scopes; an explicit list must contain `openid` |
+| `OAUTH_DEX_SCOPES` | Comma-separated Dex scopes; an explicit list must contain `openid`. A client that sends its own `scope` gets only `openid`, `email`, `profile`, `groups`, `offline_access` and audience scopes from this list; list other scopes, such as `federated:id`, in `RequiredUpstreamScopes` too |
 | `OAUTH_DEX_AUDIENCES` | Comma-separated Dex cross-client IDs, requested through Dex's `audience:server:client_id:<id>` scopes |
 | `OAUTH_DEX_CA_FILE` | PEM bundle added to system trust; the combined loader shares the resolved pool between Dex and JWKS validation |
 | `OAUTH_GOOGLE_CLIENT_ID`, `OAUTH_GOOGLE_REDIRECT_URL` | Required for Google |
@@ -283,6 +283,7 @@ config := &server.Config{
 | `Issuer` | `string` | *required* | Canonical URL of your OAuth server |
 | `ResourceIdentifier` | `string` | `""` | Resource identifier for token audience binding (RFC 8707); defaults to `Issuer`. A `resource` parameter that is neither this value nor a `ResourceMetadataByPath` identifier is refused with `invalid_target` |
 | `SupportedScopes` | `[]string` | `nil` | Scopes this server supports |
+| `RequiredUpstreamScopes` | `[]string` | `nil` | Scopes always requested from the upstream provider in the authorization code flow, whatever scope the client sends, for example Dex `federated:id`; the client's granted scope does not change |
 
 ### Security Settings
 
