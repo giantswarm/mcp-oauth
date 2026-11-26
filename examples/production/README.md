@@ -43,8 +43,8 @@ vault kv put secret/oauth/google \
   client_id="your-client-id.apps.googleusercontent.com" \
   client_secret="your-client-secret"
 
-# 3. Store registration token
-vault kv put secret/oauth/registration \
+# 3. Store the initial access token (RFC 7591)
+vault kv put secret/oauth/initial-access-token \
   token="$(openssl rand -base64 32)"
 
 # 4. Retrieve secrets in your application
@@ -341,7 +341,7 @@ go run main.go
 
 ```bash
 curl -X POST https://localhost:8443/oauth/register \
-  -H "Authorization: Bearer $OAUTH_REGISTRATION_TOKEN" \
+  -H "Authorization: Bearer $OAUTH_INITIAL_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "client_name": "Production MCP Client",
@@ -513,16 +513,16 @@ vault kv delete secret/oauth/encryption-key-v1
 - **Staff changes:** Within 24 hours if key access was involved
 - **Compliance requirements:** Follow your organization's policy
 
-### Registration Token
+### Initial Access Token
 
-The registration token protects the client registration endpoint:
+The initial access token (RFC 7591 §1.2, `OAUTH_INITIAL_ACCESS_TOKEN`) protects the client registration endpoint:
 
 ```bash
 # Generate a secure token
 openssl rand -base64 32
 
 # Use it in registration requests
-curl -H "Authorization: Bearer $OAUTH_REGISTRATION_TOKEN" ...
+curl -H "Authorization: Bearer $OAUTH_INITIAL_ACCESS_TOKEN" ...
 ```
 
 Share this token ONLY with trusted client developers.

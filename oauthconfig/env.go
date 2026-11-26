@@ -433,19 +433,21 @@ func splitAndTrim(s, sep string) []string {
 }
 
 // initialAccessToken reads INITIAL_ACCESS_TOKEN (or its _FILE), else the
-// deprecated REGISTRATION_ACCESS_TOKEN (or its _FILE) with a warning naming
-// the new variable.
+// deprecated REGISTRATION_ACCESS_TOKEN (or its _FILE). Setting the deprecated
+// variable logs a warning even when INITIAL_ACCESS_TOKEN wins.
 func initialAccessToken(prefix string) (string, error) {
-	token, err := optionalSecret(prefix + "INITIAL_ACCESS_TOKEN")
-	if err != nil || token != "" {
-		return token, err
+	name, deprecated := prefix+"INITIAL_ACCESS_TOKEN", prefix+"REGISTRATION_ACCESS_TOKEN"
+	token, err := optionalSecret(name)
+	if err != nil {
+		return "", err
 	}
-	deprecated := prefix + "REGISTRATION_ACCESS_TOKEN"
-	token, err = optionalSecret(deprecated)
-	if err != nil || token == "" {
-		return token, err
+	if os.Getenv(deprecated) == "" && os.Getenv(deprecated+"_FILE") == "" {
+		return token, nil
 	}
-	slog.Default().Warn("DEPRECATED: "+deprecated+" is set; set "+prefix+"INITIAL_ACCESS_TOKEN (RFC 7591 initial access token) instead",
-		"replacement", prefix+"INITIAL_ACCESS_TOKEN")
-	return token, nil
+	if token != "" {
+		slog.Default().Warn("DEPRECATED: "+deprecated+" is ignored because "+name+" is set; remove it", "replacement", name)
+		return token, nil
+	}
+	slog.Default().Warn("DEPRECATED: "+deprecated+" is set; set "+name+" (RFC 7591 initial access token) instead", "replacement", name)
+	return optionalSecret(deprecated)
 }

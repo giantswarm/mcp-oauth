@@ -682,28 +682,43 @@ func TestFromEnv_AllowPrivateIPHosts(t *testing.T) {
 
 // TestFromEnv_DeprecatedRegistrationAccessToken pins the overlap of the
 // renamed variable: REGISTRATION_ACCESS_TOKEN (and its _FILE) still sets the
-// initial access token, and INITIAL_ACCESS_TOKEN wins when both are set.
+// initial access token, INITIAL_ACCESS_TOKEN wins when both are set, and the
+// deprecated variable always logs a warning.
 func TestFromEnv_DeprecatedRegistrationAccessToken(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		env  func(t *testing.T)
-		want string
+		name     string
+		env      func(t *testing.T)
+		want     string
+		wantWarn string
 	}{
-		{"deprecated name", func(t *testing.T) { t.Setenv("OAUTH_REGISTRATION_ACCESS_TOKEN", "old") }, "old"},
-		{"deprecated file", func(t *testing.T) {
-			t.Setenv("OAUTH_REGISTRATION_ACCESS_TOKEN_FILE", writeSecretFile(t, "old-file"))
-		}, "old-file"},
-		{"new name wins", func(t *testing.T) {
-			t.Setenv("OAUTH_REGISTRATION_ACCESS_TOKEN", "old")
-			t.Setenv("OAUTH_INITIAL_ACCESS_TOKEN", "new")
-		}, "new"},
+		{name: "new name", env: func(t *testing.T) { t.Setenv("OAUTH_INITIAL_ACCESS_TOKEN", "tok-new-9b1c") }, want: "tok-new-9b1c"},
+		{name: "deprecated name", env: func(t *testing.T) { t.Setenv("OAUTH_REGISTRATION_ACCESS_TOKEN", "tok-old-7f3a") }, want: "tok-old-7f3a", wantWarn: "OAUTH_REGISTRATION_ACCESS_TOKEN is set"},
+		{name: "deprecated file", env: func(t *testing.T) {
+			t.Setenv("OAUTH_REGISTRATION_ACCESS_TOKEN_FILE", writeSecretFile(t, "tok-oldfile-2d4e"))
+		}, want: "tok-oldfile-2d4e", wantWarn: "OAUTH_REGISTRATION_ACCESS_TOKEN is set"},
+		{name: "new name wins", env: func(t *testing.T) {
+			t.Setenv("OAUTH_REGISTRATION_ACCESS_TOKEN", "tok-old-7f3a")
+			t.Setenv("OAUTH_INITIAL_ACCESS_TOKEN", "tok-new-9b1c")
+		}, want: "tok-new-9b1c", wantWarn: "OAUTH_REGISTRATION_ACCESS_TOKEN is ignored"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+
 			setRequired(t, "https://issuer.example.com")
 			tc.env(t)
 			cfg, err := oauthconfig.FromEnv()
 			require.NoError(t, err)
 			require.Equal(t, tc.want, cfg.InitialAccessToken)
+			if tc.wantWarn == "" {
+				require.NotContains(t, logs.String(), "REGISTRATION_ACCESS_TOKEN")
+				return
+			}
+			require.Contains(t, logs.String(), "level=WARN")
+			require.Contains(t, logs.String(), tc.wantWarn)
+			require.NotContains(t, logs.String(), tc.want, "the warning must not log the token")
 		})
 	}
 }

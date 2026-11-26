@@ -244,7 +244,7 @@ func TestLogSecurityWarnings(t *testing.T) {
 			},
 		},
 		{
-			name: "missing registration token warning",
+			name: "missing initial access token warning",
 			config: &Config{
 				RequirePKCE:                   true,
 				AllowPublicClientRegistration: false,
@@ -2023,15 +2023,36 @@ func TestIsValidSchemeChar(t *testing.T) {
 	}
 }
 
-// TestNew_DeprecatedRegistrationAccessToken pins the overlap of the renamed
-// field: RegistrationAccessToken still sets the initial access token, and
-// InitialAccessToken wins when both are set.
-func TestNew_DeprecatedRegistrationAccessToken(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+// TestApplySecureDefaults_DeprecatedRegistrationAccessToken pins the overlap
+// of the renamed field: RegistrationAccessToken still sets the initial access
+// token, InitialAccessToken wins when both are set, and the deprecated field
+// always logs a warning.
+func TestApplySecureDefaults_DeprecatedRegistrationAccessToken(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		initial, deprecate string
+		want, wantWarn     string
+	}{
+		{name: "new field", initial: "tok-new-9b1c", want: "tok-new-9b1c"},
+		{name: "deprecated field", deprecate: "tok-old-7f3a", want: "tok-old-7f3a", wantWarn: "Config.RegistrationAccessToken is set"},
+		{name: "new field wins", initial: "tok-new-9b1c", deprecate: "tok-old-7f3a", want: "tok-new-9b1c", wantWarn: "Config.RegistrationAccessToken is ignored"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logs, nil))
 
-	config := applySecureDefaults(&Config{Issuer: "https://oauth.example.com", RegistrationAccessToken: "old"}, logger)
-	require.Equal(t, "old", config.InitialAccessToken)
-
-	config = applySecureDefaults(&Config{Issuer: "https://oauth.example.com", RegistrationAccessToken: "old", InitialAccessToken: "new"}, logger)
-	require.Equal(t, "new", config.InitialAccessToken)
+			config := applySecureDefaults(&Config{
+				Issuer:                  "https://oauth.example.com",
+				InitialAccessToken:      tc.initial,
+				RegistrationAccessToken: tc.deprecate,
+			}, logger)
+			require.Equal(t, tc.want, config.InitialAccessToken)
+			if tc.wantWarn == "" {
+				require.NotContains(t, logs.String(), "RegistrationAccessToken")
+				return
+			}
+			require.Contains(t, logs.String(), "level=WARN msg=\"DEPRECATED: "+tc.wantWarn)
+			require.NotContains(t, logs.String(), "tok-old-7f3a", "the warning must not log the token")
+		})
+	}
 }

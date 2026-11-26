@@ -1082,7 +1082,7 @@ func TestHandler_ServeAuthorizationServerMetadata_TrustedSchemes(t *testing.T) {
 	}
 
 	// Verify registration_endpoint IS included when trusted schemes are configured
-	// This allows Cursor/VSCode to discover DCR even without a registration token
+	// This allows Cursor/VSCode to discover DCR even without an initial access token
 	if meta.RegistrationEndpoint != "https://auth.example.com/oauth/register" {
 		t.Errorf("registration_endpoint = %q, want %q (trusted schemes should enable DCR discovery)",
 			meta.RegistrationEndpoint, "https://auth.example.com/oauth/register")

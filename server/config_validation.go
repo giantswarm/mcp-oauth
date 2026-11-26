@@ -609,7 +609,7 @@ func validateMaxRequestBodySizeConfig(config *Config, logger *slog.Logger) {
 
 // validateTrustedPublicRegistrationSchemes validates and sanitizes TrustedPublicRegistrationSchemes configuration.
 // This feature allows unauthenticated client registration for clients using trusted custom URI schemes
-// (e.g., cursor://, vscode://), enabling compatibility with MCP clients that don't support registration tokens.
+// (e.g., cursor://, vscode://), enabling compatibility with MCP clients that don't support initial access tokens.
 //
 // SECURITY: HTTP/HTTPS schemes are automatically REMOVED from the list because they can be hijacked
 // by attackers who control web servers. Only custom URI schemes are safe for unauthenticated registration.

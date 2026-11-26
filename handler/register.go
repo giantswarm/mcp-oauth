@@ -72,9 +72,9 @@ func (h *Handler) checkClientRegistrationRateLimit(ctx context.Context, w http.R
 	return false
 }
 
-// validateRegistrationToken reports whether authHeader carries the configured
+// validateInitialAccessToken reports whether authHeader carries the configured
 // initial access token (RFC 7591 §1.2).
-func (h *Handler) validateRegistrationToken(authHeader string) bool {
+func (h *Handler) validateInitialAccessToken(authHeader string) bool {
 	if authHeader == "" || h.server.Config.InitialAccessToken == "" {
 		return false
 	}
@@ -95,7 +95,7 @@ type registrationAuthResult struct {
 }
 
 // authorizeClientRegistration checks whether a DCR request is authorized via the
-// public-client flag, a registration access token, the trusted-scheme allowlist,
+// public-client flag, the initial access token, the trusted-scheme allowlist,
 // or the trusted-redirect-URI allowlist (in that order).
 func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Request, req *clientRegistrationRequest, clientIP string) (registrationAuthResult, bool) {
 	var result registrationAuthResult
@@ -106,13 +106,13 @@ func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Req
 	}
 
 	authHeader := r.Header.Get("Authorization")
-	if h.validateRegistrationToken(authHeader) {
-		h.logger.Debug("Client registration authenticated with valid token")
+	if h.validateInitialAccessToken(authHeader) {
+		h.logger.Debug("Client registration authenticated with the initial access token")
 		return result, true
 	}
 
 	if authHeader != "" {
-		h.logger.Warn("Invalid registration token provided, falling back to trusted allowlists",
+		h.logger.Warn("Invalid initial access token provided, falling back to trusted allowlists",
 			"client_ip", clientIP,
 			"has_trusted_schemes_configured", len(h.server.Config.TrustedPublicRegistrationSchemes) > 0,
 			"has_trusted_redirect_uris_configured", len(h.server.Config.TrustedPublicRegistrationRedirectURIs) > 0)
@@ -142,7 +142,7 @@ func (h *Handler) authorizeClientRegistration(w http.ResponseWriter, r *http.Req
 		"has_trusted_schemes_configured", len(h.server.Config.TrustedPublicRegistrationSchemes) > 0,
 		"has_trusted_redirect_uris_configured", len(h.server.Config.TrustedPublicRegistrationRedirectURIs) > 0)
 	h.writeError(w, constants.ErrorCodeInvalidToken,
-		"Registration requires authentication. Provide a valid registration token or use a trusted redirect URI or scheme.",
+		"Registration requires authentication. Provide a valid initial access token or use a trusted redirect URI or scheme.",
 		http.StatusUnauthorized)
 	return result, false
 }

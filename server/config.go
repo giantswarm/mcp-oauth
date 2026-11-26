@@ -546,7 +546,7 @@ type Config struct {
 	//
 	// Strict scheme matching (enabled by default when TrustedPublicRegistrationSchemes is configured):
 	//   - All redirect URIs MUST use schemes from TrustedPublicRegistrationSchemes
-	//   - A mix of trusted and untrusted schemes requires a registration token
+	//   - A mix of trusted and untrusted schemes requires the InitialAccessToken
 	//   - Provides maximum security by preventing token leakage to untrusted URIs
 	//
 	// When disabled (permissive mode):

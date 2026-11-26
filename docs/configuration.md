@@ -97,9 +97,9 @@ or others logs a warning, or is refused with
 | Variable | Behavior |
 | --- | --- |
 | `OAUTH_INITIAL_ACCESS_TOKEN` | Secret. The RFC 7591 initial access token required at `/oauth/register`. `OAUTH_REGISTRATION_ACCESS_TOKEN` is its deprecated name and logs a warning. |
-| `OAUTH_ALLOW_PUBLIC_CLIENT_REGISTRATION` | Allow registration without the registration token and of public clients; default `false`, for development only |
-| `OAUTH_TRUSTED_REDIRECT_SCHEMES` | Comma-separated custom URI schemes (for example `cursor,vscode`) a client may register without the registration token |
-| `OAUTH_TRUSTED_REDIRECT_URIS` | Comma-separated HTTPS redirect URIs a client may register without the registration token |
+| `OAUTH_ALLOW_PUBLIC_CLIENT_REGISTRATION` | Allow registration without the initial access token and of public clients; default `false`, for development only |
+| `OAUTH_TRUSTED_REDIRECT_SCHEMES` | Comma-separated custom URI schemes (for example `cursor,vscode`) a client may register without the initial access token |
+| `OAUTH_TRUSTED_REDIRECT_URIS` | Comma-separated HTTPS redirect URIs a client may register without the initial access token |
 | `OAUTH_MAX_CLIENTS_PER_IP` | Registrations allowed per client IP; default `10` |
 | `OAUTH_TRUSTED_CLIENTS` | JSON array of `{client_id, redirect_uris}` clients that skip the consent page |
 | `OAUTH_CONSENT_COOKIE_KEY` | Secret. 32-byte AES-GCM key for consent cookies, base64 or hex; defaults to a key the store derives per issuer |

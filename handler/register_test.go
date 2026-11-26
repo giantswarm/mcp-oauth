@@ -323,7 +323,7 @@ func TestHandler_ServeClientRegistration_PublicClientPolicy(t *testing.T) {
 			handler.server.Config.AllowPublicClientRegistration = tt.allowPublicClientRegistration
 			handler.server.Config.AllowPublicClientsWithoutPKCE = true // Not relevant for registration test
 
-			// Set registration token when authentication is required
+			// Set the initial access token when authentication is required
 			if !tt.allowPublicClientRegistration {
 				handler.server.Config.InitialAccessToken = testRegistrationToken
 			}

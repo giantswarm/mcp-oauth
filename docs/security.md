@@ -289,7 +289,7 @@ With this configuration:
 
 ### Trusted Custom URI Schemes (Cursor/IDE Compatibility)
 
-For MCP clients like Cursor that don't support registration tokens, you can allow unauthenticated registration **only** for clients using trusted custom URI schemes:
+For MCP clients like Cursor that don't support initial access tokens, you can allow unauthenticated registration **only** for clients using trusted custom URI schemes:
 
 ```go
 config := &server.Config{
