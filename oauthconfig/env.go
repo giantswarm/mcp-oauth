@@ -377,8 +377,9 @@ func optionalPositiveInt(name string) (int, error) {
 // are set, the _FILE variant wins. A single trailing newline is trimmed from
 // file contents (projected-volume files commonly carry one).
 //
-// File mode is checked: a `_FILE` whose group or world readable bits are set
-// emits a WARN on [slog.Default]. Set OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS=true
+// File mode is checked: a `_FILE` that other local accounts can read emits a
+// WARN on [slog.Default], unless the group bit is the only way this process can
+// read it (see [secretFileTooOpen]). Set OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS=true
 // to upgrade the warning into an error.
 func optionalSecret(name string) (string, error) {
 	if raw := os.Getenv(name + "_FILE"); raw != "" {
@@ -396,7 +397,8 @@ func optionalSecret(name string) (string, error) {
 }
 
 // checkSecretFilePermissions warns (or errors, under OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS)
-// when a secret file is readable by anyone other than the owner. CWE-732.
+// when a secret file is readable by other local accounts and a tighter mode
+// would still let this process read it. CWE-732.
 func checkSecretFilePermissions(name, path string) error {
 	info, err := os.Stat(path) // #nosec G703 -- the operator's <NAME>_FILE mounted-secret path, checked by design
 	if err != nil {
@@ -404,7 +406,7 @@ func checkSecretFilePermissions(name, path string) error {
 		return nil
 	}
 	perm := info.Mode().Perm()
-	if perm&0o044 == 0 {
+	if !secretFileTooOpen(perm, fileOwnerOf(info), processCredentials()) {
 		return nil
 	}
 	mustFail := strings.EqualFold(os.Getenv("OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS"), "true")

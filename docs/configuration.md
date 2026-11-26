@@ -50,9 +50,12 @@ based on OAuth concepts; they are not a standardized metadata document format.
 The tables below list every variable `SettingsFromEnv` reads, with the default
 prefix `OAUTH_`. Unset variables keep the `server.Config` default. Each secret,
 marked "secret", also reads `<NAME>_FILE`, a path to a mounted file that wins over
-the variable; the file loses one trailing newline. A secret file readable by group
-or others logs a warning, or is refused with
-`OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS=true` (always read without a prefix).
+the variable; the file loses one trailing newline. A secret file that other local
+accounts can read logs a warning, or is refused with
+`OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS=true` (always read without a prefix). A
+group-readable file passes when another user owns it and its group is one of the
+server's groups, since a tighter mode would not let the server read it: a
+Kubernetes Secret volume is mounted root-owned, mode 0440, with the pod's `fsGroup`.
 
 **Server**
 

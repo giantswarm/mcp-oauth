@@ -47,6 +47,22 @@ func TestOptionalSecret_WorldReadableWarns(t *testing.T) {
 	require.Contains(t, buf.String(), "CWE-732")
 }
 
+func TestOptionalSecret_OwnGroupReadableFileWarns(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secret")
+	require.NoError(t, os.WriteFile(path, []byte("leak-risk"), 0o640)) //nolint:gosec // G306 intentional: a group-readable file this process owns could be 0600
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	t.Setenv("OAUTH_TEST_SECRET_FILE", path)
+	_, err := optionalSecret("OAUTH_TEST_SECRET")
+	require.NoError(t, err)
+	require.Contains(t, buf.String(), "group/world readable")
+}
+
 func TestOptionalSecret_HardFailWhenStrictModeOn(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secret")
