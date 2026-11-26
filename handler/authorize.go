@@ -633,17 +633,49 @@ func (h *Handler) cancelBrowserCallback(w http.ResponseWriter, r *http.Request, 
 	if cookie, cookieErr := r.Cookie(h.consent.flowName(state)); cookieErr == nil {
 		binding = cookie.Value
 	}
-	if err := h.server.CancelBrowserAuthorization(r.Context(), state, binding); err != nil {
+	flow, err := h.server.CancelBrowserAuthorizationState(r.Context(), state, binding)
+	if err != nil {
 		h.failBrowserCallback(w, r, span, startTime, state, err)
 		return
 	}
 	h.consent.clear(w, h.consent.flowName(state))
-	errorDescription := r.URL.Query().Get(paramErrorDescription)
-	h.logger.Warn("Provider returned error", "ip", h.clientIP(r), paramError, errorCode, "description", errorDescription)
-	h.recordHTTPMetrics(r.Context(), endpointCallback, http.MethodGet, http.StatusBadRequest, startTime)
-	h.recordCallbackProcessed(r.Context(), "", false)
-	instrumentation.SetSpanError(span, errorCode)
-	h.writeError(w, errorCode, errorDescription, http.StatusBadRequest)
+	h.logger.Warn("Provider returned error", "ip", h.clientIP(r), paramError, errorCode, "description", r.URL.Query().Get(paramErrorDescription))
+	h.recordCallbackProcessed(r.Context(), flow.ClientID, false)
+	code, description := clientErrorForProviderError(errorCode)
+
+	if flow.IdentityOnly || flow.RedirectURI == "" {
+		h.recordHTTPMetrics(r.Context(), endpointCallback, http.MethodGet, http.StatusBadRequest, startTime)
+		instrumentation.SetSpanError(span, code)
+		h.writeError(w, code, description, http.StatusBadRequest)
+		return
+	}
+	redirect, err := h.server.ValidateRedirectURIForAuthorization(r.Context(), flow.ClientID, flow.RedirectURI)
+	if err != nil {
+		h.failRequest(w, r, span, endpointCallback, http.MethodGet, http.StatusBadRequest, constants.ErrorCodeInvalidRequest, "client or redirect URI is no longer valid", startTime)
+		return
+	}
+	h.respondAuthorizationError(w, r, span, startTime, authorizationError{
+		endpoint: endpointCallback, redirectURI: redirect,
+		state: flow.OriginalClientState, code: code, description: description, spanError: code,
+	})
+}
+
+// clientErrorForProviderError maps an upstream provider's error to the code
+// reported to the client. The upstream value and description are never
+// reflected: only codes that mean the same for the client pass through, any
+// other upstream failure is the authorization server's own server_error.
+func clientErrorForProviderError(providerError string) (code, description string) {
+	switch providerError {
+	case constants.ErrorCodeAccessDenied:
+		return providerError, "the identity provider denied access"
+	case constants.ErrorCodeTemporarilyUnavailable:
+		return providerError, "the identity provider is temporarily unavailable"
+	case constants.ErrorCodeLoginRequired, constants.ErrorCodeConsentRequired,
+		constants.ErrorCodeInteractionRequired, constants.ErrorCodeAccountSelectionRequired:
+		return providerError, "the identity provider requires user interaction"
+	default:
+		return constants.ErrorCodeServerError, "the identity provider could not complete the sign-in"
+	}
 }
 
 func (h *Handler) failBrowserCallback(w http.ResponseWriter, r *http.Request, span trace.Span, startTime time.Time, state string, err error) {
@@ -752,6 +784,7 @@ func (h *Handler) redirectAuthorizationCode(w http.ResponseWriter, r *http.Reque
 // allowlisted target from ValidateRedirectURIForAuthorization. spanError is
 // the short reason recorded on the tracing span.
 type authorizationError struct {
+	endpoint    string
 	method      string
 	redirectURI *url.URL
 	state       string
@@ -805,9 +838,13 @@ func (h *Handler) respondAuthorizationError(w http.ResponseWriter, r *http.Reque
 	if method == "" {
 		method = http.MethodGet
 	}
+	endpoint := e.endpoint
+	if endpoint == "" {
+		endpoint = endpointAuthorize
+	}
 
 	if e.redirectURI == nil {
-		h.recordHTTPMetrics(r.Context(), endpointAuthorize, method, http.StatusBadRequest, startTime)
+		h.recordHTTPMetrics(r.Context(), endpoint, method, http.StatusBadRequest, startTime)
 		h.writeError(w, e.code, e.description, http.StatusBadRequest)
 		return
 	}
@@ -822,7 +859,7 @@ func (h *Handler) respondAuthorizationError(w http.ResponseWriter, r *http.Reque
 	}
 	redirect.RawQuery = q.Encode()
 
-	h.recordHTTPMetrics(r.Context(), endpointAuthorize, method, http.StatusFound, startTime)
+	h.recordHTTPMetrics(r.Context(), endpoint, method, http.StatusFound, startTime)
 	security.SetSecurityHeaders(w, h.server.Config.Issuer)
 	http.Redirect(w, r, redirect.String(), http.StatusFound)
 }

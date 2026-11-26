@@ -605,8 +605,15 @@ func (s *Server) CompleteBrowserAuthorization(ctx context.Context, providerState
 // CancelBrowserAuthorization consumes a browser-bound provider error callback
 // without exchanging a code or issuing downstream credentials.
 func (s *Server) CancelBrowserAuthorization(ctx context.Context, providerState, binding string) error {
-	_, err := s.consumeProviderCallback(ctx, providerState, binding, true)
+	_, err := s.CancelBrowserAuthorizationState(ctx, providerState, binding)
 	return err
+}
+
+// CancelBrowserAuthorizationState is [Server.CancelBrowserAuthorization] that
+// also returns the consumed flow, so the caller can report the failure to the
+// client's redirect URI with the client's state (RFC 6749 §4.1.2.1).
+func (s *Server) CancelBrowserAuthorizationState(ctx context.Context, providerState, binding string) (*storage.AuthorizationState, error) {
+	return s.consumeProviderCallback(ctx, providerState, binding, true)
 }
 
 func (s *Server) consumeProviderCallback(ctx context.Context, providerState, binding string, browser bool) (*storage.AuthorizationState, error) {
