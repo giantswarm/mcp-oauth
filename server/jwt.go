@@ -326,16 +326,30 @@ func actorFromJWTClaim(raw any) (*oidc.ActorClaim, error) {
 	if err != nil {
 		return nil, fmt.Errorf("actor claim: %w", err)
 	}
-	var actor oidc.ActorClaim
+	var actor *oidc.ActorClaim
 	if err := json.Unmarshal(encoded, &actor); err != nil {
 		return nil, fmt.Errorf("actor claim: %w", err)
 	}
-	for current, depth := &actor, 0; current != nil; current, depth = current.Act, depth+1 {
-		if depth >= maxActorChainDepth || current.Issuer == "" || current.Subject == "" {
-			return nil, fmt.Errorf("invalid actor claim")
+	if actor == nil {
+		return nil, errInvalidActorClaim
+	}
+	if err := checkActorChain(actor); err != nil {
+		return nil, err
+	}
+	return actor, nil
+}
+
+var errInvalidActorClaim = errors.New("invalid actor claim")
+
+// checkActorChain bounds processing of delegation history. RFC 8693 §4.1
+// does not require issuer and subject fields on every actor.
+func checkActorChain(act *oidc.ActorClaim) error {
+	for current, depth := act, 0; current != nil; current, depth = current.Act, depth+1 {
+		if depth >= maxActorChainDepth {
+			return errInvalidActorClaim
 		}
 	}
-	return &actor, nil
+	return nil
 }
 
 // logSelfIssuedJWTAccepted records a success event for audit trails. The

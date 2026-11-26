@@ -281,7 +281,7 @@ func mcpHandler(logger *slog.Logger) http.Handler {
 
 		logger.Info(
 			"MCP request",
-			"user", userInfo.Email,
+			slog.Any("user", userInfo),
 			"method", r.Method,
 			"path", r.URL.Path,
 		)
