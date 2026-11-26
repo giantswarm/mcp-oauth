@@ -18,9 +18,9 @@
 //
 // Seal and Open return [ErrIncompleteIdentity] for a missing user, issuer or
 // subject, and [ErrMissingClientID] for a user without a ClientID. These are
-// local validation errors, not OAuth error codes. A consumer may answer a
-// validated user without requestState when only the client ID is missing
-// and the operation can restart without its continuation.
+// local validation errors, not OAuth error codes. Both mean the caller cannot
+// be bound to, so the request fails: a server does not answer such a caller
+// without requestState instead.
 //
 // Open refuses a value that was changed, sealed for another user, client,
 // actor or request, expired, or sealed with a key the ring does not hold.
