@@ -16,10 +16,11 @@
 //     digest of its arguments;
 //   - an expiry.
 //
-// Seal and Open refuse a user without a ClientID with [ErrUnbound]: a token
-// that does not name one client, such as a forwarded ID token with several
-// audiences and no azp, cannot be given state. A server answers such a
-// caller without state.
+// Seal and Open return [ErrIncompleteIdentity] for a missing user, issuer or
+// subject, and [ErrMissingClientID] for a user without a ClientID. These are
+// local validation errors, not OAuth error codes. A consumer may answer a
+// validated user without requestState when only the client ID is missing
+// and the operation can restart without its continuation.
 //
 // Open refuses a value that was changed, sealed for another user, client,
 // actor or request, expired, or sealed with a key the ring does not hold.
@@ -59,9 +60,11 @@ var (
 	ErrInvalid = errors.New("requeststate: invalid state")
 	// ErrExpired is an authentic value past its expiry.
 	ErrExpired = errors.New("requeststate: expired state")
-	// ErrUnbound is a caller state cannot be bound to: no validated user, or
-	// a user without an Issuer, ID or ClientID.
-	ErrUnbound = errors.New("requeststate: a validated user with Issuer, ID and ClientID is required")
+	// ErrIncompleteIdentity means the validated user is absent or lacks an
+	// Issuer or ID. Client identity is checked separately.
+	ErrIncompleteIdentity = errors.New("requeststate: a validated user with Issuer and ID is required")
+	// ErrMissingClientID means the user has an Issuer and ID but no ClientID.
+	ErrMissingClientID = errors.New("requeststate: the validated user's ClientID is required")
 )
 
 // Sealer seals with its ring's active key and opens with any key the ring
@@ -83,7 +86,8 @@ func New(ring security.KeyRing) (*Sealer, error) {
 
 // Seal returns payload sealed for user and request, valid for ttl. user is
 // the validated caller; request identifies the originating request. Open
-// must be given the same user and request.
+// must be given the same user and request. Missing identity fields return
+// ErrIncompleteIdentity or ErrMissingClientID.
 func (s *Sealer) Seal(user *providers.UserInfo, request string, payload []byte, ttl time.Duration) (string, error) {
 	if err := checkBinding(user, request); err != nil {
 		return "", err
@@ -113,7 +117,9 @@ func (s *Sealer) Seal(user *providers.UserInfo, request string, payload []byte, 
 }
 
 // Open returns the payload of a value Seal returned for the same user and
-// request. It answers ErrInvalid or ErrExpired otherwise.
+// request. Missing identity fields return ErrIncompleteIdentity or
+// ErrMissingClientID. A value that fails verification returns ErrInvalid;
+// an authentic value past its expiry returns ErrExpired.
 func (s *Sealer) Open(user *providers.UserInfo, request, sealed string) ([]byte, error) {
 	if err := checkBinding(user, request); err != nil {
 		return nil, err
@@ -149,11 +155,14 @@ func (s *Sealer) Open(user *providers.UserInfo, request, sealed string) ([]byte,
 }
 
 func checkBinding(user *providers.UserInfo, request string) error {
-	if user == nil || user.Issuer == "" || user.ID == "" || user.ClientID == "" {
-		return ErrUnbound
+	if user == nil || user.Issuer == "" || user.ID == "" {
+		return ErrIncompleteIdentity
 	}
 	if request == "" {
 		return errors.New("requeststate: the originating request is required")
+	}
+	if user.ClientID == "" {
+		return ErrMissingClientID
 	}
 	return nil
 }
