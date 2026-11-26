@@ -162,10 +162,49 @@ func TestSealRefuses(t *testing.T) {
 	}
 }
 
-func TestOpenRefusesUserWithoutClient(t *testing.T) {
-	s := testSealer(t, testKey(1))
-	sealed, err := s.Seal(alice(), request, nil, time.Minute)
+func TestSealOpenIdentityErrors(t *testing.T) {
+	sealer := testSealer(t, testKey(1))
+	sealed, err := sealer.Seal(alice(), request, nil, time.Minute)
 	require.NoError(t, err)
-	_, err = s.Open(&providers.UserInfo{Issuer: "https://dex.example", ID: "alice"}, request, sealed)
-	require.Error(t, err)
+	for name, test := range map[string]struct {
+		user *providers.UserInfo
+		want error
+	}{
+		"no user":               {nil, ErrIncompleteIdentity},
+		"no issuer":             {&providers.UserInfo{ID: "alice", ClientID: "cursor"}, ErrIncompleteIdentity},
+		"no subject":            {&providers.UserInfo{Issuer: "https://dex.example", ClientID: "cursor"}, ErrIncompleteIdentity},
+		"no client":             {&providers.UserInfo{Issuer: "https://dex.example", ID: "alice"}, ErrMissingClientID},
+		"no identity or client": {&providers.UserInfo{}, ErrIncompleteIdentity},
+	} {
+		t.Run(name, func(t *testing.T) {
+			value, err := sealer.Seal(test.user, request, nil, time.Minute)
+			require.ErrorIs(t, err, test.want)
+			require.Empty(t, value)
+			payload, err := sealer.Open(test.user, request, sealed)
+			require.ErrorIs(t, err, test.want)
+			require.Nil(t, payload)
+			if test.want == ErrIncompleteIdentity {
+				require.NotErrorIs(t, err, ErrMissingClientID)
+			}
+		})
+	}
+}
+
+func TestMissingRequestIsNotMissingClientID(t *testing.T) {
+	sealer := testSealer(t, testKey(1))
+	sealed, err := sealer.Seal(alice(), request, nil, time.Minute)
+	require.NoError(t, err)
+	for name, user := range map[string]*providers.UserInfo{
+		"complete identity": alice(),
+		"missing client":    {Issuer: "https://dex.example", ID: "alice"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := sealer.Seal(user, "", nil, time.Minute)
+			require.Error(t, err)
+			require.NotErrorIs(t, err, ErrMissingClientID)
+			_, err = sealer.Open(user, "", sealed)
+			require.Error(t, err)
+			require.NotErrorIs(t, err, ErrMissingClientID)
+		})
+	}
 }
