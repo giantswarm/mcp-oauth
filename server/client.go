@@ -57,7 +57,7 @@ func (s *Server) RegisterClient(ctx context.Context, clientName, clientType, tok
 
 // RegisterClientResult carries both the client secret and the per-client
 // registration access token issued at registration time (RFC 7591 §3.2.1 /
-// RFC 7592 §2). The registration token is returned in plaintext exactly once
+// RFC 7592 §2). The registration access token is returned in plaintext exactly once
 // and must be included in the DCR response by the handler.
 type RegisterClientResult struct {
 	Client            *storage.Client
@@ -329,10 +329,10 @@ func (s *Server) DeleteClient(ctx context.Context, clientID string) error {
 }
 
 // CanRegisterWithTrustedScheme checks if a registration request can proceed without
-// a registration access token based on the redirect URIs using trusted custom URI schemes.
+// an InitialAccessToken based on the redirect URIs using trusted custom URI schemes.
 //
 // This enables compatibility with MCP clients like Cursor that don't support
-// registration tokens, while maintaining security for other clients.
+// initial access tokens, while maintaining security for other clients.
 //
 // Security: Custom URI schemes are harder to hijack than web URLs, but protection
 // varies by platform (strong on Android App Links, moderate on macOS/Windows/iOS,
@@ -399,7 +399,7 @@ func (s *Server) CanRegisterWithTrustedScheme(redirectURIs []string) (allowed bo
 }
 
 // CanRegisterWithTrustedRedirectURI reports whether a registration request can
-// proceed without a RegistrationAccessToken because every redirect URI in the
+// proceed without an InitialAccessToken because every redirect URI in the
 // request matches an entry in TrustedPublicRegistrationRedirectURIs after RFC 3986
 // normalization. Strict matching is the only mode: a permissive variant (matching
 // any URI when at least one matches) would allow an attacker to attach arbitrary

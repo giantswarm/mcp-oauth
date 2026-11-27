@@ -20,7 +20,9 @@
 //
 //   - OAUTH_ENABLE_CLIENT_ID_METADATA_DOCUMENTS (default false) - enable URL-based client IDs
 //
-//   - OAUTH_REGISTRATION_ACCESS_TOKEN         — registration bearer; see _FILE note below
+//   - OAUTH_INITIAL_ACCESS_TOKEN              — RFC 7591 initial access token required at
+//     /oauth/register; see _FILE note below. OAUTH_REGISTRATION_ACCESS_TOKEN is its deprecated
+//     name and logs a warning
 //
 //   - OAUTH_ENCRYPTION_KEY                    — 32-byte AES-GCM key, base64 (preferred) or hex
 //
@@ -131,7 +133,7 @@
 // (explicit path > env). The file's contents are trimmed of a single trailing
 // newline (projected-volume files often have one).
 //
-//   - OAUTH_REGISTRATION_ACCESS_TOKEN_FILE
+//   - OAUTH_INITIAL_ACCESS_TOKEN_FILE (deprecated: OAUTH_REGISTRATION_ACCESS_TOKEN_FILE)
 //   - OAUTH_ENCRYPTION_KEY_FILE
 //   - OAUTH_REQUEST_STATE_KEY_FILE
 //   - OAUTH_REQUEST_STATE_PREVIOUS_KEY_FILE

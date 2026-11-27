@@ -50,9 +50,22 @@ based on OAuth concepts; they are not a standardized metadata document format.
 The tables below list every variable `SettingsFromEnv` reads, with the default
 prefix `OAUTH_`. Unset variables keep the `server.Config` default. Each secret,
 marked "secret", also reads `<NAME>_FILE`, a path to a mounted file that wins over
-the variable; the file loses one trailing newline. A secret file readable by group
-or others logs a warning, or is refused with
+the variable; the file loses one trailing newline. Group/other write access and
+world read access log a warning, or are refused with
 `OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS=true` (always read without a prefix).
+Group read access passes only when another user owns the file and its group is
+one of the server process's effective or supplementary groups. Unknown ownership
+does not qualify for this exemption.
+
+Every member of an exempted group must be trusted to read the secret. The check
+uses process group membership, including groups inherited from the container
+image; it does not identify a pod's `fsGroup` or evaluate ACLs and capabilities.
+
+Kubernetes Secret volumes [default to mode `0644`](https://kubernetes.io/docs/tasks/inject-data-application/distribute-credentials-secure/#set-posix-permissions-for-secret-keys).
+For a root-owned Secret volume, `defaultMode: 0400` together with the pod's
+`fsGroup` produces group-readable `0440` files that a non-root server in that
+group can read. The kubelet adds group access without removing existing world
+access, so the `0644` default still warns or fails strict mode.
 
 **Server**
 
@@ -97,10 +110,10 @@ or others logs a warning, or is refused with
 
 | Variable | Behavior |
 | --- | --- |
-| `OAUTH_REGISTRATION_ACCESS_TOKEN` | Secret. Bearer required at `/oauth/register` |
-| `OAUTH_ALLOW_PUBLIC_CLIENT_REGISTRATION` | Allow registration without the registration token and of public clients; default `false`, for development only |
-| `OAUTH_TRUSTED_REDIRECT_SCHEMES` | Comma-separated custom URI schemes (for example `cursor,vscode`) a client may register without the registration token |
-| `OAUTH_TRUSTED_REDIRECT_URIS` | Comma-separated HTTPS redirect URIs a client may register without the registration token |
+| `OAUTH_INITIAL_ACCESS_TOKEN` | Secret. The RFC 7591 initial access token required at `/oauth/register`. `OAUTH_REGISTRATION_ACCESS_TOKEN` is its deprecated name and logs a warning. |
+| `OAUTH_ALLOW_PUBLIC_CLIENT_REGISTRATION` | Allow registration without the initial access token and of public clients; default `false`, for development only |
+| `OAUTH_TRUSTED_REDIRECT_SCHEMES` | Comma-separated custom URI schemes (for example `cursor,vscode`) a client may register without the initial access token |
+| `OAUTH_TRUSTED_REDIRECT_URIS` | Comma-separated HTTPS redirect URIs a client may register without the initial access token |
 | `OAUTH_RESTRICT_REGISTRATION_TO_LOOPBACK_REDIRECT_URIS` | Accept only loopback redirect URIs (`http://127.0.0.1`, `http://[::1]`, `http://localhost`) at `/oauth/register`; other redirect URIs get `invalid_redirect_uri`; default `false` |
 | `OAUTH_MAX_CLIENTS_PER_IP` | Registrations allowed per client IP; default `10` |
 | `OAUTH_TRUSTED_CLIENTS` | JSON array of `{client_id, redirect_uris}` clients that skip the consent page |
@@ -219,7 +232,7 @@ the two roles RFC 6749 defines and renders it into the variables above. Secrets 
 | `resourceServer.requireResourceAccessTokens` | accept only tokens for this resource | `OAUTH_REQUIRE_RESOURCE_ACCESS_TOKENS` |
 | `authorizationServer.enabled`, `issuer` | this server's own authorization server | `OAUTH_ENABLE_AUTHORIZATION_SERVER`, `OAUTH_ISSUER` |
 | `authorizationServer.upstream` | the OpenID Provider people sign in with: type, issuer, client, scopes, connector, CA | `OAUTH_PROVIDER`, `OAUTH_DEX_*`, `OAUTH_GOOGLE_*`, `OAUTH_GITHUB_*` |
-| `authorizationServer.dynamicClientRegistration` | `enabled`, `initialAccessToken` | `OAUTH_ENABLE_DYNAMIC_CLIENT_REGISTRATION`, `OAUTH_REGISTRATION_ACCESS_TOKEN` |
+| `authorizationServer.dynamicClientRegistration` | `enabled`, `initialAccessToken` | `OAUTH_ENABLE_DYNAMIC_CLIENT_REGISTRATION`, `OAUTH_INITIAL_ACCESS_TOKEN` |
 | `authorizationServer.clientIDMetadataDocuments` | `enabled` | `OAUTH_ENABLE_CLIENT_ID_METADATA_DOCUMENTS` |
 | `authorizationServer.endpoints` | introspection, userinfo and client management; revocation is always served | `OAUTH_ENABLE_*_ENDPOINT` |
 | `authorizationServer.storage` | memory or Valkey; Valkey requires an encryption key | `OAUTH_STORAGE_BACKEND`, `OAUTH_VALKEY_*`, `OAUTH_ENCRYPTION_KEY` |
@@ -722,8 +735,8 @@ config := &server.Config{
     // Require authentication for /oauth/register
     AllowPublicClientRegistration: false,
 
-    // Registration access token (share only with trusted developers)
-    RegistrationAccessToken: os.Getenv("REGISTRATION_TOKEN"),
+    // Initial access token (share only with trusted developers)
+    InitialAccessToken: os.Getenv("INITIAL_ACCESS_TOKEN"),
 
     // Accept only loopback redirect URIs (RFC 8252 §7.3) at /oauth/register
     RestrictRegistrationToLoopbackRedirectURIs: true,

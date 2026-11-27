@@ -75,8 +75,7 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 		return nil, err
 	}
 
-	cfg.RegistrationAccessToken, err = optionalSecret(prefix + "REGISTRATION_ACCESS_TOKEN")
-	if err != nil {
+	if cfg.InitialAccessToken, err = initialAccessToken(prefix); err != nil {
 		return nil, err
 	}
 
@@ -389,9 +388,9 @@ func optionalPositiveInt(name string) (int, error) {
 // are set, the _FILE variant wins. A single trailing newline is trimmed from
 // file contents (projected-volume files commonly carry one).
 //
-// File mode is checked: a `_FILE` whose group or world readable bits are set
-// emits a WARN on [slog.Default]. Set OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS=true
-// to upgrade the warning into an error.
+// File mode is checked against [secretFileTooOpen]. Unsafe permissions emit a
+// WARN on [slog.Default]. Set OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS=true to
+// upgrade the warning into an error.
 func optionalSecret(name string) (string, error) {
 	if raw := os.Getenv(name + "_FILE"); raw != "" {
 		path := filepath.Clean(raw)
@@ -408,22 +407,22 @@ func optionalSecret(name string) (string, error) {
 }
 
 // checkSecretFilePermissions warns (or errors, under OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS)
-// when a secret file is readable by anyone other than the owner. CWE-732.
+// when a secret file's mode violates [secretFileTooOpen]. CWE-732.
 func checkSecretFilePermissions(name, path string) error {
 	info, err := os.Stat(path) // #nosec G703 -- the operator's <NAME>_FILE mounted-secret path, checked by design
 	if err != nil {
-		// Read will surface the same error with full context; bail silently here.
+		// optionalSecret reports file access failures when reading the file.
 		return nil
 	}
 	perm := info.Mode().Perm()
-	if perm&0o044 == 0 {
+	if !secretFileTooOpen(perm, fileOwnerOf(info), processCredentials()) {
 		return nil
 	}
 	mustFail := strings.EqualFold(os.Getenv("OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS"), "true")
 	if mustFail {
-		return fmt.Errorf("%s_FILE %q is group/world readable (mode %#o); restrict to 0600 or set OAUTH_REQUIRE_TIGHT_SECRET_PERMISSIONS=false", name, path, perm)
+		return fmt.Errorf("%s_FILE %q has unsafe permissions (mode %#o); restrict to owner-only access or trusted group read access without group/other write permissions", name, path, perm)
 	}
-	slog.Default().Warn("Secret file is group/world readable — restrict to 0600 to prevent local-account exfiltration",
+	slog.Default().Warn("Secret file has unsafe permissions; restrict to owner-only access or trusted group read access without group/other write permissions",
 		"env_var", name+"_FILE",
 		"path", path,
 		"mode", fmt.Sprintf("%#o", perm),
@@ -442,4 +441,24 @@ func splitAndTrim(s, sep string) []string {
 		}
 	}
 	return out
+}
+
+// initialAccessToken reads INITIAL_ACCESS_TOKEN (or its _FILE), else the
+// deprecated REGISTRATION_ACCESS_TOKEN (or its _FILE). Setting the deprecated
+// variable logs a warning even when INITIAL_ACCESS_TOKEN wins.
+func initialAccessToken(prefix string) (string, error) {
+	name, deprecated := prefix+"INITIAL_ACCESS_TOKEN", prefix+"REGISTRATION_ACCESS_TOKEN"
+	token, err := optionalSecret(name)
+	if err != nil {
+		return "", err
+	}
+	if os.Getenv(deprecated) == "" && os.Getenv(deprecated+"_FILE") == "" {
+		return token, nil
+	}
+	if token != "" {
+		slog.Default().Warn("DEPRECATED: "+deprecated+" is ignored because "+name+" is set; remove it", "replacement", name)
+		return token, nil
+	}
+	slog.Default().Warn("DEPRECATED: "+deprecated+" is set; set "+name+" (RFC 7591 initial access token) instead", "replacement", name)
+	return optionalSecret(deprecated)
 }

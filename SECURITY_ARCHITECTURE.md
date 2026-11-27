@@ -1101,7 +1101,7 @@ done
 
 - [ ] Enable HTTPS for OAuth server (`Issuer` must be `https://`)
 - [ ] Validate all redirect URIs use HTTPS (except localhost)
-- [ ] Configure `RegistrationAccessToken` for dynamic client registration
+- [ ] Configure `InitialAccessToken` for dynamic client registration
 - [ ] Enable audit logging (`Auditor` interface)
 - [ ] Set up security monitoring for suspicious events
 - [ ] Rotate client secrets periodically

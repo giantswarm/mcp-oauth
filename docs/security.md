@@ -55,7 +55,7 @@ Before deploying to production, verify these settings:
 - [ ] **Token Encryption**: Pass `memory.WithEncryptor(enc)` / `valkey.WithEncryptor(enc)` to the store constructor for at-rest encryption
 - [ ] **Audit Logging**: Set up `Auditor` for security event logging
 - [ ] **Rate Limiting**: Configure IP, user, and client registration limits
-- [ ] **Registration Protected**: Set `RegistrationAccessToken` or disable registration
+- [ ] **Registration Protected**: Set `InitialAccessToken` or disable registration
 - [ ] **Proxy Configured**: Set `TrustProxy` and `TrustedProxyCount` if behind proxy
 - [ ] **Production Mode**: Set `ProductionMode=true` for strict redirect URI validation
 
@@ -274,8 +274,8 @@ config := &server.Config{
     // Require authentication and deny public clients
     AllowPublicClientRegistration: false,
 
-    // Registration token (generate: openssl rand -base64 32)
-    RegistrationAccessToken: os.Getenv("REGISTRATION_TOKEN"),
+    // Initial access token (generate: openssl rand -base64 32)
+    InitialAccessToken: os.Getenv("INITIAL_ACCESS_TOKEN"),
 
     // Limit per IP
     MaxClientsPerIP: 10,
@@ -289,13 +289,13 @@ With this configuration:
 
 ### Trusted Custom URI Schemes (Cursor/IDE Compatibility)
 
-For MCP clients like Cursor that don't support registration tokens, you can allow unauthenticated registration **only** for clients using trusted custom URI schemes:
+For MCP clients like Cursor that don't support initial access tokens, you can allow unauthenticated registration **only** for clients using trusted custom URI schemes:
 
 ```go
 config := &server.Config{
     // Require token for most clients
     AllowPublicClientRegistration: false,
-    RegistrationAccessToken: os.Getenv("REGISTRATION_TOKEN"),
+    InitialAccessToken:            os.Getenv("INITIAL_ACCESS_TOKEN"),
 
     // Allow unauthenticated registration for IDE clients
     TrustedPublicRegistrationSchemes: []string{
@@ -382,7 +382,7 @@ For well-known SaaS MCP clients (e.g. Claude.ai) whose redirect URI is fixed, op
 ```go
 config := &server.Config{
     AllowPublicClientRegistration: false,
-    RegistrationAccessToken:       os.Getenv("REGISTRATION_TOKEN"),
+    InitialAccessToken:            os.Getenv("INITIAL_ACCESS_TOKEN"),
 
     TrustedPublicRegistrationRedirectURIs: []string{
         "https://claude.ai/api/mcp/auth_callback",
@@ -610,6 +610,8 @@ For maximum security, keep DNS validation enabled (`DNSValidation=true`, `DNSVal
 ## SSO Token Forwarding
 
 `TrustedAudiences` lists the client IDs whose upstream ID tokens this server accepts as forwarded identities: through `Server.AcceptForwardedIDToken`, and as a bearer in `Server.ValidateToken` unless `Config.RequireResourceAccessTokens` is set.
+
+ID-token bearer acceptance is deprecated and remains available during the migration to resource access tokens. At startup, `DEPRECATED:` warnings name `TrustedAudiences` when `RequireResourceAccessTokens` is false, `TrustedIssuer.OpenIDProvider` when enabled, and `TrustedIssuer.AcceptedTypHeaders` when it includes the empty string (a missing `typ`). Configuration supplied through functional options is included. The warnings do not change token acceptance. Before adopting mcp-oauth 2.0.0, migrate callers to access tokens issued for each resource, set `RequireResourceAccessTokens`, remove `TrustedAudiences` and `OpenIDProvider`, and restrict accepted bearer types to `at+jwt`. Do not enable enforcement while callers still forward ID tokens.
 
 ### Use Case: MCP Aggregator Architecture
 

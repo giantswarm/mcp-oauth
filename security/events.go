@@ -63,7 +63,7 @@ const (
 
 	// EventClientRegisteredViaTrustedScheme is logged when a client is registered without a token
 	// because it uses only trusted custom URI schemes (e.g., cursor://, vscode://).
-	// This enables compatibility with MCP clients that don't support registration tokens.
+	// This enables compatibility with MCP clients that don't support initial access tokens.
 	EventClientRegisteredViaTrustedScheme = "client_registered_via_trusted_scheme"
 
 	// EventClientRegisteredViaTrustedRedirectURI is logged when a client is registered without a token
