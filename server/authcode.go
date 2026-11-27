@@ -411,6 +411,10 @@ func (s *Server) BeginAuthorization(ctx context.Context, authorizationRequest *A
 }
 
 func (s *Server) authorizationScopes(scope string, options *providers.AuthorizationURLOptions) []string {
+	return s.addRequiredUpstreamScopes(s.providerAuthorizationScopes(scope, options))
+}
+
+func (s *Server) providerAuthorizationScopes(scope string, options *providers.AuthorizationURLOptions) []string {
 	requested := helpers.SplitScopes(scope)
 	if resolver, ok := s.provider.(providers.AuthorizationScopeResolver); ok {
 		return resolver.AuthorizationScopes(requested, options)
@@ -419,6 +423,22 @@ func (s *Server) authorizationScopes(scope string, options *providers.Authorizat
 		return s.provider.DefaultScopes()
 	}
 	return requested
+}
+
+// addRequiredUpstreamScopes appends each scope of Config.RequiredUpstreamScopes
+// that scopes does not contain yet. It never writes to the slice it gets,
+// which a provider's DefaultScopes may share.
+func (s *Server) addRequiredUpstreamScopes(scopes []string) []string {
+	if len(s.Config.RequiredUpstreamScopes) == 0 {
+		return scopes
+	}
+	scopes = slices.Clip(scopes)
+	for _, required := range s.Config.RequiredUpstreamScopes {
+		if required != "" && !slices.Contains(scopes, required) {
+			scopes = append(scopes, required)
+		}
+	}
+	return scopes
 }
 
 func sameScopes(left, right []string) bool {
