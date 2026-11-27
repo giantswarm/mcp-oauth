@@ -63,6 +63,9 @@ const (
 	RedirectURIErrorCategoryInvalidFormat   = "invalid_format"
 	RedirectURIErrorCategoryFragment        = "fragment_not_allowed"
 	RedirectURIErrorCategoryUnspecifiedAddr = "unspecified_address"
+	// RedirectURIErrorCategoryLoopbackRequired marks a redirect URI that is
+	// not loopback while RestrictRegistrationToLoopbackRedirectURIs is set.
+	RedirectURIErrorCategoryLoopbackRequired = "loopback_required"
 )
 
 // ValidateRedirectURIForRegistration performs comprehensive security validation
@@ -78,8 +81,14 @@ const (
 // - Production SaaS: Strict validation (default)
 // - Internal/VPN: Allow private IPs
 // - Development: Relaxed validation
+//
+// With RestrictRegistrationToLoopbackRedirectURIs, only http and https
+// redirect URIs on a loopback host are accepted.
 func (s *Server) ValidateRedirectURIForRegistration(ctx context.Context, redirectURI string) error {
 	err := s.validateRedirectURIInternal(ctx, redirectURI)
+	if err == nil && s.Config.RestrictRegistrationToLoopbackRedirectURIs {
+		err = validateLoopbackRedirectURI(redirectURI)
+	}
 	if err != nil {
 		// Record security metric for monitoring/alerting
 		category := GetRedirectURIErrorCategory(err)
@@ -88,6 +97,24 @@ func (s *Server) ValidateRedirectURIForRegistration(ctx context.Context, redirec
 		}
 	}
 	return err
+}
+
+// validateLoopbackRedirectURI refuses a redirect URI that is not http or
+// https on a loopback host (localhost, 127.0.0.0/8, [::1]; RFC 8252 §7.3).
+func validateLoopbackRedirectURI(redirectURI string) error {
+	parsed, err := url.Parse(redirectURI)
+	if err == nil {
+		scheme := strings.ToLower(parsed.Scheme)
+		if (scheme == SchemeHTTP || scheme == SchemeHTTPS) && isLoopbackAddress(parsed.Hostname()) {
+			return nil
+		}
+	}
+	return newRedirectURISecurityError(
+		RedirectURIErrorCategoryLoopbackRequired,
+		redirectURI,
+		"RestrictRegistrationToLoopbackRedirectURIs=true requires a loopback redirect URI",
+		"redirect_uri: only loopback redirect URIs (http://127.0.0.1, http://[::1], http://localhost) may be registered",
+	)
 }
 
 // validateRedirectURIInternal performs the actual redirect URI validation.

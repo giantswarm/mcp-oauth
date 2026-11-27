@@ -1422,7 +1422,7 @@ func (s *Server) generateAndStoreTokens(ctx context.Context, authCode *storage.A
 	// Per OpenID Connect Core 1.0 Section 3.1.3.3, the id_token is REQUIRED in token responses
 	// for OIDC flows. This enables silent re-authentication with id_token_hint and login_hint.
 	idToken := ExtractIDToken(authCode.ProviderToken)
-	if idToken != "" {
+	if idToken != "" && !s.Config.OmitIDTokenInTokenResponse {
 		tokenResponse = tokenResponse.WithExtra(map[string]any{
 			"id_token": idToken,
 		})

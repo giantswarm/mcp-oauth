@@ -89,16 +89,15 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 	}
 	cfg.ForwardedSessionIdentity = server.ForwardedSessionIdentity(os.Getenv(prefix + "FORWARDED_SESSION_IDENTITY"))
 
-	if err := loadTrustedAllowlistsFromEnv(prefix, cfg); err != nil {
-		return nil, err
-	}
-
-	if err := loadConsentFromEnv(prefix, cfg); err != nil {
-		return nil, err
-	}
-
-	if err := loadResourceServerFromEnv(prefix, cfg); err != nil {
-		return nil, err
+	for _, load := range []func(string, *server.Config) error{
+		loadTrustedAllowlistsFromEnv,
+		loadConsentFromEnv,
+		loadResourceServerFromEnv,
+		loadClientControlsFromEnv,
+	} {
+		if err := load(prefix, cfg); err != nil {
+			return nil, err
+		}
 	}
 
 	allowLoopbackRedirectURIs, err := optionalBool(prefix+"ALLOW_LOCALHOST_REDIRECT_URIS", true)
@@ -111,6 +110,18 @@ func FromEnvWithPrefix(prefix string) (*server.Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// loadClientControlsFromEnv loads OMIT_ID_TOKEN_IN_TOKEN_RESPONSE and
+// RESTRICT_REGISTRATION_TO_LOOPBACK_REDIRECT_URIS into cfg.
+func loadClientControlsFromEnv(prefix string, cfg *server.Config) error {
+	var err error
+	cfg.OmitIDTokenInTokenResponse, err = optionalBool(prefix+"OMIT_ID_TOKEN_IN_TOKEN_RESPONSE", false)
+	if err != nil {
+		return err
+	}
+	cfg.RestrictRegistrationToLoopbackRedirectURIs, err = optionalBool(prefix+"RESTRICT_REGISTRATION_TO_LOOPBACK_REDIRECT_URIS", false)
+	return err
 }
 
 // loadTrustedAllowlistsFromEnv loads the comma-separated allowlist env vars

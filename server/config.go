@@ -211,6 +211,16 @@ type Config struct {
 	// Default: true (secure by default)
 	AllowRefreshTokenRotation bool // default: true
 
+	// OmitIDTokenInTokenResponse leaves the upstream provider's id_token out of
+	// the token responses of the authorization_code and refresh_token grants.
+	// The server still stores the provider token with its id_token, so the
+	// host reads it server-side (ExtractIDToken, ProviderIDTokenFromContext).
+	// The client receives only the tokens this server issues. The token passed
+	// to the SessionCreationHandler is the client's token response, so it
+	// carries no id_token either.
+	// Default: false (the provider's id_token is returned to the client)
+	OmitIDTokenInTokenResponse bool
+
 	// TrustProxy enables trusting X-Forwarded-For and X-Real-IP headers
 	// WARNING: Only enable if behind a trusted reverse proxy (nginx, HAProxy, etc.)
 	// When false, uses direct connection IP (secure by default)
@@ -595,6 +605,17 @@ type Config struct {
 	//
 	// Deprecated: remove it; it is ignored whatever its value.
 	AllowLocalhostRedirectURIs bool
+
+	// RestrictRegistrationToLoopbackRedirectURIs accepts only http and https
+	// redirect URIs on a loopback host (localhost, 127.0.0.0/8, [::1]) in
+	// Dynamic Client Registration (RFC 7591) and client updates (RFC 7592).
+	// A registration with any other redirect URI is refused with
+	// invalid_redirect_uri. Clients that are not registered at /oauth/register
+	// (Client ID Metadata Documents, TrustedClients, seeded clients) are not
+	// affected.
+	//
+	// Default: false
+	RestrictRegistrationToLoopbackRedirectURIs bool
 
 	// AllowPrivateIPRedirectURIs accepts redirect URIs on every host that
 	// resolves to a private IPv4 (RFC 1918) or IPv6 unique-local (RFC 4193)

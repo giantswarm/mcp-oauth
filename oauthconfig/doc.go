@@ -43,11 +43,17 @@
 //
 //   - OAUTH_TRUST_PROXY                       (default false)
 //
+//   - OAUTH_OMIT_ID_TOKEN_IN_TOKEN_RESPONSE   (default false) — leave the upstream id_token out of
+//     token responses (server.Config.OmitIDTokenInTokenResponse)
+//
 //   - OAUTH_TRUSTED_AUDIENCES                 — comma-separated audience list
 //
 //   - OAUTH_ALLOW_LOCALHOST_REDIRECT_URIS     deprecated, no effect: loopback redirect URIs are always allowed (RFC 8252 §7.3); false logs a warning
 //
-//   - OAUTH_TRUSTED_REDIRECT_SCHEMES          — comma-separated URI schemes (e.g. "cursor,vscode")
+//   - OAUTH_RESTRICT_REGISTRATION_TO_LOOPBACK_REDIRECT_URIS (default false) — accept only loopback
+//     redirect URIs at /oauth/register (server.Config.RestrictRegistrationToLoopbackRedirectURIs)
+//
+//   - OAUTH_TRUSTED_REDIRECT_SCHEMES         — comma-separated URI schemes (e.g. "cursor,vscode")
 //     populates server.Config.TrustedPublicRegistrationSchemes
 //
 //   - OAUTH_ALLOW_PRIVATE_IP_CLIENT_METADATA_HOSTS — deprecated: comma-separated hostnames whose CIMD
