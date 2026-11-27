@@ -18,9 +18,12 @@
 //
 // Seal and Open return [ErrIncompleteIdentity] for a missing user, issuer or
 // subject, and [ErrMissingClientID] for a user without a ClientID. These are
-// local validation errors, not OAuth error codes. A consumer may answer a
-// validated user without requestState when only the client ID is missing
-// and the operation can restart without its continuation.
+// local validation errors, not OAuth error codes. Both prevent the sealer
+// from satisfying its binding requirements. An operation that requires
+// sealed state must propagate them. A missing client ID does not by itself
+// mean the user is unauthenticated. The consumer validates credentials and
+// decides whether an operation requires a sealed continuation; MCP permits
+// requestState to be omitted.
 //
 // Open refuses a value that was changed, sealed for another user, client,
 // actor or request, expired, or sealed with a key the ring does not hold.
