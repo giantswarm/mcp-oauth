@@ -200,7 +200,7 @@ func TestConsent_TerminalCallbacksReleaseBrowserSlots(t *testing.T) {
 				expectedStatus := http.StatusInternalServerError
 				if failure == "provider error" {
 					callbackURL = "/oauth/callback?state=" + providerState + "&error=access_denied"
-					expectedStatus = http.StatusBadRequest
+					expectedStatus = http.StatusFound
 				}
 				response := flow.get(callbackURL)
 				require.Equal(t, expectedStatus, response.Code)
@@ -239,7 +239,8 @@ func TestConsent_ProviderErrorRequiresBrowserBinding(t *testing.T) {
 		require.NoError(t, err)
 	}
 	response := flow.get(callbackURL)
-	require.Contains(t, response.Body.String(), "access_denied")
+	require.Equal(t, http.StatusFound, response.Code)
+	require.Equal(t, constants.ErrorCodeAccessDenied, mustParseURL(t, response.Header().Get("Location")).Query().Get("error"))
 	require.Nil(t, flow.jar[flow.h.consent.flowName(state)])
 	replay := flow.get(callbackURL)
 	require.Contains(t, replay.Body.String(), "invalid_request")

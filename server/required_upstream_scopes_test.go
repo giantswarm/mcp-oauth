@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -57,7 +56,7 @@ func newRequiredScopesDexProvider(t *testing.T) *dex.Provider {
 // returns the scope parameter of the upstream authorization URL.
 func upstreamScope(t *testing.T, required []string, clientScope string) string {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
 	store := memory.New()
 	t.Cleanup(store.Stop)
 

@@ -528,7 +528,7 @@ type ClientRevocationStore interface {
 }
 
 // ClientRegistrationUpdater atomically replaces a registration only if its
-// registration token and secret hashes still match the authenticated version.
+// registration access token and secret hashes still match the authenticated version.
 // A stale or deleted registration returns ErrInvalidClientCredentials.
 type ClientRegistrationUpdater interface {
 	UpdateClientRegistration(ctx context.Context, client *Client, registrationTokenHash, clientSecretHash string) error

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -223,6 +224,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	refreshToken := r.Form.Get(grantTypeRefreshToken)
 	clientID := r.Form.Get("client_id")
 	resource := r.Form.Get("resource")
+	requestedScope := strings.Fields(r.Form.Get("scope"))
 
 	if refreshToken == "" {
 		h.recordTokenFailure(r.Context(), grantTypeRefreshToken, constants.ErrorCodeInvalidRequest)
@@ -264,7 +266,9 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 		h.writeTokenDPoPError(w, r, grantTypeRefreshToken, clientID, span, startTime, err)
 		return
 	}
-	tokenResponse, err := h.server.RefreshAccessTokenWithDPoP(r.Context(), refreshToken, client, resource, dpopJKT)
+	tokenResponse, scope, err := h.server.RefreshAccessTokenWithOptions(r.Context(), refreshToken, client, server.RefreshOptions{
+		Resource: resource, Thumbprint: dpopJKT, Scope: requestedScope,
+	})
 	if err != nil {
 		if errors.Is(err, server.ErrStorageUnavailable) {
 			h.writeTokenStorageUnavailable(w, r, grantTypeRefreshToken, span, startTime, err)
@@ -300,8 +304,7 @@ func (h *Handler) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request
 	h.recordHTTPMetrics(r.Context(), endpointToken, http.MethodPost, http.StatusOK, startTime)
 	instrumentation.SetSpanSuccess(span)
 
-	// Return tokens
-	h.writeTokenResponse(w, tokenResponse, "")
+	h.writeTokenResponse(w, tokenResponse, scope)
 }
 
 // authenticateRefreshTokenClient authenticates the client for refresh token grant.

@@ -45,7 +45,7 @@ func TestServer_New_EmitsNoInfo(t *testing.T) {
 	_, err := New(
 		mock.NewProvider(),
 		memory.New(), memory.New(), memory.New(),
-		&Config{Issuer: "https://oauth.example.com", RegistrationAccessToken: "tok"},
+		&Config{Issuer: "https://oauth.example.com", InitialAccessToken: "tok"},
 		logger,
 	)
 	require.NoError(t, err)
@@ -59,8 +59,8 @@ func TestServer_New_EmitsNoInfo(t *testing.T) {
 func TestServer_LogValue_ExposesEffectiveConfig(t *testing.T) {
 	setup := newTestServerSetup(false)
 	srv, err := setup.createServer(&Config{
-		Issuer:                  "https://oauth.example.com",
-		RegistrationAccessToken: "tok",
+		Issuer:             "https://oauth.example.com",
+		InitialAccessToken: "tok",
 	})
 	require.NoError(t, err)
 

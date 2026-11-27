@@ -26,6 +26,41 @@ func parseIssuedClaims(t *testing.T, token string, pub any) rfc9068Claims {
 	return private
 }
 
+func TestSelfIssuedExchange_PreservesActorWithoutIssuer(t *testing.T) {
+	for _, extend := range []bool{false, true} {
+		t.Run(fmt.Sprintf("extend=%t", extend), func(t *testing.T) {
+			service, _ := newActorExchangeServer(t)
+			service.subjectValidators = map[string]SubjectTokenValidator{
+				SubjectTokenTypeIDToken: &stubTokenValidator{byToken: map[string]*SubjectIdentity{
+					"subject-token": {Subject: testSubject, Issuer: testIssuer, Claims: &oidc.IDTokenClaims{
+						Act: &oidc.ActorClaim{Subject: "prior-agent"},
+					}},
+					"actor-token": {Subject: "current-agent", Issuer: actorIssuerURL},
+				}},
+			}
+			exchange := SubjectExchange{
+				Subject:  TypedToken{Token: "subject-token", Type: SubjectTokenTypeIDToken},
+				Resource: service.Config.GetResourceIdentifier(), Scope: "read",
+			}
+			if extend {
+				exchange.Actor = TypedToken{Token: "actor-token", Type: SubjectTokenTypeIDToken}
+			}
+			result, err := service.SelfIssuedExchange(t.Context(), SelfIssuedExchangeRequest{
+				ClientID: registerExchangeClient(t, service), SubjectExchange: exchange,
+			})
+			require.NoError(t, err)
+			identity, err := service.ValidateToken(t.Context(), result.AccessToken)
+			require.NoError(t, err)
+			require.Equal(t, testSubject, identity.ID)
+			expected := []oidc.ActorClaim{{Subject: "prior-agent"}}
+			if extend {
+				expected = append([]oidc.ActorClaim{{Issuer: actorIssuerURL, Subject: "current-agent"}}, expected...)
+			}
+			require.Equal(t, expected, identity.ActorChain)
+		})
+	}
+}
+
 // TestSelfIssuedExchange_NestsPriorActorChain asserts a delegated exchange nests
 // the actor already on the subject token (RFC 8693 §4.1) beneath the new actor,
 // so a multi-hop A2A chain is preserved rather than overwritten.

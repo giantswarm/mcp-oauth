@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 )
 
 func TestSelfIssuedJWTIdentityIncludesValidatedDelegation(t *testing.T) {
@@ -22,11 +24,24 @@ func TestSelfIssuedJWTIdentityIncludesValidatedDelegation(t *testing.T) {
 	for _, claims := range []map[string]any{
 		{"iss": "https://auth.example.test"},
 		{"sub": "person", "act": "invalid"},
-		{"sub": "person", "act": map[string]any{"sub": "agent"}},
+		{"iss": "https://auth.example.test", "sub": "person", "act": nil},
+		{"iss": "https://auth.example.test", "sub": "person", "act": []any{}},
 	} {
 		_, err := userInfoFromJWTClaims(claims)
 		require.Error(t, err)
 	}
+}
+
+func TestSelfIssuedJWTIdentityPreservesOptionalActorIssuer(t *testing.T) {
+	identity, err := userInfoFromJWTClaims(map[string]any{
+		"iss": "https://auth.example.test", "sub": "person",
+		"act": map[string]any{"sub": "agent", "act": map[string]any{"sub": "prior-agent"}},
+	})
+	require.NoError(t, err)
+	require.Empty(t, identity.ActorIssuer)
+	require.Equal(t, "agent", identity.ActorSubject)
+	require.Equal(t, []oidc.ActorClaim{{Subject: "agent"}, {Subject: "prior-agent"}}, identity.ActorChain)
+	require.True(t, identity.IsOBO())
 }
 
 func TestValidatedSelfIssuedJWTExposesActor(t *testing.T) {

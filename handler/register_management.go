@@ -19,7 +19,7 @@ import (
 // ServeClientManagement handles RFC 7592 client management requests:
 //
 //	GET    /oauth/register/{client_id}  — read registration
-//	PUT    /oauth/register/{client_id}  — replace + rotate registration token
+//	PUT    /oauth/register/{client_id}  — replace + rotate registration access token
 //	DELETE /oauth/register/{client_id}  — remove client
 func (h *Handler) ServeClientManagement(w http.ResponseWriter, r *http.Request) {
 	if h.notFoundWhen(w, r, !h.server.Config.RegistrationEnabled()) {
@@ -245,8 +245,8 @@ func (h *Handler) handleClientManagementPut(w http.ResponseWriter, r *http.Reque
 	}
 	newToken, newHash, err := server.GenerateRegistrationAccessToken()
 	if err != nil {
-		h.logger.Error("Client management: failed to rotate registration token", "ip", clientIP, "client_id", existing.ClientID, paramError, err)
-		h.writeError(w, constants.ErrorCodeServerError, "failed to rotate registration token", http.StatusInternalServerError)
+		h.logger.Error("Client management: failed to rotate registration access token", "ip", clientIP, "client_id", existing.ClientID, paramError, err)
+		h.writeError(w, constants.ErrorCodeServerError, "failed to rotate registration access token", http.StatusInternalServerError)
 		return
 	}
 	updated.UpdatedAt = time.Now()

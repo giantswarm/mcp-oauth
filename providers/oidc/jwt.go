@@ -439,9 +439,9 @@ func GetAudienceFromClaims(claims map[string]any) []string {
 }
 
 // ActorClaim is the RFC 8693 §4.1 act claim decoded from an OIDC token or
-// mcp-oauth-minted access token. It identifies the acting party in a
-// delegation chain: Issuer and Subject correspond to the agent service account
-// that obtained the token on behalf of the human subject.
+// mcp-oauth-minted access token. Issuer and Subject are optional identity
+// fields supplied by the token issuer's actor profile; neither is inferred
+// from the containing token.
 //
 // Act carries the prior actor (RFC 8693 §4.1 nested act): in a multi-hop A2A
 // chain human → agentA → agentB, a token minted for the second hop has

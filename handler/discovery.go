@@ -507,7 +507,7 @@ func (h *Handler) isRegistrationAvailable() bool {
 		return false
 	}
 	return h.server.Config.AllowPublicClientRegistration ||
-		h.server.Config.RegistrationAccessToken != "" ||
+		h.server.Config.InitialAccessToken != "" ||
 		len(h.server.Config.TrustedPublicRegistrationSchemes) > 0 ||
 		len(h.server.Config.TrustedPublicRegistrationRedirectURIs) > 0
 }
@@ -518,6 +518,12 @@ func (h *Handler) ServeOpenIDConfiguration(w http.ResponseWriter, r *http.Reques
 	r, span, endSpan := h.startHandlerSpan(r, "oauth.http.discovery.oidc")
 	defer endSpan()
 	instrumentation.SetSpanAttributes(span, attribute.String(instrumentation.AttrDiscovery, "openid_configuration"))
+	if !h.server.Config.IsJWTAccessTokenFormat() {
+		// OpenID Connect Discovery 1.0 §3 requires jwks_uri, which opaque mode
+		// has no keys for, and this server issues no ID tokens of its own.
+		h.logger.Warn("DEPRECATED: OpenID Connect discovery is served in opaque access-token mode; a later release stops serving it, use /.well-known/oauth-authorization-server (RFC 8414)",
+			"path", r.URL.Path, "user_agent", r.UserAgent())
+	}
 	h.serveAuthServerMetadata(w, r, span)
 }
 

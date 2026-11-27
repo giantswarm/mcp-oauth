@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/giantswarm/mcp-oauth/providers/oidc"
 )
 
 // TestUserInfo_IsSSO tests the IsSSO helper method.
@@ -685,6 +687,8 @@ func TestUserInfo_IsOBO(t *testing.T) {
 		expected bool
 	}{
 		{name: "nil receiver", info: nil, expected: false},
+		{name: "actor issuer only", info: &UserInfo{ActorIssuer: "https://actors.example"}, expected: true},
+		{name: "actor history", info: &UserInfo{ActorChain: []oidc.ActorClaim{{Subject: "agent"}}}, expected: true},
 		{name: "trusted-issuer with actor", info: &UserInfo{TokenSource: TokenSourceTrustedIssuer, ActorSubject: "agent@k8s"}, expected: true},
 		{name: "trusted-issuer without actor", info: &UserInfo{TokenSource: TokenSourceTrustedIssuer}, expected: false},
 		{name: "sso with act claim", info: &UserInfo{TokenSource: TokenSourceSSO, ActorSubject: "agent@k8s"}, expected: true},
